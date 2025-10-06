@@ -926,7 +926,7 @@ def main():
     trimFa = args.representative + '.tmp'
     with open(trimFa, 'wt') as out:
         for sid, aln in alns:
-            trimseq = aln[winst:].replace('-','')[:window].upper()
+            trimseq = aln[bestSt:].replace('-','')[:window].upper()
             out.write(f'>{sid}\n{trimseq}\n')
     
     trimseqs = { s.id:str(s.seq) for s in SeqIO.parse(trimFa, 'fasta') }

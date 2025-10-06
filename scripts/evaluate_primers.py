@@ -361,7 +361,7 @@ def main():
         sys.exit()
 
     feats = ['len_f','Tm_f','GC_f','indel_f','mm_f','len_r','Tm_r','GC_r','indel_r','mm_r','prod_len','prod_Tm']
-    for i, chunk in enumerate(pd.read_csv(args.input, chunksize=100000)):
+    for i, chunk in enumerate(pd.read_csv(args.input, chunksize=20000)):
         chunk['targets'] = chunk['targets'].apply(ast.literal_eval)
         inps_fe = chunk[feats]
         inps_fe = scaler.transform(inps_fe)

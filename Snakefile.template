@@ -9,10 +9,10 @@ HOST        = [ 'HUMAN' ]
 ALL_TARGETS = list(set(TARGET + CROSS + HOST))
 
 # Directory with python scripts
-SCRIPTS = '/home/jupyter/ADAPT_PCR_share/safe/design/scripts'
+SCRIPTS = './scripts'
 
 # Directory with ML models and scaler
-SRC = '/home/jupyter/ADAPT_PCR_share/safe/design/src'
+SRC = './src'
 
 # Parameter file
 PARAMS = 'params.txt'
