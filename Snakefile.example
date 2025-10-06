@@ -3,9 +3,9 @@
 ## User-defined parameters 
 
 # Sequences for design ----------------------------------------
-TARGET      = [ ] 
+TARGET      = ['H5'] 
 CROSS       = [ ] 
-HOST        = [ ]
+HOST        = [ 'HUMAN' ]
 ALL_TARGETS = list(set(TARGET + CROSS + HOST))
 
 # Directory with python scripts
