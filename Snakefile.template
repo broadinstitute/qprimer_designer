@@ -1,0 +1,158 @@
+# vim: ft=snakemake
+
+## User-defined parameters 
+
+# Sequences for design ----------------------------------------
+TARGET      = [ ] 
+CROSS       = [ ] 
+HOST        = [ 'HUMAN' ]
+ALL_TARGETS = list(set(TARGET + CROSS + HOST))
+
+# Directory with python scripts
+SCRIPTS = '/home/jupyter/ADAPT_PCR_share/safe/design/scripts'
+
+# Directory with ML models and scaler
+SRC = '/home/jupyter/ADAPT_PCR_share/safe/design/src'
+
+# Parameter file
+PARAMS = 'params.txt'
+
+## ------------------------------------------------------------
+
+
+ruleorder:
+    evaluate_sensitivity > evaluate_specificity
+
+
+rule all:
+	input: #expand('primer_seqs/{virus}_passed.fa', virus=TARGET),
+           expand('final/{virus}.csv', virus=TARGET)
+
+
+rule make_MSA:
+    input: 'target_seqs/original/{virus}.fa'
+    output: 'target_seqs/msa/{virus}.aln'
+    threads: 2
+    shell: 'mafft --auto --quiet --thread {threads} {input} > {output}'
+
+
+rule pick_representative_seqs:
+    input: 'target_seqs/msa/{virus}.aln'
+    output: 'target_seqs/representative/{virus}.fa'
+    shell: 'python -u {SCRIPTS}/pick_representative_seqs.py --in {input} --out {output} \
+                                                            --params {PARAMS} --name {wildcards.virus}'
+
+
+rule generate_primers:
+    input: 'target_seqs/representative/{virus}.fa'
+    output: 'primer_seqs/{virus}_init.fa'
+    shell: 'python -u {SCRIPTS}/generate_primers.py --in {input} --out {output} \
+                                                    --params {PARAMS} --name {wildcards.virus}'
+
+
+rule build_index:
+    input: 'target_seqs/original/{virus}.fa'
+    output: 'bt2_index/{virus}.1.bt2'
+    threads: 4
+    shell: 'bowtie2-build --threads {threads} {input} bt2_index/{wildcards.virus}'
+
+
+rule align:
+    input: 
+        lambda wc: [ 'primer_seqs/{virus}_init.fa' if wc.virus==wc.target else 'primer_seqs/{virus}_passed.fa',
+                     'bt2_index/{target}.1.bt2' ]
+    output: temp('alignments/{virus}.{target}.sam')
+    threads: 2
+    run:
+        reference = f'bt2_index/{wildcards.target}'
+        multimap = 50000 if wildcards.target=='HUMAN' else 10000
+        mapOption = '--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6' 
+        # allowing up to 6 mismatches or 3 indels 
+        shell('bowtie2 -x {reference} -U {input[0]} -f -p {threads} -k {multimap} {mapOption} \
+                       --no-hd --no-unal > {output}')
+
+
+rule parse_map:
+    input: 'alignments/{filename}.sam'
+    output: temp('alignments/{filename}.parsed')
+    shell: 'sam2pairwise < {input} > {output}'
+
+
+rule process_map:
+    input: 
+        sam = 'alignments/{filename}.sam', 
+        parsed = 'alignments/{filename}.parsed'
+    output: 'alignments/{filename}.mapped'
+    run:
+        pseqs = input.parsed + '.pseq'
+        tseqs = input.parsed + '.tseq'
+        matches = input.parsed + '.match'
+        shell(f'awk "NR % 4 == 2" {input.parsed} > {pseqs}')
+        shell(f'awk "NR % 4 == 3" {input.parsed} > {matches}')
+        shell(f'awk "NR % 4 == 0" {input.parsed} > {tseqs}')
+        shell('cut -f1-4 {input.sam} | paste - {pseqs} | paste - {tseqs} | paste - {matches} > {output}')
+        shell('rm -f {pseqs} {tseqs} {matches}')
+
+
+rule check_coverage:
+    input: 
+        mapped = 'alignments/{virus}.{virus}.mapped', 
+        fa = 'target_seqs/original/{virus}.fa'
+    output: 'alignments/{virus}.{virus}.mapped.full'
+    run: 
+        with open(input.fa, 'r') as f:
+            minCoverage = sum(1 for l in f if l.startswith('>')) * 0.95
+        shell("awk '{{print $1, $3}}' {input.mapped} | \
+               sort -u | \
+               awk '{{count[$1]++}} END {{for (i in count) print i, count[i]}}' > {input.mapped}.cov")
+        shell("awk -F' ' '$2 >= %i {{print $1}}' {input.mapped}.cov > {input.mapped}.key" % minCoverage)
+        shell("awk 'NR==FNR {{keys[$1]; next}} ($1 in keys)' {input.mapped}.key {input.mapped} > {output}")
+        shell(f"rm -f {input.mapped}.cov {input.mapped}.key")
+
+
+rule prepare_input:
+    input: 
+        lambda wc: 'alignments/{virus}.{target}.mapped.full' if wc.virus==wc.target 
+                    else 'alignments/{virus}.{target}.mapped'
+    output: 'inputs/{virus}.{target}.input'
+    run:
+        target = 'on' if wildcards.virus==wildcards.target else 'off'
+        shell('python -u {SCRIPTS}/prepare_input.py --in {input} --out {output} \
+                                                    --params {PARAMS} --target {target}') 
+
+
+rule evaluate_sensitivity:
+    input: 
+        inp = 'inputs/{virus}.{virus}.input', 
+        ref = 'target_seqs/original/{virus}.fa', 
+        initial = 'primer_seqs/{virus}_init.fa'
+    output: 
+        passed = 'primer_seqs/{virus}_passed.fa',
+        res = 'outputs/{virus}.{virus}.result'
+    resources: gpu = 1
+    threads: 2
+    shell: 'python -u {SCRIPTS}/evaluate_primers.py --in {input.inp} --out {output.res} --target on --ml {SRC} \
+                                                    --ref {input.ref} --threads {threads} --params {PARAMS} \
+                                                    --initial {input.initial} --passed {output.passed}'
+
+
+rule evaluate_specificity:
+    input: 
+        inp = 'inputs/{virus}.{target}.input', 
+        ref = 'target_seqs/original/{target}.fa', 
+    output: 'outputs/{virus}.{target}.result'
+    resources: gpu = 1
+    threads: 2
+    shell: 'python -u {SCRIPTS}/evaluate_primers.py --in {input.inp} --out {output} --target off --ml {SRC} \
+                                                    --ref {input.ref} --threads {threads} --params {PARAMS}'
+
+
+rule build_final_output:
+    input: expand('outputs/{virus}.{target}.result', virus='{virus}',  target=ALL_TARGETS)
+    output: 'final/{virus}.csv'
+    run:
+        allTargets = ' '.join(ALL_TARGETS)
+        primers = f'primer_seqs/{wildcards.virus}_passed.fa'
+        shell('python -u {SCRIPTS}/build_final_output.py --name {wildcards.virus} --resdir outputs \
+                                                         --params {PARAMS} --refs {allTargets} \
+                                                         --primers {primers} --out {output}')

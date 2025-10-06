@@ -1,0 +1,21 @@
+## Parameters in picking representative sequences
+DESIGN_WINDOW = 500
+
+## Parameters in generating primers
+VIENNA_DIRECTORY = /home/jupyter/ADAPT_PCR_share/safe/tools/ViennaRNA-2.7.0 
+MAX_PRIMER_CANDIDATES = 10000
+TM_MIN = 55
+TM_MAX = 60
+GC_MAX = 60
+DG_MIN = -6
+PRIMER_LEN = 20
+TILING_STEP = 5
+
+## Parameters in input preparation
+AMPLEN_MIN = 60
+AMPLEN_MAX = 200
+OFFLEN_MIN = 50
+OFFLEN_MAX = 5000
+
+## Parameters in evaluation
+NUM_TOP_SENSITIVITY = 200
