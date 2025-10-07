@@ -16,6 +16,16 @@ pip install -q mysql-connector-python biopython
 pip install -q --log log git+https://github.com/pachterlab/gget.git@delphy_dev # this build has support for ncbi_virus
 tar -xjvf ./target_seqs/original/HUMAN.tar.bz2 -C ./target_seqs/original
 
+# Quickly check to see if gcc is installed for next step
+if ! command -v gcc &> /dev/null; then
+    echo "Error: gcc is not installed or not in your PATH." >&2
+    echo "Please install gcc first (on Ubuntu: sudo apt install build-essential)" >&2
+    exit 1
+fi
+
+# If we reach here, gcc exists
+echo "gcc is installed: $(gcc --version | head -n 1)"
+
 # Build & install ViennaRNA into ./src
 set -euo pipefail
 cd ./src
