@@ -924,9 +924,13 @@ def main():
     
     bestSt = min(gapcnts.keys(), key=lambda x:(np.median(gapcnts[x]), np.average(gapcnts[x])))
     trimFa = args.representative + '.tmp'
+    dropped = []
     with open(trimFa, 'wt') as out:
         for sid, aln in alns:
             trimseq = aln[bestSt:].replace('-','')[:window].upper()
+            if len(trimseq) < window // 2:
+                dropped.append((sid, aln))
+                continue
             out.write(f'>{sid}\n{trimseq}\n')
     
     trimseqs = { s.id:str(s.seq) for s in SeqIO.parse(trimFa, 'fasta') }
@@ -934,8 +938,12 @@ def main():
         sids, fracs = find_representative_sequences(trimFa, frac_to_cover=.99)
         for sid, frac in zip(sids, fracs):
             out.write(f'>{sid}\tcov:%.3f\n{trimseqs[sid]}\n' % frac)
+        for sid, aln in dropped:
+            seq = aln.replace('-','').upper()
+            out.write(f'>{sid}\n{seq}\n')
             
     runtime = (time.time() - startTime)
+    print(f'{len(dropped)} targets were added with their full sequences.')
     print(f'Wrote {len(sids)} sequences to {args.representative} (%.1f sec).' % runtime)
     
     

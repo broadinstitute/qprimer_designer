@@ -140,11 +140,13 @@ rule evaluate_specificity:
     input: 
         inp = 'inputs/{virus}.{target}.input', 
         ref = 'target_seqs/original/{target}.fa', 
+        tout = 'outputs/{virus}.{virus}.result'
     output: 'outputs/{virus}.{target}.result'
     resources: gpu = 1
     threads: 2
     shell: 'python -u {SCRIPTS}/evaluate_primers.py --in {input.inp} --out {output} --target off --ml {SRC} \
-                                                    --ref {input.ref} --threads {threads} --params {PARAMS}'
+                                                    --ref {input.ref} --threads {threads} --tout {input.tout} \
+                                                    --params {PARAMS}'
 
 
 rule build_final_output:

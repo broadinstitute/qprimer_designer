@@ -35,7 +35,7 @@ def one_hot_encode(seq, length=28):
                 'G':[0, 0, 0, 1, 0],
                 'N':[0, 0, 0, 0, 0],
                 '-':[0, 0, 0, 0, 1] }
-    seq = seq.ljust(length, 'N') # (6, ATCG) -> NNATCG
+    seq = seq.ljust(length, 'N')[-length:] # (6, ATCG) -> NNATCG
     return np.array([mapping[char.upper()] for char in seq])
 
 
@@ -329,18 +329,20 @@ def main():
     parser.add_argument('--target', dest='target', required=True, help='on or off')
     parser.add_argument('--ref', dest='reference', required=True, help='Target FASTA file')
     parser.add_argument('--params', dest='param_file', required=True, help='Parameters file')
+    parser.add_argument('--ml', dest='ml_dir', required=True, help='Directory where  ML models')    
+    
     parser.add_argument('--initial', dest='initial', default='-', help='Initial primer FASTA file')
     parser.add_argument('--passed', dest='passed', default='-', help='Passed primer FASTA file')
+    parser.add_argument('--tout', dest='target_output', help='Output from evaluation against target')
     parser.add_argument('--threads', dest='threads', default=1, help='Number of threads')
-    parser.add_argument('--ml', dest='ml_dir', required=True, help='Directory with ML models')    
     args = parser.parse_args()
 
     CLASSIFIER = f'{args.ml_dir}/combined_classifier.pth'
     REGRESSOR = f'{args.ml_dir}/combined_regressor.pth'
     SCALER = f'{args.ml_dir}/standard_scaler.joblib'
     
-    numSelect = parse_params(args.param_file)
-    tnames = [ s.id.split(':')[0] for s in SeqIO.parse(args.reference, 'fasta') ]
+    numSelect = int(parse_params(args.param_file))
+    tnames = [ s.id for s in SeqIO.parse(args.reference, 'fasta') ]
     
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -416,6 +418,64 @@ def main():
         regtbl = pd.concat(evals['regressor']).reset_index()
         clstbl.to_csv(f'{args.output}.cl', index=False)
         regtbl.to_csv(f'{args.output}.re', index=False)
+
+    feats = ['len_f','Tm_f','GC_f','indel_f','mm_f','len_r','Tm_r','GC_r','indel_r','mm_r','prod_len','prod_Tm']
+    for i, chunk in enumerate(pd.read_csv(args.input, chunksize=100000)):
+        chunk['targets'] = chunk['targets'].apply(ast.literal_eval)
+        inps_fe = chunk[feats]
+        inps_fe = scaler.transform(inps_fe)
+        inps_se = chunk[['pseq_f','tseq_f','pseq_r','tseq_r']]
+        inps_se = one_hot_encode_pbs_gap_parallel(inps_se, int(args.threads))
+        dataset = PcrDataset(inps_se, inps_fe, np.array([0]*len(chunk)))
+        loader = DataLoader(dataset, batch_size=64, shuffle=False)
+
+        predict_cls, predict_reg = [], []
+        with torch.no_grad():
+            for seq_in, fea_in, _ in loader:
+                seq_in, fea_in = seq_in.to(device).float(), fea_in.to(device).float()
+                out_cls = classifier(fea_in, seq_in)
+                out_reg = regressor(fea_in, seq_in)
+                if len(seq_in)==1:
+                    predict_cls.append(np.array([out_cls.squeeze().detach().cpu().numpy()]))
+                    predict_reg.append(np.array([out_reg.squeeze().detach().cpu().numpy()]))
+                else:
+                    predict_cls.append(out_cls.squeeze().detach().cpu().numpy())
+                    predict_reg.append(out_reg.squeeze().detach().cpu().numpy())
+            predict_cls = np.concatenate(predict_cls)
+            predict_reg = np.round(np.concatenate(predict_reg), decimals=3)
+        chunk.loc[:,'classifier'] = predict_cls
+        chunk.loc[:,'regressor'] = predict_reg
+
+        mlb = MultiLabelBinarizer()
+        onehot = mlb.fit_transform(chunk['targets'])
+        target_cols = list(mlb.classes_)
+        evals = defaultdict(list)
+        for label in ['classifier','regressor']:
+            targets_df = pd.DataFrame(onehot, columns=target_cols, index=chunk.index)
+            targets_df = targets_df.mul(chunk[label], axis=0)
+            evaltbl = pd.concat([chunk[['pname_f','pname_r']], targets_df], axis=1)
+            agg_dict = {c: "max" for c in evaltbl.columns[2:]}
+            evaltbl = evaltbl.groupby(['pname_f','pname_r']).agg(agg_dict)
+            if args.target in ['on','On','ON']:
+                evaltbl = evaltbl.reindex(columns=tnames)
+                outname = f'{args.output}.{label[:2]}'
+                if os.path.exists(outname) and i==0:
+                    mode = 'w'
+                else:
+                    mode = 'a'
+                evaltbl.round(2).to_csv(outname, mode=mode, header=(i==0))
+            else:
+                evals[label].append(evaltbl)
+    
+    if args.target in ['on','On','ON']:
+        clstbl = pd.read_csv(f'{args.output}.cl').fillna(0)
+        regtbl = pd.read_csv(f'{args.output}.re').fillna(0)
+    else:
+        clstbl = pd.concat(evals['classifier']).reset_index()
+        regtbl = pd.concat(evals['regressor']).reset_index()
+        clstbl.to_csv(f'{args.output}.cl', index=False)
+        regtbl.to_csv(f'{args.output}.re', index=False)
+    
     agg_dict = {c: "max" for c in regtbl.columns[2:]}
     regtbl = regtbl.groupby(['pname_f','pname_r']).agg(agg_dict)
     agg_dict = {c: "max" for c in clstbl.columns[2:]}
@@ -429,9 +489,10 @@ def main():
         res = res.dropna().sort_values('score', ascending=False)
         res.round(4).to_csv(args.output, index=False)
     else:
-        validIdx = [ pair for pair in clstbl.index if pair[0].endswith('f') and pair[1].endswith('r') ]
-        clstbl_tmp = clstbl.reindex(validIdx)
-        regtbl_tmp = regtbl.reindex(validIdx)
+        target_output = pd.read_csv(args.target_output, index_col=[0,1])
+        validIdx = target_output.index[:numSelect]
+        clstbl_tmp = clstbl.reindex(validIdx).fillna(0)
+        regtbl_tmp = regtbl.reindex(validIdx).fillna(0)
         for pair in validIdx:
             lv0 = clstbl.index.get_level_values('pname_f').isin(set(pair))
             lv1 = clstbl.index.get_level_values('pname_r').isin(set(pair))
@@ -440,16 +501,16 @@ def main():
             lv1 = regtbl.index.get_level_values('pname_r').isin(set(pair))
             regtbl_tmp.loc[pair] = regtbl.loc[(lv0 & lv1)].max(numeric_only=True)
  
-        coverage = ((clstbl_tmp>.5).sum(axis=1) / len(tnames)).reset_index(name='coverage')
+        coverage = (clstbl_tmp>.5).sum(axis=1).reset_index(name='coverage')
         maxAct = 0.5
-        activity = regtbl_tmp.max(axis=1).reset_index(name='activity')
+        activity = regtbl_tmp.max(axis=1).reset_index(name='activity').fillna(0)
         res = coverage.merge(activity, on=['pname_f','pname_r'])
         res['score'] = (res['coverage'] * res['activity']).where(res['activity'] <= maxAct, 999)
         res.to_csv(args.output, index=False)
     
     if args.target in ['on','On','ON']:   
         priseqs = { s.id:str(s.seq) for s in SeqIO.parse(args.initial, 'fasta') }
-        select = res.iloc[:int(numSelect)]
+        select = res.iloc[:numSelect]
         with open(args.passed, 'wt') as out:
             allpns = set(select['pname_f']) | set(select['pname_r'])
             for pname in allpns:
