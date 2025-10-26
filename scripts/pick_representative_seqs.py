@@ -802,7 +802,7 @@ def find_representative_sequences(seqs, k=12, N=100, threshold=0.1,
     This clusters seqs, and then determines a medoid for each cluster.
     It returns the medoids.
 
-    This will not return representative sequences with ambiguity or NNNs.
+    This will return representative sequences with ambiguity or NNNs.
 
     Args:
         seqs, k, N, threshold, num_clusters: see cluster_with_minhash_signatures()
@@ -851,9 +851,10 @@ def find_representative_sequences(seqs, k=12, N=100, threshold=0.1,
         for i in cluster_idxs:
             # Only allow i to be the medoid if it does not have ambiguity
             seq = seqs_items[i][1]
-            if sum(seq.count(b) for b in ('A','C','G','T')) != len(seq):
+            # 10/26/25 patched to allow sequences with ambiguity to be returned
+            # if sum(seq.count(b) for b in ('A','C','G','T')) != len(seq):
                 # Has ambiguity or NNNs; skip
-                continue
+                # continue
 
             # Compute the total distance to all other sequences in this
             # cluster, and check if this is the medoid
