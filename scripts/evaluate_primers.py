@@ -333,7 +333,6 @@ def main():
     
     parser.add_argument('--initial', dest='initial', default='-', help='Initial primer FASTA file')
     parser.add_argument('--passed', dest='passed', default='-', help='Passed primer FASTA file')
-    parser.add_argument('--tout', dest='target_output', help='Output from evaluation against target')
     parser.add_argument('--threads', dest='threads', default=1, help='Number of threads')
     args = parser.parse_args()
 
@@ -388,6 +387,7 @@ def main():
             predict_reg = np.round(np.concatenate(predict_reg), decimals=3)
         chunk.loc[:,'classifier'] = predict_cls
         chunk.loc[:,'regressor'] = predict_reg
+        chunk.to_csv(f'{args.output}.full', header=(i==0), mode='a')
 
         mlb = MultiLabelBinarizer()
         onehot = mlb.fit_transform(chunk['targets'])
@@ -399,29 +399,18 @@ def main():
             evaltbl = pd.concat([chunk[['pname_f','pname_r']], targets_df], axis=1)
             agg_dict = {c: "max" for c in evaltbl.columns[2:]}
             evaltbl = evaltbl.groupby(['pname_f','pname_r']).agg(agg_dict)
-            if args.target in ['on','On','ON']:
-                evaltbl = evaltbl.reindex(columns=tnames)
-                outname = f'{args.output}.{label[:2]}'
-                if os.path.exists(outname) and i==0:
-                    mode = 'w'
-                else:
-                    mode = 'a'
-                evaltbl.round(2).to_csv(outname, mode=mode, header=(i==0))
+            evaltbl = evaltbl.reindex(columns=tnames)
+            outname = f'{args.output}.{label[:2]}'
+            if os.path.exists(outname) and i==0:
+                mode = 'w'
             else:
-                evals[label].append(evaltbl)
+                mode = 'a'
+            evaltbl.round(3).to_csv(outname, mode=mode, header=(i==0))
     
-    if args.target in ['on','On','ON']:
-        clstbl = pd.read_csv(f'{args.output}.cl').fillna(0)
-        regtbl = pd.read_csv(f'{args.output}.re').fillna(0)
-    else:
-        clstbl = pd.concat(evals['classifier']).reset_index()
-        regtbl = pd.concat(evals['regressor']).reset_index()
-        clstbl.to_csv(f'{args.output}.cl', index=False)
-        regtbl.to_csv(f'{args.output}.re', index=False)
-    
+    clstbl = pd.read_csv(f'{args.output}.cl').fillna(0)
+    regtbl = pd.read_csv(f'{args.output}.re').fillna(0)
     agg_dict = {c: "max" for c in regtbl.columns[2:]}
     regtbl = regtbl.groupby(['pname_f','pname_r']).agg(agg_dict)
-    agg_dict = {c: "max" for c in clstbl.columns[2:]}
     clstbl = clstbl.groupby(['pname_f','pname_r']).agg(agg_dict)
     
     if args.target in ['on','On','ON']:
@@ -432,11 +421,9 @@ def main():
         res = res.dropna().sort_values('score', ascending=False)
         res.round(4).to_csv(args.output, index=False)
     else:
-        target_output = pd.read_csv(args.target_output, index_col=[0,1])
-        validIdx = target_output.index[:numSelect]
-        clstbl_tmp = clstbl.reindex(validIdx).fillna(0)
-        regtbl_tmp = regtbl.reindex(validIdx).fillna(0)
-        for pair in validIdx:
+        clstbl_tmp = clstbl.copy() # clstbl.reindex(validIdx).fillna(0)
+        regtbl_tmp = regtbl.copy() # regtbl.reindex(validIdx).fillna(0)
+        for pair in clstbl.index:
             lv0 = clstbl.index.get_level_values('pname_f').isin(set(pair))
             lv1 = clstbl.index.get_level_values('pname_r').isin(set(pair))
             clstbl_tmp.loc[pair] = clstbl.loc[(lv0 & lv1)].max(numeric_only=True)
@@ -449,7 +436,7 @@ def main():
         activity = regtbl_tmp.max(axis=1).reset_index(name='activity').fillna(0)
         res = coverage.merge(activity, on=['pname_f','pname_r'])
         res['score'] = (res['coverage'] * res['activity']).where(res['activity'] <= maxAct, 999)
-        res.to_csv(args.output, index=False)
+        res.round(4).to_csv(args.output, index=False)
     
     if args.target in ['on','On','ON']:   
         priseqs = { s.id:str(s.seq) for s in SeqIO.parse(args.initial, 'fasta') }

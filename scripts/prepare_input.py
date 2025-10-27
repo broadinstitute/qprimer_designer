@@ -7,6 +7,7 @@
 import argparse
 import time
 import pandas as pd
+import numpy as np
 import os
 import sys
 from Bio.SeqUtils import MeltingTemp, gc_fraction
@@ -74,6 +75,7 @@ def main():
     parser = argparse.ArgumentParser(prog='python -u prepare_input.py', description='Prepare input for ML')
     parser.add_argument('--in', dest='mapped', required=True, help='Parsed alignments')
     parser.add_argument('--out', dest='ml_input', required=True, help='Input for ML')
+    parser.add_argument('--ref', dest='reference', required=True, help='Target FASTA file')
     parser.add_argument('--params', dest='param_file', required=True, help='Parameters file')
     parser.add_argument('--target', dest='target', required=True, help='on or off')
     args = parser.parse_args()
@@ -82,7 +84,8 @@ def main():
     print(f'Preparing ML input from {args.mapped}...')
     startTime = time.time()
     nlines = 0
-    
+    tarseqs = { s.id:str(s.seq) for s in SeqIO.parse(args.reference, 'fasta') }
+
     cols = ['pname','orientation','tname','start','pseq','tseq','match']
     try:    
         raw = pd.read_table(args.mapped, sep='\t', names=cols)
@@ -118,14 +121,12 @@ def main():
         minl = minAmpLen
         maxl = maxAmpLen
         lfunc = max
-        tmAmp = 65
     else:
         fors = maptbl.loc[(maptbl['orientation']==0), subcols]
         revs = maptbl.loc[(maptbl['orientation']==16), subcols]
         minl = minOffLen
         maxl = maxOffLen
         lfunc = min
-        tmAmp = 85
         
     revs['pseq'] = revs['pseq'].apply(rev_com_enc)
     revs['tseq'] = revs['tseq'].apply(rev_com_enc)
@@ -149,15 +150,18 @@ def main():
 
         targets_by_r = defaultdict(set)
         amplens_by_r = defaultdict(set)
+        tms_by_r = defaultdict(list)
         for t_f, st_f in zip(tnamesf, startsf):
             cand = rev_index.get(t_f)
+            st_f = int(st_f)
             if not cand:
                 continue
             for r_id, st_r in cand:
-                amplen = st_r + primerLen - int(st_f)
-                if minl <= amplen <= maxl:
+                ampseq = tarseqs[t_f][st_f-1:st_r-1+primerLen]
+                if minl <= len(ampseq) <= maxl:
                     targets_by_r[r_id].add(t_f)
-                    amplens_by_r[r_id].add(amplen)
+                    amplens_by_r[r_id].add(len(ampseq))
+                    tms_by_r[r_id].append(get_Tm(ampseq))
 
         if not targets_by_r:
             continue
@@ -166,7 +170,7 @@ def main():
         revsub = revs.loc[rev_ids].copy()
         revsub['targets'] = [sorted(list(targets_by_r[r_id])) for r_id in revsub.index]
         revsub['prod_len'] = [lfunc(list(amplens_by_r[r_id])) for r_id in revsub.index]
-        revsub['prod_Tm'] = tmAmp
+        revsub['prod_Tm'] = [np.average(tms_by_r[r_id]) for r_id in revsub.index]
         forsub = fors.loc[[f_id]].copy().drop(['tnames','starts'],axis=1)
         pairs = forsub.merge(revsub.drop(['tnames','starts'],axis=1), how="cross", suffixes=("_f", "_r"))
         nlines += len(pairs)
