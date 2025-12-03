@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
 import argparse
 import time
 import os
@@ -23,9 +20,6 @@ from Bio import SeqIO
 from sklearn.preprocessing import MultiLabelBinarizer
 from collections import defaultdict
 torch.manual_seed(42)
-
-
-# In[ ]:
 
 
 def one_hot_encode(seq, length=28):
@@ -70,9 +64,6 @@ def parse_params(paramFile):
                 params[name.strip()] = value.strip()
     numSelect = params['NUM_TOP_SENSITIVITY']
     return numSelect
-
-
-# In[ ]:
 
 
 class PGC(nn.Module):
@@ -318,9 +309,6 @@ class PcrDataset(Dataset):
         return self.encoded_input[idx], self.custom_features[idx], self.scores[idx]
 
 
-# In[ ]:
-
-
 def main():
     parser = argparse.ArgumentParser(prog='python -u evaluate_primers.py', 
                                      description='Evaluate primer-target matches using ML')
@@ -362,6 +350,9 @@ def main():
         sys.exit()
 
     feats = ['len_f','Tm_f','GC_f','indel_f','mm_f','len_r','Tm_r','GC_r','indel_r','mm_r','prod_len','prod_Tm']
+    header_flag = True
+    mode = 'w'
+    clstbl, regtbl = [], []
     for i, chunk in enumerate(pd.read_csv(args.input, chunksize=20000)):
         chunk['targets'] = chunk['targets'].apply(ast.literal_eval)
         inps_fe = chunk[feats]
@@ -387,56 +378,40 @@ def main():
             predict_reg = np.round(np.concatenate(predict_reg), decimals=3)
         chunk.loc[:,'classifier'] = predict_cls
         chunk.loc[:,'regressor'] = predict_reg
-        chunk.to_csv(f'{args.output}.full', header=(i==0), mode='a')
+        chunk.to_csv(f'{args.output}.full', mode=mode, header=header_flag, index=False)
 
         mlb = MultiLabelBinarizer()
         onehot = mlb.fit_transform(chunk['targets'])
         target_cols = list(mlb.classes_)
-        evals = defaultdict(list)
-        for label in ['classifier','regressor']:
+        
+        for label, l in zip(['classifier','regressor'], [clstbl,regtbl]):
             targets_df = pd.DataFrame(onehot, columns=target_cols, index=chunk.index)
             targets_df = targets_df.mul(chunk[label], axis=0)
             evaltbl = pd.concat([chunk[['pname_f','pname_r']], targets_df], axis=1)
             agg_dict = {c: "max" for c in evaltbl.columns[2:]}
-            evaltbl = evaltbl.groupby(['pname_f','pname_r']).agg(agg_dict)
-            evaltbl = evaltbl.reindex(columns=tnames)
-            outname = f'{args.output}.{label[:2]}'
-            if os.path.exists(outname) and i==0:
-                mode = 'w'
-            else:
-                mode = 'a'
-            evaltbl.round(3).to_csv(outname, mode=mode, header=(i==0))
+            evaltbl = evaltbl.groupby(['pname_f','pname_r']).agg(agg_dict).reset_index()
+            l.append(evaltbl)
+        header_flag = False
+        mode = 'a'
     
-    clstbl = pd.read_csv(f'{args.output}.cl').fillna(0)
-    regtbl = pd.read_csv(f'{args.output}.re').fillna(0)
+    clstbl = pd.concat(clstbl, ignore_index=True)
+    regtbl = pd.concat(regtbl, ignore_index=True).reindex(columns=clstbl.columns)
     agg_dict = {c: "max" for c in regtbl.columns[2:]}
-    regtbl = regtbl.groupby(['pname_f','pname_r']).agg(agg_dict)
-    clstbl = clstbl.groupby(['pname_f','pname_r']).agg(agg_dict)
-    
+    regtbl = regtbl.reset_index().groupby(['pname_f','pname_r']).agg(agg_dict)
+    clstbl = clstbl.reset_index().groupby(['pname_f','pname_r']).agg(agg_dict) 
+    clstbl.fillna(0).round(3).to_csv(f'{args.output}.cl')
+    regtbl.fillna(0).round(3).to_csv(f'{args.output}.re')
+
+    coverage = (clstbl>.5).sum(axis=1).reset_index(name='coverage')
     if args.target in ['on','On','ON']:
-        coverage = (clstbl>.5).mean(axis=1).reset_index(name='coverage')
-        activity = (regtbl * (clstbl>.5)).replace(0, np.nan).mean(axis=1).reset_index(name='activity')
-        res = coverage.merge(activity, on=['pname_f','pname_r'])
-        res['score'] = (res['coverage'] * res['activity'])
-        res = res.dropna().sort_values('score', ascending=False)
-        res.round(4).to_csv(args.output, index=False)
+        coverage['coverage'] = coverage['coverage'] / len(tnames)
+        activity = (regtbl * (clstbl>.5)).mean(axis=1).reset_index(name='activity')
     else:
-        clstbl_tmp = clstbl.copy() # clstbl.reindex(validIdx).fillna(0)
-        regtbl_tmp = regtbl.copy() # regtbl.reindex(validIdx).fillna(0)
-        for pair in clstbl.index:
-            lv0 = clstbl.index.get_level_values('pname_f').isin(set(pair))
-            lv1 = clstbl.index.get_level_values('pname_r').isin(set(pair))
-            clstbl_tmp.loc[pair] = clstbl.loc[(lv0 & lv1)].max(numeric_only=True)
-            lv0 = regtbl.index.get_level_values('pname_f').isin(set(pair))
-            lv1 = regtbl.index.get_level_values('pname_r').isin(set(pair))
-            regtbl_tmp.loc[pair] = regtbl.loc[(lv0 & lv1)].max(numeric_only=True)
- 
-        coverage = (clstbl_tmp>.5).sum(axis=1).reset_index(name='coverage')
-        maxAct = 0.5
-        activity = regtbl_tmp.max(axis=1).reset_index(name='activity').fillna(0)
-        res = coverage.merge(activity, on=['pname_f','pname_r'])
-        res['score'] = (res['coverage'] * res['activity']).where(res['activity'] <= maxAct, 999)
-        res.round(4).to_csv(args.output, index=False)
+        activity = (regtbl * (clstbl>.5)).max(axis=1).reset_index(name='activity')
+    res = coverage.merge(activity, on=['pname_f','pname_r'])
+    res['score'] = (res['coverage'] * res['activity'])
+    res = res.dropna().sort_values('score', ascending=False)
+    res.round(4).to_csv(args.output, index=False)
     
     if args.target in ['on','On','ON']:   
         priseqs = { s.id:str(s.seq) for s in SeqIO.parse(args.initial, 'fasta') }

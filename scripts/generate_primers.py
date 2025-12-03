@@ -1,20 +1,16 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[18]:
-
-
 import argparse
 import bisect
 import time
 import subprocess
 import re
 import random
+import pandas as pd
 from Bio.SeqUtils import MeltingTemp, gc_fraction
 from Bio import Seq, SeqIO
-
-
-# In[19]:
+from collections import defaultdict
 
 
 def reverse_complement_dna(seq):
@@ -68,14 +64,23 @@ def generate_primers_multi(targetSeqs, step, primerLen, minAmpLen, maxAmpLen,
     print(f'>> Primers with a unique sequence: {len(forps)} forwards, {len(revps)} reverses, {uniqPairs} pairs')
     
     forFilt, revFilt = {}, {}
+    features = defaultdict(dict)
     for unfilt, filt in zip([forps,revps], [forFilt,revFilt]):
         for pseq in unfilt:
-            if minTm <= get_Tm(pseq) <= maxTm and get_GC_percentage(pseq) <= maxGc:
-                if get_deltaG_vienna(pseq, pseq, RNAduplex) >= minDg:
-                    filt[pseq] = unfilt[pseq]           
+            tm = get_Tm(pseq)
+            gc = gc_fraction(pseq)
+            features[pseq]['Tm'] = round(tm, 1)
+            features[pseq]['GC'] = gc
+            features[pseq]['len'] = len(pseq)
+            if minTm <= tm <= maxTm and gc <= maxGc/100:
+                dG = get_deltaG_vienna(pseq, pseq, RNAduplex)
+                features[pseq]['dG'] = round(dG, 1)
+                if dG >= minDg:
+                    filt[pseq] = unfilt[pseq]
+
     validPairs = count_primer_pairs(forFilt, revFilt, minAmpLen, maxAmpLen)
     print(f'>> Primers filtered: {len(forFilt)} forwards, {len(revFilt)} reverses, {validPairs} pairs')
-    return forFilt, revFilt
+    return forFilt, revFilt, features
 
 
 def count_primer_pairs(fors, revs, minAmpLen, maxAmpLen):
@@ -111,9 +116,6 @@ def parse_params(paramFile):
     return viennaDir, maxNum, step, primerLen, minAmpLen, maxAmpLen, maxTm, minTm, maxGc, minDg
 
 
-# In[23]:
-
-
 def main():
     parser = argparse.ArgumentParser(prog='python -u generate_primers.py', 
                                      description='Generate primer candidates')
@@ -130,8 +132,8 @@ def main():
     print(f'Generating primers from {args.target_seqs}...')
     startTime = time.time()
     
-    forFilt, revFilt = generate_primers_multi(targetSeqs, step, primerLen, minAmpLen, maxAmpLen, 
-                                              maxTm, minTm, maxGc, minDg, viennaDir)
+    forFilt, revFilt, features  = generate_primers_multi(targetSeqs, step, primerLen, minAmpLen, maxAmpLen, 
+                                                         maxTm, minTm, maxGc, minDg, viennaDir)
     forwards = list(forFilt.keys())
     reverses = list(revFilt.keys())
     if len(forwards) > maxNum//2:
@@ -140,10 +142,20 @@ def main():
         reverses = random.sample(reverses, maxNum//2)
     with open(args.primer_seqs, 'w') as fout:
         for i, forseq in enumerate(forwards):
-            fout.write(f'>{args.name}_{i+1}_f\n{forseq}\n')
+            pname = f'{args.name}_{i+1}_f'
+            features[forseq]['pname'] = pname
+            features[forseq]['forrev'] = 'f'
+            fout.write(f'>{pname}\n{forseq}\n')
         for i, revseq in enumerate(reverses):
-            fout.write(f'>{args.name}_{i+1}_r\n{revseq}\n')
-    
+            pname = f'{args.name}_{i+1}_r'
+            features[revseq]['pname'] = pname
+            features[revseq]['forrev'] = 'r'
+            fout.write(f'>{pname}\n{revseq}\n')
+
+    features = pd.DataFrame(features).T
+    features = features.reset_index(names='pseq')[['pname','pseq','forrev','len','Tm','GC','dG']]
+    fname = args.primer_seqs.replace('.fa', '.feat')
+    features.to_csv(fname, index=False)
     runtime = (time.time() - startTime)
     print(f'Wrote {len(forwards)+len(reverses)} primers to {args.primer_seqs} (%.1f sec)' % runtime)
 

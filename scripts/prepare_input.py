@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
-
 
 import argparse
 import time
@@ -16,16 +14,8 @@ from collections import defaultdict
 from pathlib import Path
 from pandas.errors import EmptyDataError
 
-# In[ ]:
-
-
-def reverse_complement_dna(seq):
-    return str(Seq.Seq(seq).reverse_complement())
-
-
 def get_Tm(seq):
     return MeltingTemp.Tm_NN(seq, Na=50, Mg=1.5, dNTPs=.6) # Primer3 condition
-
 
 def _ensure_list(x):
     if isinstance(x, list):
@@ -33,22 +23,6 @@ def _ensure_list(x):
     if pd.isna(x):
         return []
     return [x]
-
-
-def rev_com_enc(enc):
-    revcoms = {'A':'T',
-               'T':'A',
-               'C':'G',
-               'G':'C',
-               'a':'t',
-               't':'a',
-               'c':'g',
-               'g':'c',
-               '-':'-',
-               'N':'N',
-               'n':'n'
-              }
-    return ''.join([revcoms[char] for char in enc[::-1]])
 
 
 def parse_params(paramFile):
@@ -65,11 +39,14 @@ def parse_params(paramFile):
     maxAmpLen = params['AMPLEN_MAX']
     minOffLen = params['OFFLEN_MIN']
     maxOffLen = params['OFFLEN_MAX']
-    return primerLen, minAmpLen, maxAmpLen, minOffLen, maxOffLen
+    numSelect = params['NUM_TOP_SENSITIVITY']
+    return primerLen, minAmpLen, maxAmpLen, minOffLen, maxOffLen, numSelect
 
 
-# In[ ]:
-
+rev_table = str.maketrans({
+    'A':'T','T':'A','C':'G','G':'C',
+    'a':'t','t':'a','c':'g','g':'c',
+    '-':'-','N':'N','n':'n' })
 
 def main():
     parser = argparse.ArgumentParser(prog='python -u prepare_input.py', description='Prepare input for ML')
@@ -78,13 +55,28 @@ def main():
     parser.add_argument('--ref', dest='reference', required=True, help='Target FASTA file')
     parser.add_argument('--params', dest='param_file', required=True, help='Parameters file')
     parser.add_argument('--target', dest='target', required=True, help='on or off')
+    parser.add_argument('--features', dest='pri_features', required=True, help='Table of primer features')
+    parser.add_argument('--teval', dest='teval', default='-', help='.result file from evaluation of sensitivity')
     args = parser.parse_args()
-    primerLen, minAmpLen, maxAmpLen, minOffLen, maxOffLen = parse_params(args.param_file)
+    primerLen, minAmpLen, maxAmpLen, minOffLen, maxOffLen, numSelect = parse_params(args.param_file)
     
     print(f'Preparing ML input from {args.mapped}...')
     startTime = time.time()
     nlines = 0
     tarseqs = { s.id:str(s.seq) for s in SeqIO.parse(args.reference, 'fasta') }
+    feats = pd.read_csv(args.pri_features, index_col=0) # index is 'pname'
+    try:
+        teval = pd.read_csv(args.teval).iloc[:numSelect]
+        arr = teval[['pname_f', 'pname_r']].to_numpy()
+        comb = np.vstack([
+            np.column_stack([arr[:, 0], arr[:, 0]]),  # (F, F)
+            np.column_stack([arr[:, 0], arr[:, 1]]),  # (F, R)
+            np.column_stack([arr[:, 1], arr[:, 0]]),  # (R, F)
+            np.column_stack([arr[:, 1], arr[:, 1]]),  # (R, R)
+        ])
+        validPairs = (pd.DataFrame(comb, columns=['pname_f', 'pname_r']).drop_duplicates(ignore_index=True))
+    except FileNotFoundError:
+        pass
 
     cols = ['pname','orientation','tname','start','pseq','tseq','match']
     try:    
@@ -97,40 +89,35 @@ def main():
         Path(args.ml_input).touch()
         print(f'No alignments in {args.mapped}.')
         sys.exit()
-
-    grp = raw.groupby(['pname','pseq','tseq'])
-    maptbl = grp.first()
-    maptbl['tnames'] = grp['tname'].apply(list)
-    maptbl['starts'] = grp['start'].apply(list)
-    maptbl['orientation'] = maptbl['orientation'].apply(lambda x: x % 256)
-    maptbl.reset_index(inplace=True)
-    maptbl['forrev'] = maptbl['pname'].apply(lambda x: x.split('_')[-1])
-    maptbl['pgap'] = maptbl['pseq'].apply(lambda x: x.count('-'))
-    maptbl['tgap'] = maptbl['tseq'].apply(lambda x: x.count('-'))
-    maptbl['indel'] = maptbl['pgap'] + maptbl['tgap']
-    maptbl['mm'] = maptbl['pseq'].apply(len) - maptbl['match'].apply(lambda x: x.count('|')) - maptbl['indel']
-    maptbl['pseq_raw'] = maptbl['pseq'].apply(lambda x: x.replace('-',''))
-    maptbl['len'] = maptbl['pseq_raw'].apply(len)
-    maptbl['Tm'] = maptbl['pseq_raw'].apply(get_Tm)
-    maptbl['GC'] = maptbl['pseq_raw'].apply(gc_fraction)
-
-    subcols = ['pname','pseq','pseq_raw','tseq','orientation','mm','indel','len','Tm','GC','tnames','starts']
+    
+    raw['orientation'] = raw['orientation'] % 256
+    maptbl = (raw.groupby(['pname','pseq','tseq','orientation'], sort=False)
+                .agg(
+                    tnames=('tname', list),
+                    starts=('start', list),
+                    match=('match', 'first')
+                ).reset_index())
+    
+    maptbl['indel'] = maptbl['pseq'].str.count('-') + maptbl['tseq'].str.count('-')
+    maptbl['mm'] = maptbl['pseq'].str.len() - maptbl['match'].str.count(r'\|') - maptbl['indel']
+    maptbl = maptbl.join(feats[['forrev','len','Tm','GC']], on='pname')
+    dropCols = ['orientation', 'forrev', 'match'] 
     if args.target in ['on','On','ON']:
-        fors = maptbl.loc[(maptbl['orientation']==0)&(maptbl['forrev']=='f'), subcols]
-        revs = maptbl.loc[(maptbl['orientation']==16)&(maptbl['forrev']=='r'), subcols]
+        fors = maptbl.loc[(maptbl['orientation']==0) & (maptbl['forrev']=='f')].drop(columns=dropCols).copy()
+        revs = maptbl.loc[(maptbl['orientation']==16) & (maptbl['forrev']=='r')].drop(columns=dropCols).copy()
         minl = minAmpLen
         maxl = maxAmpLen
         lfunc = max
     else:
-        fors = maptbl.loc[(maptbl['orientation']==0), subcols]
-        revs = maptbl.loc[(maptbl['orientation']==16), subcols]
+        fors = maptbl.loc[(maptbl['orientation']==0)].drop(columns=dropCols).copy()
+        revs = maptbl.loc[(maptbl['orientation']==16)].drop(columns=dropCols).copy()
         minl = minOffLen
         maxl = maxOffLen
         lfunc = min
-        
-    revs['pseq'] = revs['pseq'].apply(rev_com_enc)
-    revs['tseq'] = revs['tseq'].apply(rev_com_enc)
-
+    
+    revs['pseq'] = revs['pseq'].str.translate(rev_table).str[::-1] #  .apply(rev_com_enc)
+    revs['tseq'] = revs['tseq'].str.translate(rev_table).str[::-1] #  .apply(rev_com_enc)
+    
     revs_meta = revs.reset_index().rename(columns={"index": "r_id"})
     rev_index = defaultdict(list)
     for r in revs_meta.itertuples(index=False):
@@ -140,9 +127,14 @@ def main():
         for t, st in zip(tnames, starts):
             rev_index[t].append((r_id, int(st)))
 
-    header_flag = True
+    if args.target in ['off','Off','OFF']:
+        allowed_r_by_f = validPairs.groupby('pname_f')['pname_r'].agg(set).to_dict()
+        rname_by_id = revs_meta.set_index('r_id')['pname']
+
+    allpairs = []
     for f in fors.itertuples():
         f_id    = f.Index
+        fname   = getattr(f, 'pname')
         tnamesf = _ensure_list(getattr(f, "tnames"))
         startsf = _ensure_list(getattr(f, "starts"))
         if not tnamesf or not startsf:
@@ -156,7 +148,12 @@ def main():
             st_f = int(st_f)
             if not cand:
                 continue
+            
             for r_id, st_r in cand:
+                if args.target in ['off','Off','OFF']:
+                    if rname_by_id[r_id] not in allowed_r_by_f.get(fname):
+                        continue
+
                 ampseq = tarseqs[t_f][st_f-1:st_r-1+primerLen]
                 if minl <= len(ampseq) <= maxl:
                     targets_by_r[r_id].add(t_f)
@@ -170,19 +167,17 @@ def main():
         revsub = revs.loc[rev_ids].copy()
         revsub['targets'] = [sorted(list(targets_by_r[r_id])) for r_id in revsub.index]
         revsub['prod_len'] = [lfunc(list(amplens_by_r[r_id])) for r_id in revsub.index]
-        revsub['prod_Tm'] = [np.average(tms_by_r[r_id]) for r_id in revsub.index]
-        forsub = fors.loc[[f_id]].copy().drop(['tnames','starts'],axis=1)
-        pairs = forsub.merge(revsub.drop(['tnames','starts'],axis=1), how="cross", suffixes=("_f", "_r"))
+        revsub['prod_Tm'] = [round(np.average(tms_by_r[r_id]),1) for r_id in revsub.index]
+        forsub = fors.loc[[f_id]].copy().drop(['tnames','starts'], axis=1)
+        pairs = forsub.merge(revsub.drop(['tnames','starts'], axis=1), how="cross", suffixes=("_f", "_r"))
         nlines += len(pairs)
-        if os.path.exists(args.ml_input) and header_flag:
-            mode = 'w'
-        else:
-            mode = 'a'
-        pairs.to_csv(args.ml_input, mode=mode, index=False, header=header_flag)
-        header_flag = False
-    
-    if not os.path.exists(args.ml_input):
+        allpairs.append(pairs)
+        
+    allpairs = pd.concat(allpairs, ignore_index=True)
+    if allpairs.empty:
         Path(args.ml_input).touch()
+    else:
+        allpairs.to_csv(args.ml_input, index=False)
 
     runtime = (time.time() - startTime)
     print(f'Wrote {nlines} lines to {args.ml_input} (%.1f sec)' % runtime)

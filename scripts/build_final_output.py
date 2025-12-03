@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
-
-
 import argparse
 import time
 import subprocess
@@ -12,9 +9,6 @@ import os
 import pandas as pd
 from Bio import SeqIO
 from functools import reduce
-
-
-# In[ ]:
 
 
 def get_deltaG_vienna(seq1, seq2, RNAduplex):
@@ -42,38 +36,40 @@ def parse_params(paramFile):
     return viennaDir, minDg, numSelect
 
 
-# In[ ]:
-
-
 def main():
     parser = argparse.ArgumentParser(prog='python -u build_final_output.py', 
                                      description='Build final primer designs')
     parser.add_argument('--name', dest='name', required=True, help='Pathogen name')
-    parser.add_argument('--resdir', dest='resdir', required=True, help='Directory ML results were saved')
-    parser.add_argument('--refs', dest='refs', nargs='+', required=True, help='List of evalauted references')
+    parser.add_argument('--teval', dest='tar_eval', required=True, help='.result file from sensitivity evaluation')
+    parser.add_argument('--oeval', dest='off_eval', nargs='+', required=True, help='List of specificity evaluation')
     parser.add_argument('--primers', dest='primers', required=True, help='Primer FASTA file')
     parser.add_argument('--params', dest='param_file', required=True, help='Parameter file')
     parser.add_argument('--out', dest='output', required=True, help='Final output')
     args = parser.parse_args()
     viennaDir, minDg, numSelect = parse_params(args.param_file)
     
-    refname = ', '.join(args.refs)
-    print(f'Building final output for {args.name} evaluated across {refname}...')
+    print(f'Building final output for {args.name}...')
     startTime = time.time()
     
-    fname = f'{args.resdir}/{args.name}.{args.name}.result'
-    merged  = pd.read_csv(fname).iloc[:numSelect]
-    merged = merged[['pname_f', 'pname_r', 'coverage', 'activity', 'score']]
-    merged.columns = ['pname_f', 'pname_r', f'cov_{args.name}', f'act_{args.name}', f'sco_{args.name}']
-    for ref in args.refs:
-        filename = f'{args.resdir}/{args.name}.{ref}.result'
-        if ref == args.name or os.path.getsize(filename) == 0:
-            continue
-        res = pd.read_csv(filename)
-        res.columns = ['pname_f', 'pname_r', f'cov_{ref}', f'act_{ref}', f'sco_{ref}']
-        merged = pd.merge(merged, res,  on=['pname_f','pname_r'], how='left').fillna(0)
-    merged = merged.set_index(['pname_f','pname_r'])
-    
+    teval = pd.read_csv(args.tar_eval, index_col=[0,1]).iloc[:numSelect]
+    teval.columns = ['cov_target', 'act_target', 'sco_target']
+    merged = teval.copy()
+
+    for oeval in args.off_eval:
+        oname = oeval.split('/')[1].split('.')[1]
+        oeval = pd.read_csv(oeval)
+        tmp = pd.DataFrame(index=teval.index, columns=[f'cov_{oname}', f'act_{oname}', f'sco_{oname}'])
+        for pair in teval.index:
+            sub = oeval[(oeval['pname_f'].isin(set(pair)))&(oeval['pname_r'].isin(set(pair)))]
+            if sub.empty:
+                tmp.loc[pair] = 0
+            else:
+                tmp.loc[pair, f'cov_{oname}'] = sub['coverage'].sum()
+                tmp.loc[pair, f'act_{oname}'] = sub['activity'].max()
+                tmp.loc[pair, f'sco_{oname}'] = sub['score'].sum()
+        merged = merged.join(tmp)
+
+
     RNAduplex = f'{viennaDir}/src/bin/RNAduplex'
     priseqs = { s.id:str(s.seq) for s in SeqIO.parse(args.primers, 'fasta') }
     for pair in merged.index:
@@ -85,17 +81,11 @@ def main():
         merged.loc[pair, 'pseq_f'] = fseq
         merged.loc[pair, 'pseq_r'] = rseq
     final = merged[merged['Dimer_dG'] > minDg]
-    final.to_csv(args.output)
+    final.round(3).to_csv(args.output)
     
     runtime = (time.time() - startTime)
     print(f'Wrote {len(final)} primer pairs to {args.output} (%.1f sec).' % runtime)
     
 if __name__ == '__main__':
     main()
-
-
-# In[ ]:
-
-
-
 
