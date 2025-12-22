@@ -52,3 +52,7 @@ HOST        = [ 'offtarget' ]
 ```
 
 To run this command, we can use the command `snakemake --resources gpu=1 --cores all`.
+
+### Training
+
+Pretrained models are located in the `src` directory. However, training and data processing scripts are available in the `training` directory.
