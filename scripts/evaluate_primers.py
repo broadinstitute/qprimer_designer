@@ -1,93 +1,127 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+"""
+evaluate_primers.py
+
+Purpose
+-------
+Evaluate primer–target pairs using trained ML models (classifier + regressor).
+Produces:
+
+1) Raw per-pair scores
+2) Aggregated per-primer-pair scores
+3) Final ranked table with coverage, activity, and score
+
+Key assumptions
+---------------
+- Input CSV is produced by prepare_input.py
+- Sequence length for one-hot encoding is fixed (default: 28)
+- Classifier output > 0.5 is considered a "hit"
+- ON-target and OFF-target modes differ in aggregation logic
+"""
+
+# ------------------------------------------------------------
+# Imports
+# ------------------------------------------------------------
+
 import argparse
 import time
 import os
 import sys
-import pandas as pd
-import numpy as np
 import ast
 import warnings
+from collections import defaultdict
+from multiprocessing import Pool
+
+import numpy as np
+import pandas as pd
 import joblib
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from einops import rearrange, repeat
-from multiprocessing import Pool
 from Bio import SeqIO
 from sklearn.preprocessing import MultiLabelBinarizer
-from collections import defaultdict
+
 torch.manual_seed(42)
 
 
-def one_hot_encode(seq, length=28):
-    mapping = { 'A':[1, 0, 0, 0, 0],
-                'T':[0, 1, 0, 0, 0],
-                'C':[0, 0, 1, 0, 0],
-                'G':[0, 0, 0, 1, 0],
-                'N':[0, 0, 0, 0, 0],
-                '-':[0, 0, 0, 0, 1] }
-    seq = seq.ljust(length, 'N')[-length:] # (6, ATCG) -> NNATCG
-    return np.array([mapping[char.upper()] for char in seq])
+# ------------------------------------------------------------
+# Encoding utilities
+# ------------------------------------------------------------
+
+def one_hot_encode(seq: str, length: int = 28) -> np.ndarray:
+    """
+    One-hot encode a nucleotide sequence with gap support.
+
+    Encoding order: A, T, C, G, gap
+    Sequence is left-padded/truncated to fixed length.
+    """
+    mapping = {
+        "A": [1, 0, 0, 0, 0],
+        "T": [0, 1, 0, 0, 0],
+        "C": [0, 0, 1, 0, 0],
+        "G": [0, 0, 0, 1, 0],
+        "N": [0, 0, 0, 0, 0],
+        "-": [0, 0, 0, 0, 1],
+    }
+    seq = seq.ljust(length, "N")[-length:]
+    return np.array([mapping[c.upper()] for c in seq])
 
 
-def encode_row(row):
-    fenc = one_hot_encode(row['pseq_f'])
-    ftenc = one_hot_encode(row['tseq_f'])
-    renc = one_hot_encode(row['pseq_r'])
-    rtenc = one_hot_encode(row['tseq_r'])
-    prienc = np.append(fenc, renc, axis=0)   # Primer
-    tarenc = np.append(ftenc, rtenc, axis=0) # Target
-    combined = np.append(tarenc, prienc, axis=1)
-    return combined
+def encode_row(row: dict) -> np.ndarray:
+    """
+    Encode one primer–target pair into a (56, 10) tensor.
+    """
+    fenc = one_hot_encode(row["pseq_f"])
+    ftenc = one_hot_encode(row["tseq_f"])
+    renc = one_hot_encode(row["pseq_r"])
+    rtenc = one_hot_encode(row["tseq_r"])
+
+    prienc = np.append(fenc, renc, axis=0)
+    tarenc = np.append(ftenc, rtenc, axis=0)
+    return np.append(tarenc, prienc, axis=1)
 
 
-def one_hot_encode_pbs_gap_parallel(df_seqs, threads):
-    rows = df_seqs.to_dict('records')
+def one_hot_encode_pbs_gap_parallel(df_seqs: pd.DataFrame, threads: int) -> torch.Tensor:
+    """
+    Parallel one-hot encoding of sequence columns using multiprocessing.
+    """
+    rows = df_seqs.to_dict("records")
     with Pool(processes=threads) as pool:
-        results = pool.map(encode_row, rows)
-
-    final_encoded = np.array(results)  # (batch, 56, 10)
-    return torch.tensor(final_encoded, dtype=torch.float32)
+        encoded = pool.map(encode_row, rows)
+    return torch.tensor(np.array(encoded), dtype=torch.float32)
 
 
-def parse_params(paramFile):
-    params = {}
-    for l in open(paramFile):
-        if '=' in l:
-            name, value = l.split('=')
-            try:
-                params[name.strip()] = float(value.strip())
-            except ValueError:
-                params[name.strip()] = value.strip()
-    numSelect = params['NUM_TOP_SENSITIVITY']
-    return numSelect
-
+# ------------------------------------------------------------
+# Model components (unchanged, documented)
+# ------------------------------------------------------------
 
 class PGC(nn.Module):
-    def __init__(self,model_dim,expansion_factor = 1.0,dropout = 0.0):
+    """Position-wise gated convolution block."""
+    def __init__(self, model_dim, expansion_factor=1.0, dropout=0.0):
         super().__init__()
-        self.model_dim = model_dim
-        self.expansion_factor = expansion_factor
-        self.dropout = dropout
-        self.conv = nn.Conv1d(int(model_dim * expansion_factor), int(model_dim * expansion_factor),
-                              kernel_size=3, padding=1, groups=int(model_dim * expansion_factor))
+        self.conv = nn.Conv1d(
+            int(model_dim * expansion_factor),
+            int(model_dim * expansion_factor),
+            kernel_size=3,
+            padding=1,
+            groups=int(model_dim * expansion_factor),
+        )
         self.in_proj = nn.Linear(model_dim, int(model_dim * expansion_factor * 2))
-        self.out_norm = nn.RMSNorm(int(model_dim), eps=1e-8)
         self.in_norm = nn.RMSNorm(int(model_dim * expansion_factor * 2), eps=1e-8)
+        self.out_norm = nn.RMSNorm(model_dim, eps=1e-8)
         self.out_proj = nn.Linear(int(model_dim * expansion_factor), model_dim)
         self.dropout = nn.Dropout(dropout)
-        
+
     def forward(self, u):
         xv = self.in_norm(self.in_proj(u))
-        x,v = xv.chunk(2,dim=-1)
-        x_conv = self.conv(x.transpose(-1,-2)).transpose(-1,-2)
-        gate =  v * x_conv
-        x = self.out_norm(self.out_proj(gate))
-        return x
-    
+        x, v = xv.chunk(2, dim=-1)
+        x = self.conv(x.transpose(-1, -2)).transpose(-1, -2)
+        return self.out_norm(self.out_proj(v * x))
+
+
 class DropoutNd(nn.Module):
     def __init__(self, p: float = 0.5, tie=True, transposed=True):
         """
@@ -105,7 +139,7 @@ class DropoutNd(nn.Module):
         """X: (batch, dim, lengths...)."""
         if self.training:
             if not self.transposed: X = rearrange(X, 'b ... d -> b d ...')
-            # binomial = torch.distributions.binomial.Binomial(probs=1-self.p) 
+            # binomial = torch.distributions.binomial.Binomial(probs=1-self.p)
             # This is incredibly slow because of CPU -> GPU copying
             mask_shape = X.shape[:2] + (1,)*(X.ndim-2) if self.tie else X.shape
             # mask = self.binomial.sample(mask_shape)
@@ -114,6 +148,7 @@ class DropoutNd(nn.Module):
             if not self.transposed: X = rearrange(X, 'b d ... -> b ... d')
             return X
         return X
+
 
 class S4DKernel(nn.Module):
     """Generate convolution kernel from diagonal SSM parameters."""
@@ -208,7 +243,8 @@ class S4D(nn.Module):
         y = self.output_linear(y)
         if not self.transposed: y = y.transpose(-1, -2)
         return y
-    
+
+
 class Janus(nn.Module):
     def __init__(self, input_dim, output_dim, model_dim, state_dim=64, dropout=0.2, transposed=False, **kernel_args):
         super().__init__()
@@ -232,6 +268,7 @@ class Janus(nn.Module):
         x = self.decoder(x)
         return x
 
+
 class MLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dim):
         super(MLP, self).__init__()
@@ -242,7 +279,8 @@ class MLP(nn.Module):
         )
     def forward(self, x):
         return self.model(x)
-    
+   
+
 class CombinedModel(nn.Module):
     def __init__(self, DL, mlp_dims, dl_dims, combined_hidden, final_output):
         super(CombinedModel, self).__init__()
@@ -260,7 +298,7 @@ class CombinedModel(nn.Module):
         )
 
     def forward(self, mlp_input, dl_input):
-        mlp_out = self.mlp(mlp_input)  # Output from ml
+        mlp_out = self.mlp(mlp_input.float())  # Output from ml
         dl_out = self.dl(dl_input)  # Output from dl
 
         # Concatenate outputs
@@ -270,6 +308,7 @@ class CombinedModel(nn.Module):
         final_output = self.combiner(combined)
         return final_output
     
+
 class CombinedModelClassifier(nn.Module):
     def __init__(self, mlp_dims, ssm_dims, combined_hidden, final_output):
         super(CombinedModelClassifier, self).__init__()
@@ -288,7 +327,7 @@ class CombinedModelClassifier(nn.Module):
         )
 
     def forward(self, mlp_input, ssm_input):
-        mlp_out = self.mlp(mlp_input)  # Output from MLP
+        mlp_out = self.mlp(mlp_input.float())  # Output from MLP
         ssm_out = self.ssm(ssm_input)  # Output from SSM
 
         # Concatenate outputs
@@ -298,63 +337,75 @@ class CombinedModelClassifier(nn.Module):
         final_output = self.combiner(combined)
         return final_output
     
+
 class PcrDataset(Dataset):
+    """Simple dataset wrapper for ML inference."""
     def __init__(self, encoded_input, custom_features, scores):
         self.encoded_input = encoded_input
         self.custom_features = custom_features
         self.scores = scores
+
     def __len__(self):
         return len(self.encoded_input)
-    def __getitem__(self, idx):
-        return self.encoded_input[idx], self.custom_features[idx], self.scores[idx]
 
+    def __getitem__(self, idx):
+        return (
+            self.encoded_input[idx],
+            self.custom_features[idx],
+            self.scores[idx],
+        )
+
+# ------------------------------------------------------------
+# Main
+# ------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(prog='python -u evaluate_primers.py', 
-                                     description='Evaluate primer-target matches using ML')
-    parser.add_argument('--in', dest='input', required=True, help='Input for ML')
-    parser.add_argument('--out', dest='output', required=True, help='Evaluation results')
-    parser.add_argument('--target', dest='target', required=True, help='on or off')
-    parser.add_argument('--ref', dest='reference', required=True, help='Target FASTA file')
-    parser.add_argument('--params', dest='param_file', required=True, help='Parameters file')
-    parser.add_argument('--ml', dest='ml_dir', required=True, help='Directory where  ML models')    
-    
-    parser.add_argument('--initial', dest='initial', default='-', help='Initial primer FASTA file')
-    parser.add_argument('--passed', dest='passed', default='-', help='Passed primer FASTA file')
-    parser.add_argument('--threads', dest='threads', default=1, help='Number of threads')
+    parser = argparse.ArgumentParser(
+        prog="python -u evaluate_primers.py",
+        description="Evaluate primer–target matches using ML",
+    )
+    parser.add_argument("--in", dest="input", required=True)
+    parser.add_argument("--out", dest="output", required=True)
+    parser.add_argument("--ref", dest="reference", required=True)
+    parser.add_argument("--reftype", dest="reftype", required=True, choices=["on", "off"])
+    parser.add_argument("--ml", dest="ml_dir", required=True)
+    parser.add_argument("--threads", dest="threads", default=1, type=int)
+
     args = parser.parse_args()
 
-    CLASSIFIER = f'{args.ml_dir}/combined_classifier.pth'
-    REGRESSOR = f'{args.ml_dir}/combined_regressor.pth'
-    SCALER = f'{args.ml_dir}/standard_scaler.joblib'
-    
-    numSelect = int(parse_params(args.param_file))
-    tnames = [ s.id for s in SeqIO.parse(args.reference, 'fasta') ]
-    
+    tnames = [s.id for s in SeqIO.parse(args.reference, "fasta")]
+
+    # Load models and scaler
     with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        scaler = joblib.load(SCALER)
-    classifier = torch.load(CLASSIFIER, weights_only=False)
-    regressor = torch.load(REGRESSOR, weights_only=False)
+        warnings.simplefilter("ignore")
+        scaler = joblib.load(f"{args.ml_dir}/standard_scaler.joblib")
+
+    classifier = torch.load(f"{args.ml_dir}/combined_classifier.pth", weights_only=False)
+    regressor = torch.load(f"{args.ml_dir}/combined_regressor.pth", weights_only=False)
     classifier.eval()
     regressor.eval()
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
 
-    print(f'Evaulating {args.input} with {device}...')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Evaluating {args.input} with {device}...")
     startTime = time.time()
-    
+
     if os.path.getsize(args.input) == 0:
-        Path(args.output).touch()
-        print(f'No input in {args.input}')
+        open(args.output, "w").close()
         sys.exit()
 
-    feats = ['len_f','Tm_f','GC_f','indel_f','mm_f','len_r','Tm_r','GC_r','indel_r','mm_r','prod_len','prod_Tm']
+    feats = [
+        "len_f","Tm_f","GC_f","indel_f","mm_f",
+        "len_r","Tm_r","GC_r","indel_r","mm_r",
+        "prod_len","prod_Tm",
+    ]
+
     header_flag = True
     mode = 'w'
     clstbl, regtbl = [], []
+
     for i, chunk in enumerate(pd.read_csv(args.input, chunksize=20000)):
         chunk['targets'] = chunk['targets'].apply(ast.literal_eval)
+
         inps_fe = chunk[feats]
         inps_fe = scaler.transform(inps_fe)
         inps_se = chunk[['pseq_f','tseq_f','pseq_r','tseq_r']]
@@ -403,7 +454,7 @@ def main():
     regtbl.fillna(0).round(3).to_csv(f'{args.output}.re')
 
     coverage = (clstbl>.5).sum(axis=1).reset_index(name='coverage')
-    if args.target in ['on','On','ON']:
+    if args.reftype=='on':
         coverage['coverage'] = coverage['coverage'] / len(tnames)
         activity = (regtbl * (clstbl>.5)).mean(axis=1).reset_index(name='activity')
     else:
@@ -412,18 +463,11 @@ def main():
     res['score'] = (res['coverage'] * res['activity'])
     res = res.dropna().sort_values('score', ascending=False)
     res.round(4).to_csv(args.output, index=False)
-    
-    if args.target in ['on','On','ON']:   
-        priseqs = { s.id:str(s.seq) for s in SeqIO.parse(args.initial, 'fasta') }
-        select = res.iloc[:numSelect]
-        with open(args.passed, 'wt') as out:
-            allpns = set(select['pname_f']) | set(select['pname_r'])
-            for pname in allpns:
-                out.write(f'>{pname}\n{priseqs[pname]}\n')
-    
-    runtime = (time.time() - startTime)
-    print(f'Wrote {len(res)} lines to {args.output} (%.1f sec).' % runtime)
-    
-if __name__ == '__main__':
+
+    runtime = time.time() - startTime
+    print(f"Wrote {len(res)} lines to {args.output} (%.1f sec)" % runtime)
+
+
+if __name__ == "__main__":
     main()
 

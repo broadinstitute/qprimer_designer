@@ -1,17 +1,24 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+"""
+pick_representative_seqs.py
 
+Purpose
+-------
+Select a representative subset of sequences from a multiple sequence
+alignment (MSA) for downstream primer design.
 
-import argparse
-import numpy as np
-import time
-from Bio import SeqIO
+This script:
+1. Identifies a low-gap window across the alignment
+2. Trims all sequences to that window (gap-stripped)
+3. Clusters trimmed sequences using MinHash-based approximate distances
+4. Selects cluster medoids as representative sequences
+5. Writes representatives to FASTA, preserving sequence IDs
 
-
-# In[ ]:
-
+This reduces redundancy while maintaining diversity, allowing primer
+design to scale efficiently for large target sets.
+"""
 
 """Classes and methods for applying locality-sensitive hashing.
 
@@ -47,10 +54,11 @@ import heapq
 import logging
 import math
 import random
+import argparse
+import numpy as np
+import time
+from Bio import SeqIO
 
-__author__ = 'Hayden Metsky <hayden@mit.edu>'
-
-logger = logging.getLogger(__name__)
 
 
 class HammingDistanceFamily:
@@ -558,9 +566,6 @@ class NearNeighborLookup:
         return neighbors
 
 
-# In[ ]:
-
-
 """Functions for clustering sequences before input.
 
 This includes computing a distance matrix using MinHash, and
@@ -881,7 +886,13 @@ def find_representative_sequences(seqs, k=12, N=100, threshold=0.1,
     return ([seqs_items[i][0] for i in rep_seqs], rep_seqs_frac)
 
 
-# In[ ]:
+def usable_fraction(st, alns, min_frac=0.8):
+    usable = 0
+    for _, aln in alns:
+        trim = aln[st:st+window].replace('-', '')
+        if len(trim) >= window * min_frac:
+            usable += 1
+    return usable / len(alns)
 
 
 def parse_params(paramFile):
@@ -897,9 +908,6 @@ def parse_params(paramFile):
     return window
 
 
-# In[ ]:
-
-
 def main():
     parser = argparse.ArgumentParser(prog='python -u generate_primers.py', 
                                      description='Generate primer candidates')
@@ -907,44 +915,42 @@ def main():
     parser.add_argument('--out', dest='representative', required=True, help='FASTA file of primers')
     parser.add_argument('--params', dest='param_file', required=True, help='Parameters file')
     parser.add_argument('--name', dest='name', required=True, help='Pathogen name')
+    
     args = parser.parse_args()
+    
     window = parse_params(args.param_file)
     alns = [ (s.id, str(s.seq)) for s in SeqIO.parse(args.msa, 'fasta') ]
-    
-    print(f'Picking representatives out of {len(alns)} sequences in {args.msa}...')
+
+    print(f'Picking representatives out of {len(msas)} sequences in {args.msa}...')
     startTime = time.time()
     
-    alnlen = len(alns[0][1])
-    gapcnts = {}
-    for st in range(0, alnlen, window//2):
-        if st + window > alnlen:
-            st = alnlen - window
-            if st in gapcnts:
-                break
-        gapcnts[st] = [ aln[st:st+window].count('-') for sid, aln in alns ]
+    length = len(alns[0][1])
+    allSts = list(range(0, length-window))
+    bestSt = max(allSts, key=lambda x: usable_fraction(x, alns))
     
-    bestSt = min(gapcnts.keys(), key=lambda x:(np.median(gapcnts[x]), np.average(gapcnts[x])))
     trimFa = args.representative + '.tmp'
     dropped = []
     with open(trimFa, 'wt') as out:
         for sid, aln in alns:
             trimseq = aln[bestSt:].replace('-','')[:window].upper()
-            if len(trimseq) < window // 2:
+            if len(trimseq) < window * 0.5:
                 dropped.append((sid, aln))
                 continue
             out.write(f'>{sid}\n{trimseq}\n')
+        
+        bestSt = max(allSts, key=lambda x: usable_fraction(x, dropped))
+        for sid, aln in dropped:
+            trimseq = aln[bestSt:].replace('-','')[:window].upper()
+            if len(trimseq) > window * 0.5:
+                out.write(f'>{sid}\n{trimseq}\n')
     
     trimseqs = { s.id:str(s.seq) for s in SeqIO.parse(trimFa, 'fasta') }
     with open(args.representative, 'wt') as out:
         sids, fracs = find_representative_sequences(trimFa, frac_to_cover=.99)
         for sid, frac in zip(sids, fracs):
             out.write(f'>{sid}\tcov:%.3f\n{trimseqs[sid]}\n' % frac)
-        for sid, aln in dropped:
-            seq = aln.replace('-','').upper()
-            out.write(f'>{sid}\n{seq}\n')
             
     runtime = (time.time() - startTime)
-    print(f'{len(dropped)} targets were added with their full sequences.')
     print(f'Wrote {len(sids)} sequences to {args.representative} (%.1f sec).' % runtime)
     
     
