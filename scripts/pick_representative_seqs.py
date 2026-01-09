@@ -886,13 +886,16 @@ def find_representative_sequences(seqs, k=12, N=100, threshold=0.1,
     return ([seqs_items[i][0] for i in rep_seqs], rep_seqs_frac)
 
 
-def usable_fraction(st, alns, min_frac=0.8):
+def usable_fraction(st, alns, window, min_frac=0.8):
     usable = 0
     for _, aln in alns:
         trim = aln[st:st+window].replace('-', '')
         if len(trim) >= window * min_frac:
             usable += 1
-    return usable / len(alns)
+    if len(alns) == 0:
+        return 1
+    else:
+        return usable / len(alns)
 
 
 def parse_params(paramFile):
@@ -921,12 +924,12 @@ def main():
     window = parse_params(args.param_file)
     alns = [ (s.id, str(s.seq)) for s in SeqIO.parse(args.msa, 'fasta') ]
 
-    print(f'Picking representatives out of {len(msas)} sequences in {args.msa}...')
+    print(f'Picking representatives out of {len(alns)} sequences in {args.msa}...')
     startTime = time.time()
     
     length = len(alns[0][1])
     allSts = list(range(0, length-window))
-    bestSt = max(allSts, key=lambda x: usable_fraction(x, alns))
+    bestSt = max(allSts, key=lambda x: usable_fraction(x, alns, window))
     
     trimFa = args.representative + '.tmp'
     dropped = []
@@ -938,7 +941,7 @@ def main():
                 continue
             out.write(f'>{sid}\n{trimseq}\n')
         
-        bestSt = max(allSts, key=lambda x: usable_fraction(x, dropped))
+        bestSt = max(allSts, key=lambda x: usable_fraction(x, dropped, window))
         for sid, aln in dropped:
             trimseq = aln[bestSt:].replace('-','')[:window].upper()
             if len(trimseq) > window * 0.5:

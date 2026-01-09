@@ -380,12 +380,13 @@ def main():
         warnings.simplefilter("ignore")
         scaler = joblib.load(f"{args.ml_dir}/standard_scaler.joblib")
 
-    classifier = torch.load(f"{args.ml_dir}/combined_classifier.pth", weights_only=False)
-    regressor = torch.load(f"{args.ml_dir}/combined_regressor.pth", weights_only=False)
-    classifier.eval()
-    regressor.eval()
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    classifier = torch.load(f"{args.ml_dir}/combined_classifier.pth", map_location=device, weights_only=False)
+    regressor = torch.load(f"{args.ml_dir}/combined_regressor.pth", map_location=device, weights_only=False)
+    classifier.to(device).eval()
+    regressor.to(device).eval()
+
     print(f"Evaluating {args.input} with {device}...")
     startTime = time.time()
 
