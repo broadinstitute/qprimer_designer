@@ -220,7 +220,7 @@ def parse_params(paramFile: str):
             except ValueError:
                 params[name.strip()] = value.strip()
 
-    viennaDir = params["VIENNA_DIRECTORY"]
+    #viennaDir = params["VIENNA_DIRECTORY"]
     maxNum = int(params["MAX_PRIMER_CANDIDATES"])
     step = int(params["TILING_STEP"])
     primerLen = int(params["PRIMER_LEN"])
@@ -232,7 +232,7 @@ def parse_params(paramFile: str):
     minDg = float(params["DG_MIN"])
 
     return (
-        viennaDir,
+        #viennaDir,
         maxNum,
         step,
         primerLen,
@@ -257,15 +257,18 @@ def main():
     parser.add_argument("--in", dest="target_seqs", required=True)
     parser.add_argument("--out", dest="primer_seqs", required=True)
     parser.add_argument("--params", dest="param_file", required=True)
+    parser.add_argument("--program", dest="program_path", required=True)
     parser.add_argument("--name", dest="name", required=True)
     args = parser.parse_args()
+
+    viennaDir = args.program_path
 
     targetSeqs = [
         str(s.seq) for s in SeqIO.parse(args.target_seqs, "fasta")
     ]
 
     (
-        viennaDir,
+        #viennaDir,
         maxNum,
         step,
         primerLen,

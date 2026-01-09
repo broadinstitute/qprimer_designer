@@ -2,7 +2,6 @@
 DESIGN_WINDOW = 500
 
 ## Parameters in generating primers
-VIENNA_DIRECTORY = ./src/ViennaRNA-2.7.0 
 MAX_PRIMER_CANDIDATES = 10000
 TM_MIN = 55
 TM_MAX = 60

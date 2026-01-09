@@ -77,12 +77,12 @@ def parse_params(paramFile: str):
             except ValueError:
                 params[name.strip()] = value.strip()
 
-    viennaDir = params["VIENNA_DIRECTORY"]
+    #viennaDir = params["VIENNA_DIRECTORY"]
     minDg = float(params["DG_MIN"])
     numSelect = int(params["NUM_TOP_SENSITIVITY"])
 
-    return viennaDir, minDg, numSelect
-
+    #return viennaDir, minDg, numSelect
+    return minDg, numSelect
 
 # ------------------------------------------------------------
 # Main
@@ -101,10 +101,14 @@ def main():
     parser.add_argument("--out", dest="output", required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--params", dest="param_file", required=True)
+    parser.add_argument("--program", dest="program_path", required=True)
 
     args = parser.parse_args()
 
-    viennaDir, minDg, numSelect = parse_params(args.param_file)
+    #viennaDir, minDg, numSelect = parse_params(args.param_file)
+    viennaDir = parser.program_path
+
+    minDg, numSelect = parse_params(args.param_file)
 
     print(f"Building final output for {args.name}...")
     startTime = time.time()

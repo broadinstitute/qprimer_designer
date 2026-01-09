@@ -17,6 +17,7 @@ ALL_TARGETS = list(set(TARGETS + OFF_TARGETS))
 TARGET_DIR = "target_seqs/original"
 SCRIPTS    = "scripts"
 SRC        = "src"
+VIENNA     = "third_party/ViennaRNA_mini"
 
 # Parameter file
 PARAMS = "params.txt"
@@ -136,7 +137,7 @@ rule generate_primers:
     shell:
         "python -u {SCRIPTS}/generate_primers.py "
         "--in {input} --out {output.fasta} "
-        "--params {PARAMS} --name {wildcards.virus}"
+        "--params {PARAMS} --program {VIENNA} --name {wildcards.virus}"
 
 
 ############################################
@@ -310,5 +311,5 @@ rule build_final_output:
         "python -u {SCRIPTS}/build_final_output.py "
         "--on {input.eval_on} --off {input.eval_off} "
         "--fa {input.fasta} --out {output} "
-        "--name {wildcards.virus} --params {PARAMS}"
+        "--name {wildcards.virus} --params {PARAMS} --program {VIENNA}"
 
