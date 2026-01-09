@@ -253,7 +253,7 @@ rule prepare_input:
     params:
         ref_type=lambda wc: "on" if wc.virus == wc.target else "off",
         prev_arg=lambda wc: (
-            f"--prev outputs/{wc.virus}.{wc.target}.eval"
+            f"--prev outputs/{wc.virus}.{wc.virus}.eval"
             if wc.virus != wc.target else ""
         )
     shell:
