@@ -106,7 +106,7 @@ def main():
     args = parser.parse_args()
 
     #viennaDir, minDg, numSelect = parse_params(args.param_file)
-    viennaDir = parser.program_path
+    viennaDir = args.program_path
 
     minDg, numSelect = parse_params(args.param_file)
 

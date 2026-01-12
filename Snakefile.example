@@ -5,9 +5,9 @@
 ############################################
 
 # REQUIRED: user must fill these
-TARGETS = []
+TARGETS = ['H5']
 CROSS   = []
-HOST    = []
+HOST    = ['HUMAN']
 
 # Derived sets
 OFF_TARGETS = CROSS + HOST

@@ -18,8 +18,7 @@ tar -xjvf ./target_seqs/original/HUMAN.tar.bz2 -C ./target_seqs/original
 
 # 1/11/26 removed gcc check and ViennaRNA installation step as relevant utils have been included in /third_party
 
-mkdir ./third_part/ViennaRNA_mini
-tar -xjvf ./third_party/ViennaRNA_mini.tar.bz2 -C ./third_party/ViennaRNA_mini
+tar -xjvf ./third_party/ViennaRNA_mini.tar.bz2 -C ./third_party
 
 # Quickly check to see if gcc is installed for next step
 # if ! command -v gcc &> /dev/null; then
