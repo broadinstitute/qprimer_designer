@@ -21,31 +21,16 @@ Next, run the setup script:
 ./setup.sh
 ```
 
-This will install the correct dependencies into the environment. The setup will take approximately half an hour.
+This will install the correct dependencies into the environment. The setup will take ten to fifteen minutes.
 
-After installation, we can create a copy of the `Snakefile.template` template file as well as the `params.txt.template` file.
+We've included an example file with a fasta of H5N1 sequences (`H5.fa`) along with a fasta of human transcripts (`HUMAN.fa`) .
 
-```
-cp Snakefile.template Snakefile.example
-cp params.txt.template params.txt
-```
+To verify the install has completed successfully, we can run the example Snakefile to test the functionality of the pipeline and generate H5N1 primers that are minimally off-target against human transcripts.
 
-We then want to edit the file `Snakefile.example` to reflect our run settings. We've included an example file with a fasta of H5N1 sequences (`H5.fa`) along with a fasta of human transcripts (`HUMAN.fa`) .
-
-In your text editor of choice, edit the Snakefile.example file to have the following segment.
-
-```
-...
-TARGET      = [ 'H5' ] 
-CROSS       = [ ] 
-HOST        = [ 'HUMAN' ]
-...
-
-```
-
-To verify the install has completed successfully, we can run the example Snakefile to test the functionality of the pipeline.
 If GPU support is available on the machine, you can set gpu=1, but the performance gains are not drastic and CPU performance is quite acceptable.
 
+
+Thus, we can run the following command to execute the pipeline:
 
 ```
 snakemake -s Snakefile.example --resources gpu=0 --cores all
@@ -56,7 +41,7 @@ If configured correctly, the output should result in a `.csv` file in a newly cr
 ## Run
 
 
-To set up runs on your sequences of choice, the script assumes a directory structure as follows:
+To set up runs on your arbitrary sequences of choice, the script assumes a directory structure as follows:
 
 ```
 .
@@ -71,6 +56,7 @@ The FASTA files in `./target_seqs/original` are multi-sequence, unaligned FASTAs
 
 To specify which inputs are used in the operation of the pipeline, we specify which sequences we are maximizing activity and coverage for as well as minimizing off-target activity for through the following section in our Snakefile. It is important that the files follow the naming convention strictly. For the target file `foo.fa`, the file extension must be `.fa`, and the input string for the Snakefiles be `foo`. Cross reactivity (CROSS) is treated the same as HOST, in which we attempt to minimize the activity of any matches of the designed primers.
 
+So, in this scenario, we've setup our Snakemake Snakefile to design primers with high sensitivity for `target1.fa` sequences, but minimal activity on `offtarget.fa`.
 ```
 ...
 TARGET      = [ 'target1' ] 

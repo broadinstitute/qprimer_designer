@@ -1,0 +1,315 @@
+# vim: ft=snakemake
+
+############################################
+# User-defined parameters
+############################################
+
+# REQUIRED: user must fill these
+TARGETS = []
+CROSS   = []
+HOST    = []
+
+# Derived sets
+OFF_TARGETS = CROSS + HOST
+ALL_TARGETS = list(set(TARGETS + OFF_TARGETS))
+
+# Directories
+TARGET_DIR = "target_seqs/original"
+SCRIPTS    = "scripts"
+SRC        = "src"
+VIENNA     = "third_party/ViennaRNA_mini"
+
+# Parameter file
+PARAMS = "params.txt"
+
+############################################
+# Template safety checks (fail fast)
+############################################
+
+if not TARGETS:
+    raise ValueError(
+        "TARGETS is empty. Please define TARGETS in the Snakefile."
+    )
+
+############################################
+# Snakemake setup
+############################################
+
+MAX_CORES = workflow.cores or 1
+
+import os
+
+############################################
+# Helper functions
+############################################
+
+def count_seqs(target):
+    path = f"{TARGET_DIR}/{target}.fa"
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Missing FASTA file: {path}")
+    with open(path) as f:
+        return sum(1 for l in f if l.startswith(">"))
+
+
+############################################
+# Final targets
+############################################
+
+rule all:
+    input:
+        expand("final/{virus}.csv", virus=TARGETS)
+
+
+############################################
+# MSA + representative selection
+############################################
+
+checkpoint choose_target_seq:
+    input:
+        "target_seqs/original/{virus}.fa"
+    output:
+        "target_seqs/choice/{virus}.txt"
+    params:
+        max_seqs_to_bypass_msa=5
+    run:
+        n = count_seqs(wildcards.virus)
+        choice = (
+            "original"
+            if n <= params.max_seqs_to_bypass_msa
+            else "representative"
+        )
+
+        os.makedirs(os.path.dirname(output[0]), exist_ok=True)
+        with open(output[0], "w") as out:
+            out.write(choice + "\n")
+
+
+rule make_MSA:
+    input:
+        "target_seqs/original/{virus}.fa"
+    output:
+        "target_seqs/msa/{virus}.aln"
+    threads:
+        min(2, MAX_CORES)
+    shell:
+        "mafft --auto --quiet --thread {threads} {input} > {output}"
+
+
+rule pick_representative_seqs:
+    input:
+        "target_seqs/msa/{virus}.aln"
+    output:
+        "target_seqs/representative/{virus}.fa"
+    shell:
+        "python -u {SCRIPTS}/pick_representative_seqs.py "
+        "--in {input} --out {output} "
+        "--params {PARAMS} --name {wildcards.virus}"
+
+def selected_source_fa(wc):
+    # Ensure the checkpoint has run and we can read its output
+    ckpt = checkpoints.choose_target_seq.get(virus=wc.virus)
+    choice_file = ckpt.output[0]
+    choice = open(choice_file).read().strip()
+    if choice == "representative":
+        return f"target_seqs/representative/{wc.virus}.fa"
+    else:
+        return f"target_seqs/original/{wc.virus}.fa"
+
+rule resolve_target_seq:
+    input:
+        choice=lambda wc: checkpoints.choose_target_seq.get(virus=wc.virus).output[0], src=selected_source_fa
+    output:
+        "target_seqs/selected/{virus}.fa"
+    run:
+        os.makedirs(os.path.dirname(output[0]), exist_ok=True)
+        shell("cp {input.src} {output}")
+
+############################################
+# Primer generation
+############################################
+
+rule generate_primers:
+    input:
+        "target_seqs/selected/{virus}.fa"
+    output:
+        fasta="primer_seqs/{virus}_init.fa",
+        features="primer_seqs/{virus}_init.feat"
+    shell:
+        "python -u {SCRIPTS}/generate_primers.py "
+        "--in {input} --out {output.fasta} "
+        "--params {PARAMS} --program {VIENNA} --name {wildcards.virus}"
+
+
+############################################
+# Alignment
+############################################
+
+rule build_index:
+    input:
+        "target_seqs/original/{virus}.fa"
+    output:
+        "bt2_index/{virus}.1.bt2"
+    threads:
+        lambda wc: min(4, MAX_CORES) if count_seqs(wc.virus) > 1000 else 1
+    shell:
+        "bowtie2-build --threads {threads} {input} bt2_index/{wildcards.virus}"
+
+
+rule align:
+    input:
+        fasta=lambda wc: (
+            f"primer_seqs/{wc.virus}_init.fa"
+            if wc.virus == wc.target
+            else f"primer_seqs/{wc.virus}_filt.fa"
+        ),
+        index="bt2_index/{target}.1.bt2"
+    output:
+        temp("alignments/{virus}.{target}.sam")
+    threads:
+        min(2, MAX_CORES)
+    params:
+        reference=lambda wc: f"bt2_index/{wc.target}",
+        multiMap=lambda wc: min(count_seqs(wc.target) * 5, 50000),
+        mapOption="--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
+    shell:
+        "bowtie2 -x {params.reference} -U {input.fasta} -f "
+        "-p {threads} -k {params.multiMap} {params.mapOption} "
+        "--no-hd --no-unal > {output}"
+
+
+############################################
+# Mapping post-processing
+############################################
+
+rule parse_map:
+    input:
+        "alignments/{filename}.sam"
+    output:
+        temp("alignments/{filename}.parsed")
+    shell:
+        "sam2pairwise < {input} > {output}"
+
+
+rule process_map:
+    input:
+        sam="alignments/{filename}.sam",
+        parsed="alignments/{filename}.parsed"
+    output:
+        temp("alignments/{filename}.mapped.temp")
+    run:
+        pseqs = input.parsed + ".pseq"
+        tseqs = input.parsed + ".tseq"
+        matches = input.parsed + ".match"
+
+        shell(f'awk "NR % 4 == 2" {input.parsed} > {pseqs}')
+        shell(f'awk "NR % 4 == 3" {input.parsed} > {matches}')
+        shell(f'awk "NR % 4 == 0" {input.parsed} > {tseqs}')
+        shell(
+            "cut -f1-4 {input.sam} | "
+            "paste - {pseqs} | paste - {tseqs} | paste - {matches} "
+            "> {output}"
+        )
+        shell("rm -f {pseqs} {tseqs} {matches}")
+
+
+rule check_coverage:
+    input:
+        mapped="alignments/{virus}.{target}.mapped.temp"
+    output:
+        "alignments/{virus}.{target}.mapped"
+    params:
+        min_cov=lambda wc: int(count_seqs(wc.target) * 0.95)
+    run:
+        if wildcards.virus != wildcards.target:
+            shell("mv {input.mapped} {output}")
+        else:
+            shell(
+                "awk '{{print $1, $3}}' {input.mapped} | sort -u | "
+                "awk '{{count[$1]++}} END {{for (i in count) print i, count[i]}}' "
+                "> {input.mapped}.cov"
+            )
+            shell(
+                "awk '$2 >= {params.min_cov} {{print $1}}' "
+                "{input.mapped}.cov > {input.mapped}.key"
+            )
+            shell(
+                "awk 'NR==FNR {{keys[$1]; next}} ($1 in keys)' "
+                "{input.mapped}.key {input.mapped} > {output}"
+            )
+            shell("rm -f {input.mapped}.cov {input.mapped}.key")
+
+
+############################################
+# ML evaluation and final output
+############################################
+
+rule prepare_input:
+    input:
+        mapped="alignments/{virus}.{target}.mapped",
+        prev=lambda wc: (
+            [f"outputs/{wc.virus}.{wc.virus}.eval"]
+            if wc.virus != wc.target else []
+        ),
+        ref="target_seqs/original/{target}.fa",
+        features="primer_seqs/{virus}_init.feat"
+    output:
+        "inputs/{virus}.{target}.input"
+    params:
+        ref_type=lambda wc: "on" if wc.virus == wc.target else "off",
+        prev_arg=lambda wc: (
+            f"--prev outputs/{wc.virus}.{wc.virus}.eval"
+            if wc.virus != wc.target else ""
+        )
+    shell:
+        "python -u {SCRIPTS}/prepare_input.py "
+        "--in {input.mapped} {params.prev_arg} --out {output} "
+        "--ref {input.ref} --reftype {params.ref_type} "
+        "--features {input.features} --params {PARAMS}"
+
+
+rule evaluate:
+    input:
+        inp="inputs/{virus}.{target}.input",
+        ref="target_seqs/original/{target}.fa"
+    output:
+        "outputs/{virus}.{target}.eval"
+    threads:
+        min(2, MAX_CORES)
+    resources:
+        gpu=1
+    params:
+        ref_type=lambda wc: "on" if wc.virus == wc.target else "off"
+    shell:
+        "python -u {SCRIPTS}/evaluate_primers.py "
+        "--in {input.inp} --out {output} "
+        "--ref {input.ref} --reftype {params.ref_type} "
+        "--ml {SRC} --threads {threads}"
+
+
+rule filter_primer_list:
+    input:
+        res="outputs/{virus}.{virus}.eval",
+        init="primer_seqs/{virus}_init.fa"
+    output:
+        "primer_seqs/{virus}_filt.fa"
+    shell:
+        "python -u {SCRIPTS}/filter_primers.py "
+        "--init {input.init} --scores {input.res} --out {output} "
+        "--params {PARAMS}"
+
+
+rule build_final_output:
+    input:
+        eval_on="outputs/{virus}.{virus}.eval",
+        eval_off=lambda wc: [
+            f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS
+        ],
+        fasta="primer_seqs/{virus}_filt.fa"
+    output:
+        "final/{virus}.csv"
+    shell:
+        "python -u {SCRIPTS}/build_final_output.py "
+        "--on {input.eval_on} --off {input.eval_off} "
+        "--fa {input.fasta} --out {output} "
+        "--name {wildcards.virus} --params {PARAMS} --program {VIENNA}"
+
