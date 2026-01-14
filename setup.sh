@@ -13,7 +13,7 @@ conda install -y -c bioconda bowtie2 sam2pairwise mafft
 conda install -y -c conda-forge make pkg-config gsl zlib curl
 pip install biopython pandas torch joblib einops scikit-learn gget # now includes gget, but only for the dependencies
 pip install -q mysql-connector-python biopython
-pip install -q --log log git+https://github.com/pachterlab/gget.git@delphy_dev # this build has support for ncbi_virus
+#pip install -q --log log git+https://github.com/pachterlab/gget.git@delphy_dev # this build has support for ncbi_virus
 tar -xjvf ./target_seqs/original/HUMAN.tar.bz2 -C ./target_seqs/original
 
 # 1/11/26 removed gcc check and ViennaRNA installation step as relevant utils have been included in /third_party

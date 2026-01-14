@@ -4,10 +4,15 @@
 # User-defined parameters
 ############################################
 
-# REQUIRED: user must fill these
+# SINGLEPLEX REQUIRED: user must fill these for singleplex, ignored if not singleplex
 TARGETS = []
 CROSS   = []
+
+#  for multiplex and singleplex
 HOST    = []
+
+# MULTIPLEX REQUIRED: Multiplex targets, will be ignored if not multiplex
+PANEL = []
 
 # Derived sets
 OFF_TARGETS = CROSS + HOST
@@ -22,11 +27,15 @@ VIENNA     = "third_party/ViennaRNA_mini"
 # Parameter file
 PARAMS = "params.txt"
 
+# Pipeline Design Options
+MULTIPLEX = bool(int(config.get("multiplex", 0)))
+PROBE = bool(int(config.get("probe", 1))) # default value is set to design probes
+
 ############################################
 # Template safety checks (fail fast)
 ############################################
 
-if not TARGETS:
+if not TARGETS and not MULTIPLEX:
     raise ValueError(
         "TARGETS is empty. Please define TARGETS in the Snakefile."
     )
@@ -50,14 +59,59 @@ def count_seqs(target):
     with open(path) as f:
         return sum(1 for l in f if l.startswith(">"))
 
-
+# grabs all other sequences in PANEL except for current target
+def off_targets(on):
+    return [t for t in PANEL if t != on]
 ############################################
 # Final targets
 ############################################
 
-rule all:
-    input:
-        expand("final/{virus}.csv", virus=TARGETS)
+if MULTIPLEX == 1:
+    rule all:
+        input:
+            "final/multiplex_output.csv"
+
+    rule select_best_multiplex:
+        input:
+            csvs=expand("final/{on}.csv", on=PANEL)
+        output:
+            "final/multiplex_output.csv"
+        shell:
+            "python -u {SCRIPTS}/select_best_multiplex.py "
+            "{input.csvs} "
+            "--out {output}"
+
+    rule build_final_output:
+        input:
+            eval_on="outputs/{on}.{on}.eval",
+            eval_off=lambda wc: [f"outputs/{wc.on}.{t}.eval" for t in off_targets(wc.on)],
+            fa="primer_seqs/{on}_filt.fa"
+        output:
+            "final/{on}.csv"
+        shell:
+            "python -u {SCRIPTS}/build_final_output.py "
+            "--on {input.eval_on} --off {input.eval_off} "
+            "--fa {input.fa} --out {output} --name {wildcards.on} "
+            "--params {PARAMS} --program {VIENNA}"
+
+
+else:
+    rule all:
+        input:
+            expand("final/{virus}.csv", virus=TARGETS)
+
+    rule build_final_output:
+        input:
+            eval_on="outputs/{virus}.{virus}.eval",
+            eval_off=lambda wc: [f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS],
+            fa="primer_seqs/{virus}_filt.fa"
+        output:
+            "final/{virus}.csv"
+        shell:
+            "python -u {SCRIPTS}/build_final_output.py "
+            "--on {input.eval_on} --off {input.eval_off} "
+            "--fa {input.fa} --out {output} --name {wildcards.virus} "
+            "--params {PARAMS} --program {VIENNA}"
 
 
 ############################################
@@ -298,18 +352,18 @@ rule filter_primer_list:
         "--params {PARAMS}"
 
 
-rule build_final_output:
-    input:
-        eval_on="outputs/{virus}.{virus}.eval",
-        eval_off=lambda wc: [
-            f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS
-        ],
-        fasta="primer_seqs/{virus}_filt.fa"
-    output:
-        "final/{virus}.csv"
-    shell:
-        "python -u {SCRIPTS}/build_final_output.py "
-        "--on {input.eval_on} --off {input.eval_off} "
-        "--fa {input.fasta} --out {output} "
-        "--name {wildcards.virus} --params {PARAMS} --program {VIENNA}"
+# rule build_final_output:
+#   input:
+#        eval_on="outputs/{virus}.{virus}.eval",
+#        eval_off=lambda wc: [
+#            f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS
+#        ],
+#        fasta="primer_seqs/{virus}_filt.fa"
+#    output:
+#        "final/{virus}.csv"
+#    shell:
+#        "python -u {SCRIPTS}/build_final_output.py "
+#        "--on {input.eval_on} --off {input.eval_off} "
+#        "--fa {input.fasta} --out {output} "
+#        "--name {wildcards.virus} --params {PARAMS} --program {VIENNA}"
 
