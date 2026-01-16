@@ -32,6 +32,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Generate tag suffix
+        id: tag
+        run: |
+          # Sanitize ref_name: replace / with - for valid Docker tags
+          echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
       - name: Build and push (amd64)
         id: build
         uses: docker/build-push-action@v6
@@ -39,7 +45,7 @@ jobs:
           context: .
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-amd64
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-amd64
           cache-from: type=gha,scope=amd64
           cache-to: type=gha,mode=max,scope=amd64
 
@@ -62,6 +68,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Generate tag suffix
+        id: tag
+        run: |
+          # Sanitize ref_name: replace / with - for valid Docker tags
+          echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
       - name: Build and push (arm64)
         id: build
         uses: docker/build-push-action@v6
@@ -69,7 +81,7 @@ jobs:
           context: .
           platforms: linux/arm64
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-arm64
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-arm64
           cache-from: type=gha,scope=arm64
           cache-to: type=gha,mode=max,scope=arm64
 
@@ -87,6 +99,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Generate tag suffix
+        id: tag
+        run: |
+          # Sanitize ref_name: replace / with - for valid Docker tags
+          echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -98,9 +116,15 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Create and push manifest
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          SUFFIX: ${{ steps.tag.outputs.suffix }}
         run: |
-          for tag in ${{ steps.meta.outputs.tags }}; do
-            docker buildx imagetools create -t $tag \
-              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-amd64 \
-              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-arm64
+          # Iterate over multi-line tags properly
+          echo "$TAGS" | while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Creating manifest for: $tag"
+            docker buildx imagetools create -t "$tag" \
+              "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-amd64" \
+              "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-arm64"
           done
