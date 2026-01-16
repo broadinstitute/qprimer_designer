@@ -167,8 +167,8 @@ jobs:
           # Sanitize branch name (same logic as build jobs)
           SUFFIX=$(echo '${{ github.event.ref }}' | tr '/' '-')
 
-          for arch in amd64 arm64; do
-            TAG="${SUFFIX}-${arch}"
+          # Delete multi-arch manifest and arch-specific images
+          for TAG in "${SUFFIX}" "${SUFFIX}-amd64" "${SUFFIX}-arm64"; do
             echo "Looking for tag: $TAG"
 
             # Get version ID for this tag
