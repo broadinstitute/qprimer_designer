@@ -21,6 +21,14 @@ jobs:
         run: pip install -e ".[dev]"
         shell: micromamba-shell {0}
 
-      - name: Run tests
-        run: pytest tests/ -v
+      - name: Run tests with coverage
+        run: pytest tests/ -v --cov=qprimer_designer --cov-report=xml
         shell: micromamba-shell {0}
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          verbose: true
