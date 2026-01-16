@@ -1,0 +1,31 @@
+name: Snakemake Validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+
+      - name: Install package
+        run: pip install -e .
+        shell: micromamba-shell {0}
+
+      - name: Validate Snakefile syntax
+        run: |
+          cd workflows
+          # Validate Snakefile parses correctly (list rules without executing)
+          snakemake -s Snakefile.example --list-rules
+          # Run lint for style warnings (informational only, don't fail)
+          snakemake -s Snakefile.example --lint || true
+        shell: micromamba-shell {0}
