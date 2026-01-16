@@ -12,7 +12,7 @@ CROSS   = []
 HOST    = ['HUMAN']
 
 # MULTIPLEX REQUIRED: Multiplex targets, will be ignored if not multiplex
-PANEL = ['H1', 'H3']
+PANEL = ['H1', 'H5']
 
 # Derived sets
 OFF_TARGETS = CROSS + HOST
@@ -79,7 +79,8 @@ if MULTIPLEX == 1:
         shell:
             "python -u {SCRIPTS}/select_best_multiplex.py "
             "{input.csvs} "
-            "--out {output}"
+            "--out {output} "
+            "--program {VIENNA}"
 
     rule build_final_output:
         input:

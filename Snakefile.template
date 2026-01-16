@@ -8,7 +8,7 @@
 TARGETS = []
 CROSS   = []
 
-#  for multiplex and singleplex
+# shared option for multiplex and singleplex
 HOST    = []
 
 # MULTIPLEX REQUIRED: Multiplex targets, will be ignored if not multiplex
@@ -79,7 +79,8 @@ if MULTIPLEX == 1:
         shell:
             "python -u {SCRIPTS}/select_best_multiplex.py "
             "{input.csvs} "
-            "--out {output}"
+            "--out {output} "
+            "--program {VIENNA}"
 
     rule build_final_output:
         input:
