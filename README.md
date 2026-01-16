@@ -18,8 +18,8 @@ pip install .
 ### Using Docker
 
 ```bash
-docker pull ghcr.io/kbryanhsu/qprimer_designer:latest
-docker run --rm ghcr.io/kbryanhsu/qprimer_designer qprimer --help
+docker pull ghcr.io/broadinstitute/qprimer_designer:latest
+docker run --rm ghcr.io/broadinstitute/qprimer_designer qprimer --help
 ```
 
 ## Quick Start

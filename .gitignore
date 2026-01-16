@@ -84,10 +84,5 @@ target_seqs/msa/
 target_seqs/representative/
 target_seqs/selected/
 
-# Large files
-*.tar.bz2
-*.tar.gz
-*.zip
-
 # Logs
 *.log

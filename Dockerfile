@@ -19,3 +19,5 @@ RUN qprimer --help && \
     bowtie2 --version | head -1
 
 WORKDIR /data
+
+CMD ["/bin/bash"]
