@@ -1,4 +1,4 @@
-FROM mambaorg/micromamba:2.0.0-ubuntu24.04
+FROM mambaorg/micromamba:2.5.0-debian12-slim
 
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml /tmp/environment.yml
 RUN micromamba install -y -n base -f /tmp/environment.yml && \
