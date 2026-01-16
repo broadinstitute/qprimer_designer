@@ -171,16 +171,20 @@ jobs:
           for TAG in "${SUFFIX}" "${SUFFIX}-amd64" "${SUFFIX}-arm64"; do
             echo "Looking for tag: $TAG"
 
-            # Get version ID for this tag
-            VERSION_ID=$(gh api \
+            # Get version IDs for this tag (may return multiple lines)
+            # Use index() for exact match instead of contains() which does substring matching
+            VERSION_IDS=$(gh api \
               "orgs/${{ github.repository_owner }}/packages/container/qprimer_designer/versions" \
-              --jq ".[] | select(.metadata.container.tags | contains([\"$TAG\"])) | .id" \
+              --jq ".[] | select(.metadata.container.tags | index(\"$TAG\")) | .id" \
               2>/dev/null || true)
 
-            if [ -n "$VERSION_ID" ]; then
-              gh api --method DELETE \
-                "orgs/${{ github.repository_owner }}/packages/container/qprimer_designer/versions/$VERSION_ID"
-              echo "Deleted version $VERSION_ID (tag: $TAG)"
+            if [ -n "$VERSION_IDS" ]; then
+              echo "$VERSION_IDS" | while read -r VERSION_ID; do
+                [ -z "$VERSION_ID" ] && continue
+                gh api --method DELETE \
+                  "orgs/${{ github.repository_owner }}/packages/container/qprimer_designer/versions/$VERSION_ID"
+                echo "Deleted version $VERSION_ID (tag: $TAG)"
+              done
             else
               echo "Tag $TAG not found, skipping"
             fi
