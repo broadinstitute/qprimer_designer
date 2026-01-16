@@ -7,6 +7,7 @@ on:
   pull_request:
     branches: [main]
   merge_group:
+  delete:  # Trigger cleanup when branches are deleted
 
 env:
   REGISTRY: ghcr.io
@@ -128,7 +129,57 @@ jobs:
           echo "$TAGS" | while IFS= read -r tag; do
             [ -z "$tag" ] && continue
             echo "Creating manifest for: $tag"
-            docker buildx imagetools create -t "$tag" \
+            docker buildx imagetools create \
+              --annotation "index:org.opencontainers.image.description=ML-guided qPCR primer design with off-target minimization" \
+              --annotation "index:org.opencontainers.image.source=https://github.com/broadinstitute/qprimer_designer" \
+              --annotation "index:org.opencontainers.image.licenses=MIT" \
+              -t "$tag" \
               "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-amd64" \
               "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-arm64"
+          done
+
+  cleanup-untagged:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [create-manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/delete-package-versions@v5
+        with:
+          package-name: qprimer_designer
+          package-type: container
+          min-versions-to-keep: 5
+          delete-only-untagged-versions: true
+
+  cleanup-branch-images:
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Delete branch images from ghcr.io
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Sanitize branch name (same logic as build jobs)
+          SUFFIX=$(echo '${{ github.event.ref }}' | tr '/' '-')
+
+          for arch in amd64 arm64; do
+            TAG="${SUFFIX}-${arch}"
+            echo "Looking for tag: $TAG"
+
+            # Get version ID for this tag
+            VERSION_ID=$(gh api \
+              "orgs/${{ github.repository_owner }}/packages/container/qprimer_designer/versions" \
+              --jq ".[] | select(.metadata.container.tags | contains([\"$TAG\"])) | .id" \
+              2>/dev/null || true)
+
+            if [ -n "$VERSION_ID" ]; then
+              gh api --method DELETE \
+                "orgs/${{ github.repository_owner }}/packages/container/qprimer_designer/versions/$VERSION_ID"
+              echo "Deleted version $VERSION_ID (tag: $TAG)"
+            else
+              echo "Tag $TAG not found, skipping"
+            fi
           done
