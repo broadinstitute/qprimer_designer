@@ -21,8 +21,8 @@ jobs:
         run: pip install -e .
         shell: micromamba-shell {0}
 
-      - name: Validate Snakefile syntax (dry-run)
+      - name: Validate Snakefile syntax
         run: |
           cd workflows
-          snakemake -s Snakefile.example --dry-run --quiet --cores 1
+          snakemake -s Snakefile.example --lint
         shell: micromamba-shell {0}
