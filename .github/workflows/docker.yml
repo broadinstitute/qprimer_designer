@@ -13,16 +13,15 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
+  build-amd64:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Container Registry
@@ -33,6 +32,79 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Generate tag suffix
+        id: tag
+        run: |
+          # Sanitize ref_name: replace / with - for valid Docker tags
+          echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
+      - name: Build and push (amd64)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-amd64
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,mode=max,scope=amd64
+
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate tag suffix
+        id: tag
+        run: |
+          # Sanitize ref_name: replace / with - for valid Docker tags
+          echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
+      - name: Build and push (arm64)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-arm64
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,mode=max,scope=arm64
+
+  create-manifest:
+    if: github.event_name == 'push'
+    needs: [build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate tag suffix
+        id: tag
+        run: |
+          # Sanitize ref_name: replace / with - for valid Docker tags
+          echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -41,16 +113,18 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=tag
-            type=ref,event=pr
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create and push manifest
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          SUFFIX: ${{ steps.tag.outputs.suffix }}
+        run: |
+          # Iterate over multi-line tags properly
+          echo "$TAGS" | while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Creating manifest for: $tag"
+            docker buildx imagetools create -t "$tag" \
+              "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-amd64" \
+              "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-arm64"
+          done
