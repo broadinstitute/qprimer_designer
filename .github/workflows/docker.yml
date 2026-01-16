@@ -7,6 +7,7 @@ on:
   pull_request:
     branches: [main]
   merge_group:
+  delete:  # Trigger cleanup when branches are deleted
 
 env:
   REGISTRY: ghcr.io
@@ -46,8 +47,10 @@ jobs:
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' }}
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-amd64
-          cache-from: type=gha,scope=amd64
-          cache-to: type=gha,mode=max,scope=amd64
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-amd64
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-amd64
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0}/{1}:buildcache-amd64,mode=max', env.REGISTRY, env.IMAGE_NAME) || '' }}
 
   build-arm64:
     runs-on: ubuntu-24.04-arm
@@ -82,8 +85,10 @@ jobs:
           platforms: linux/arm64
           push: ${{ github.event_name == 'push' }}
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-arm64
-          cache-from: type=gha,scope=arm64
-          cache-to: type=gha,mode=max,scope=arm64
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-arm64
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-arm64
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0}/{1}:buildcache-arm64,mode=max', env.REGISTRY, env.IMAGE_NAME) || '' }}
 
   create-manifest:
     if: github.event_name == 'push'
@@ -124,7 +129,57 @@ jobs:
           echo "$TAGS" | while IFS= read -r tag; do
             [ -z "$tag" ] && continue
             echo "Creating manifest for: $tag"
-            docker buildx imagetools create -t "$tag" \
+            docker buildx imagetools create \
+              --annotation "index:org.opencontainers.image.description=ML-guided qPCR primer design with off-target minimization" \
+              --annotation "index:org.opencontainers.image.source=https://github.com/broadinstitute/qprimer_designer" \
+              --annotation "index:org.opencontainers.image.licenses=MIT" \
+              -t "$tag" \
               "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-amd64" \
               "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-arm64"
+          done
+
+  cleanup-untagged:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [create-manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/delete-package-versions@v5
+        with:
+          package-name: qprimer_designer
+          package-type: container
+          min-versions-to-keep: 5
+          delete-only-untagged-versions: true
+
+  cleanup-branch-images:
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Delete branch images from ghcr.io
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Sanitize branch name (same logic as build jobs)
+          SUFFIX=$(echo '${{ github.event.ref }}' | tr '/' '-')
+
+          for arch in amd64 arm64; do
+            TAG="${SUFFIX}-${arch}"
+            echo "Looking for tag: $TAG"
+
+            # Get version ID for this tag
+            VERSION_ID=$(gh api \
+              "orgs/${{ github.repository_owner }}/packages/container/qprimer_designer/versions" \
+              --jq ".[] | select(.metadata.container.tags | contains([\"$TAG\"])) | .id" \
+              2>/dev/null || true)
+
+            if [ -n "$VERSION_ID" ]; then
+              gh api --method DELETE \
+                "orgs/${{ github.repository_owner }}/packages/container/qprimer_designer/versions/$VERSION_ID"
+              echo "Deleted version $VERSION_ID (tag: $TAG)"
+            else
+              echo "Tag $TAG not found, skipping"
+            fi
           done

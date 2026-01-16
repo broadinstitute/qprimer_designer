@@ -1,5 +1,9 @@
 FROM mambaorg/micromamba:2.5.0-debian12-slim
 
+LABEL org.opencontainers.image.source="https://github.com/broadinstitute/qprimer_designer"
+LABEL org.opencontainers.image.description="ML-guided qPCR primer design with off-target minimization"
+LABEL org.opencontainers.image.licenses="MIT"
+
 # Layer 1: Conda environment (cached unless environment.yml changes)
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml /tmp/environment.yml
 RUN micromamba install -y -n base -f /tmp/environment.yml && \

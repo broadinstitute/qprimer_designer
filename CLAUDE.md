@@ -68,6 +68,12 @@ model_path = files('qprimer_designer.data').joinpath('combined_classifier.pth')
 
 ## Docker
 
+Pull from GitHub Container Registry:
+```bash
+docker pull ghcr.io/broadinstitute/qprimer_designer:latest
+docker run --rm ghcr.io/broadinstitute/qprimer_designer:latest qprimer --help
+```
+
 Build locally:
 ```bash
 docker build -t qprimer-designer:local .
