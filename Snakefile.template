@@ -15,9 +15,10 @@ ALL_TARGETS = list(set(TARGETS + OFF_TARGETS))
 
 # Directories
 TARGET_DIR = "target_seqs/original"
-SCRIPTS    = "scripts"
-SRC        = "src"
-VIENNA     = "third_party/ViennaRNA_mini"
+BASE_DIR = '.'
+SCRIPTS    = f"{BASE_DIR}/scripts"
+SRC        = f"{BASE_DIR}/src"
+VIENNA     = f"{BASE_DIR}/third_party/ViennaRNA_mini"
 
 # Parameter file
 PARAMS = "params.txt"
@@ -36,6 +37,7 @@ if not TARGETS:
 ############################################
 
 MAX_CORES = workflow.cores or 1
+TARGETS_PATTERN = "|".join(ALL_TARGETS) if ALL_TARGETS else "NO_MATCH"
 
 import os
 
@@ -50,6 +52,62 @@ def count_seqs(target):
     with open(path) as f:
         return sum(1 for l in f if l.startswith(">"))
 
+def check_ids(fasta):
+    seen = {}
+
+    with open(fasta) as f:
+        for line in f:
+            if not line.startswith(">"):
+                continue
+
+            name = line[1:].strip()
+            if name.endswith("_for"):
+                seen.setdefault(name[:-4], set()).add("for")
+            elif name.endswith("_rev"):
+                seen.setdefault(name[:-4], set()).add("rev")
+
+    ids = sorted(pid for pid, tags in seen.items() if tags == {"for", "rev"})
+
+    if not ids:
+        raise ValueError(
+            f"No valid primer pairs found in {fasta} "
+            "(expected *_for and *_rev entries)."
+        )
+
+    print(f"{len(ids)} primer set(s) will be evaluated from {fasta}")
+
+    return ids
+
+############################################
+# Evaluate input check
+############################################
+
+from pathlib import Path
+import shutil
+
+MODE = config.get("mode", "generate")
+FOR  = config.get("for")
+REV  = config.get("rev")
+PSET = config.get("pset")
+
+if MODE == "evaluate":
+    direct_ok = FOR is not None and REV is not None
+    pset_ok   = PSET is not None
+
+    if direct_ok and pset_ok:
+        raise ValueError("Use either (for, rev) OR pset, not both")
+
+    if not direct_ok and not pset_ok:
+        raise ValueError("Evaluate mode requires either (for, rev) or pset")
+
+    if pset_ok:
+        PSET_PATH = Path(PSET)
+        if not PSET_PATH.exists():
+            raise FileNotFoundError(f"PSET not found: {PSET_PATH}")
+
+        PSET_NAME = PSET_PATH.stem
+    else:
+        PSET_NAME = "ps2eval"
 
 ############################################
 # Final targets
@@ -57,7 +115,8 @@ def count_seqs(target):
 
 rule all:
     input:
-        expand("final/{virus}.csv", virus=TARGETS)
+        f"evaluate/{PSET_NAME}" if MODE == "evaluate"
+        else expand("final/{virus}.csv", virus=TARGETS)
 
 
 ############################################
@@ -65,6 +124,8 @@ rule all:
 ############################################
 
 checkpoint choose_target_seq:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         "target_seqs/original/{virus}.fa"
     output:
@@ -83,8 +144,9 @@ checkpoint choose_target_seq:
         with open(output[0], "w") as out:
             out.write(choice + "\n")
 
-
 rule make_MSA:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         "target_seqs/original/{virus}.fa"
     output:
@@ -94,8 +156,9 @@ rule make_MSA:
     shell:
         "mafft --auto --quiet --thread {threads} {input} > {output}"
 
-
 rule pick_representative_seqs:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         "target_seqs/msa/{virus}.aln"
     output:
@@ -116,6 +179,8 @@ def selected_source_fa(wc):
         return f"target_seqs/original/{wc.virus}.fa"
 
 rule resolve_target_seq:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         choice=lambda wc: checkpoints.choose_target_seq.get(virus=wc.virus).output[0], src=selected_source_fa
     output:
@@ -129,6 +194,8 @@ rule resolve_target_seq:
 ############################################
 
 rule generate_primers:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         "target_seqs/selected/{virus}.fa"
     output:
@@ -139,12 +206,51 @@ rule generate_primers:
         "--in {input} --out {output.fasta} "
         "--params {PARAMS} --program {VIENNA} --name {wildcards.virus}"
 
-
 ############################################
 # Alignment
 ############################################
 
+rule prepare_pset_fasta:
+    wildcard_constraints:
+        filename="[^./]+"
+    output:
+        fasta="evaluate/{filename}.fa"
+        run:
+        out = Path(output.fasta)
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        # case 1: pset provided → copy
+        if config.get("pset"):
+            src = Path(config["pset"])
+            shutil.copyfile(src, out)
+
+        # case 2: direct for / rev → generate
+        else:
+            for_seq = config["for"]
+            rev_seq = config["rev"]
+
+            with open(out, "w") as f:
+                f.write(f">1_for\n{for_seq}\n>1_rev\n{rev_seq}\n")
+        
+        ids = check_ids(out)
+
+rule prepare_features:
+    wildcard_constraints:
+        filename="[^./]+"
+    input:
+        fa="evaluate/{filename}.fa"
+    output:
+        feat="evaluate/{filename}.feat"
+    shell:
+        "python -u {SCRIPTS}/prepare_features.py "
+        "--fa {input.fa} "
+        "--out {output.feat} "
+        "--params {PARAMS} "
+        "--program {VIENNA}"
+
 rule build_index:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         "target_seqs/original/{virus}.fa"
     output:
@@ -154,13 +260,15 @@ rule build_index:
     shell:
         "bowtie2-build --threads {threads} {input} bt2_index/{wildcards.virus}"
 
-
 rule align:
+    wildcard_constraints:
+        target=TARGETS_PATTERN
     input:
         fasta=lambda wc: (
-            f"primer_seqs/{wc.virus}_init.fa"
-            if wc.virus == wc.target
-            else f"primer_seqs/{wc.virus}_filt.fa"
+            f"evaluate/{wc.virus}.fa" if MODE=="evaluate"
+            else (f"primer_seqs/{wc.virus}_init.fa"
+                    if wc.virus == wc.target
+                    else f"primer_seqs/{wc.virus}_filt.fa")
         ),
         index="bt2_index/{target}.1.bt2"
     output:
@@ -176,7 +284,6 @@ rule align:
         "-p {threads} -k {params.multiMap} {params.mapOption} "
         "--no-hd --no-unal > {output}"
 
-
 ############################################
 # Mapping post-processing
 ############################################
@@ -188,7 +295,6 @@ rule parse_map:
         temp("alignments/{filename}.parsed")
     shell:
         "sam2pairwise < {input} > {output}"
-
 
 rule process_map:
     input:
@@ -210,7 +316,6 @@ rule process_map:
             "> {output}"
         )
         shell("rm -f {pseqs} {tseqs} {matches}")
-
 
 rule check_coverage:
     input:
@@ -238,20 +343,24 @@ rule check_coverage:
             )
             shell("rm -f {input.mapped}.cov {input.mapped}.key")
 
-
 ############################################
 # ML evaluation and final output
 ############################################
 
 rule prepare_input:
+    wildcard_constraints:
+        target=TARGETS_PATTERN
     input:
         mapped="alignments/{virus}.{target}.mapped",
         prev=lambda wc: (
             [f"outputs/{wc.virus}.{wc.virus}.eval"]
-            if wc.virus != wc.target else []
+            if wc.virus != wc.target and MODE != "evaluate" else []
         ),
         ref="target_seqs/original/{target}.fa",
-        features="primer_seqs/{virus}_init.feat"
+        features=lambda wc: (
+                "evaluate/{virus}.feat" if MODE == "evaluate"
+                else "primer_seqs/{virus}_init.feat"
+                )
     output:
         "inputs/{virus}.{target}.input"
     params:
@@ -266,8 +375,9 @@ rule prepare_input:
         "--ref {input.ref} --reftype {params.ref_type} "
         "--features {input.features} --params {PARAMS}"
 
-
 rule evaluate:
+    wildcard_constraints:
+        target=TARGETS_PATTERN
     input:
         inp="inputs/{virus}.{target}.input",
         ref="target_seqs/original/{target}.fa"
@@ -285,7 +395,6 @@ rule evaluate:
         "--ref {input.ref} --reftype {params.ref_type} "
         "--ml {SRC} --threads {threads}"
 
-
 rule filter_primer_list:
     input:
         res="outputs/{virus}.{virus}.eval",
@@ -297,19 +406,42 @@ rule filter_primer_list:
         "--init {input.init} --scores {input.res} --out {output} "
         "--params {PARAMS}"
 
-
 rule build_final_output:
     input:
         eval_on="outputs/{virus}.{virus}.eval",
-        eval_off=lambda wc: [
-            f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS
-        ],
+        eval_off=lambda wc: [f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS],
         fasta="primer_seqs/{virus}_filt.fa"
     output:
         "final/{virus}.csv"
     shell:
         "python -u {SCRIPTS}/build_final_output.py "
-        "--on {input.eval_on} --off {input.eval_off} "
-        "--fa {input.fasta} --out {output} "
-        "--name {wildcards.virus} --params {PARAMS} --program {VIENNA}"
+        "--on {input.eval_on} "
+        "--off {input.eval_off} "
+        "--fa {input.fasta} "
+        "--out {output} --name {wildcards.virus} "
+        "--params {PARAMS} --program {VIENNA}"
 
+############################################
+# Evaluation of user-defined primers
+############################################
+
+rule evaluate_pset:
+    wildcard_constraints:
+        filename="[^./]+"
+    input:
+        eval_on=f"outputs/{{filename}}.{TARGETS[0]}.eval",
+        eval_off=lambda wc: [f"outputs/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
+        fasta="evaluate/{filename}.fa"
+    output:
+        directory("evaluate/{filename}")
+    params:
+        ids=lambda wc: " ".join(check_ids(f"evaluate/{wc.filename}.fa"))
+    shell:
+        "python -u {SCRIPTS}/evaluate_custom.py "
+        "--on {input.eval_on} "
+        "--off {input.eval_off} "
+        "--fa {input.fasta} "
+        "--out evaluate/{wildcards.filename} "
+        "--names {params.ids} "
+        "--params {PARAMS} --program {VIENNA}"
+ 

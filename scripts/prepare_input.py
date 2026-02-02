@@ -156,7 +156,7 @@ def main():
 
     maptbl = maptbl.join(feats[['forrev','len','Tm','GC']], on='pname')
 
-    dropCols = ['orientation','forrev','match']
+    dropCols = ['orientation','forrev']
 
     if args.reftype == 'on':
         fors = maptbl[(maptbl['orientation']==0) & (maptbl['forrev']=='f')].drop(columns=dropCols)
@@ -194,7 +194,8 @@ def main():
         if not tnamesf:
             continue
 
-        targets_by_r = defaultdict(set)
+        targets_by_r = defaultdict(list)
+        starts_by_r = defaultdict(list)
         amplens_by_r = defaultdict(set)
         tms_by_r = defaultdict(list)
 
@@ -210,9 +211,10 @@ def main():
                         continue
 
                 # Coordinates assumed 1-based
-                ampseq = tarseqs[t_f][st_f-1 : st_r-1 + primerLen]
+                ampseq = tarseqs[t_f][st_f-1 : st_r + primerLen]
                 if minl <= len(ampseq) <= maxl:
-                    targets_by_r[r_id].add(t_f)
+                    targets_by_r[r_id].append(t_f)
+                    starts_by_r[r_id].append(st_f)
                     amplens_by_r[r_id].add(len(ampseq))
                     tms_by_r[r_id].append(get_Tm(ampseq))
 
@@ -221,13 +223,14 @@ def main():
 
         rev_ids = list(targets_by_r.keys())
         revsub = revs.loc[rev_ids].copy()
-        revsub['targets'] = [sorted(targets_by_r[r]) for r in revsub.index]
+        revsub['targets'] = [targets_by_r[r] for r in revsub.index]
+        revsub['starts'] = [starts_by_r[r] for r in revsub.index]
         revsub['prod_len'] = [lfunc(amplens_by_r[r]) for r in revsub.index]
         revsub['prod_Tm'] = [round(np.mean(tms_by_r[r]),1) for r in revsub.index]
 
         forsub = fors.loc[[f_id]].copy().drop(['tnames','starts'], axis=1)
         pairs = forsub.merge(
-            revsub.drop(['tnames','starts'], axis=1),
+            revsub.drop(['tnames'], axis=1),
             how='cross',
             suffixes=('_f','_r')
         )
