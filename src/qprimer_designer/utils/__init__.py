@@ -2,6 +2,7 @@
 
 from .sequences import (
     reverse_complement_dna,
+    complement_dna,
     get_tm,
     get_gc_fraction,
     fast_reverse_complement,
@@ -11,6 +12,7 @@ from .encoding import one_hot_encode, encode_primer_pair, encode_batch_parallel
 
 __all__ = [
     "reverse_complement_dna",
+    "complement_dna",
     "get_tm",
     "get_gc_fraction",
     "fast_reverse_complement",

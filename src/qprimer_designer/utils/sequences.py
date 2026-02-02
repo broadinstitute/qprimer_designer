@@ -19,14 +19,19 @@ def get_gc_fraction(seq: str) -> float:
     return gc_fraction(seq)
 
 
-# Fast reverse-complement translation table
-REV_TABLE = str.maketrans({
+# Complement translation table
+COMPLEMENT_TABLE = str.maketrans({
     'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C',
     'a': 't', 't': 'a', 'c': 'g', 'g': 'c',
     '-': '-', 'N': 'N', 'n': 'n'
 })
 
 
+def complement_dna(seq: str) -> str:
+    """Return complement (not reverse) of a DNA sequence."""
+    return seq.translate(COMPLEMENT_TABLE)
+
+
 def fast_reverse_complement(seq: str) -> str:
     """Fast reverse complement using translation table."""
-    return seq.translate(REV_TABLE)[::-1]
+    return seq.translate(COMPLEMENT_TABLE)[::-1]

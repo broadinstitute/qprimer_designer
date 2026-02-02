@@ -107,7 +107,7 @@ def run(args):
     maptbl['mm'] = maptbl['pseq'].str.len() - maptbl['match'].str.count(r'\|') - maptbl['indel']
     maptbl = maptbl.join(feats[['forrev', 'len', 'Tm', 'GC']], on='pname')
 
-    drop_cols = ['orientation', 'forrev', 'match']
+    drop_cols = ['orientation', 'forrev']
 
     if args.reftype == 'on':
         fors = maptbl[(maptbl['orientation'] == 0) & (maptbl['forrev'] == 'f')].drop(columns=drop_cols)
@@ -145,7 +145,8 @@ def run(args):
         if not tnamesf:
             continue
 
-        targets_by_r = defaultdict(set)
+        targets_by_r = defaultdict(list)
+        starts_by_r = defaultdict(list)
         amplens_by_r = defaultdict(set)
         tms_by_r = defaultdict(list)
 
@@ -160,9 +161,11 @@ def run(args):
                     if rname_by_id[r_id] not in allowed_r_by_f.get(fname, set()):
                         continue
 
-                ampseq = tarseqs[t_f][st_f - 1: st_r - 1 + primer_len]
+                # Coordinates assumed 1-based
+                ampseq = tarseqs[t_f][st_f - 1: st_r + primer_len]
                 if minl <= len(ampseq) <= maxl:
-                    targets_by_r[r_id].add(t_f)
+                    targets_by_r[r_id].append(t_f)
+                    starts_by_r[r_id].append(st_f)
                     amplens_by_r[r_id].add(len(ampseq))
                     tms_by_r[r_id].append(get_tm(ampseq))
 
@@ -171,13 +174,14 @@ def run(args):
 
         rev_ids = list(targets_by_r.keys())
         revsub = revs.loc[rev_ids].copy()
-        revsub['targets'] = [sorted(targets_by_r[r]) for r in revsub.index]
+        revsub['targets'] = [targets_by_r[r] for r in revsub.index]
+        revsub['starts'] = [starts_by_r[r] for r in revsub.index]
         revsub['prod_len'] = [lfunc(amplens_by_r[r]) for r in revsub.index]
         revsub['prod_Tm'] = [round(np.mean(tms_by_r[r]), 1) for r in revsub.index]
 
         forsub = fors.loc[[f_id]].copy().drop(['tnames', 'starts'], axis=1)
         pairs = forsub.merge(
-            revsub.drop(['tnames', 'starts'], axis=1),
+            revsub.drop(['tnames'], axis=1),
             how='cross',
             suffixes=('_f', '_r'),
         )
