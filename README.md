@@ -92,9 +92,7 @@ Output will be `final/multiplex_output.csv` containing top candidates for each t
 
 You can evaluate your own primers instead of generating them. This is useful when you have existing primers and want to assess their performance.
 
-#### Requirements
-
-**1. Primer FASTA file naming convention:**
+#### Primer FASTA file naming convention
 
 Primers must follow the `*_for` and `*_rev` naming pattern:
 
@@ -110,14 +108,6 @@ GGGGCCCCAAAATTTT
 ```
 
 Each primer set must have both a forward (`*_for`) and reverse (`*_rev`) primer.
-
-**2. Target sequences:**
-
-Place target sequences in `target_seqs/original/` as described above.
-
-**3. Parameters file:**
-
-Use the standard `params.txt` file for evaluation parameters.
 
 #### Running Evaluation
 
