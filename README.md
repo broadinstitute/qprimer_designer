@@ -88,6 +88,66 @@ snakemake -s Snakefile.example --config multiplex=1 --cores all
 
 Output will be `final/multiplex_output.csv` containing top candidates for each target.
 
+### Evaluate Custom Primer Set
+
+You can evaluate your own primers instead of generating them. This is useful when you have existing primers and want to assess their performance.
+
+#### Requirements
+
+**1. Primer FASTA file naming convention:**
+
+Primers must follow the `*_for` and `*_rev` naming pattern:
+
+```
+>primer1_for
+ATCGATCGATCGATCGATCG
+>primer1_rev
+GCTAGCTAGCTAGCTAGCTA
+>primer2_for
+TTTTAAAACCCCGGGG
+>primer2_rev
+GGGGCCCCAAAATTTT
+```
+
+Each primer set must have both a forward (`*_for`) and reverse (`*_rev`) primer.
+
+**2. Target sequences:**
+
+Place target sequences in `target_seqs/original/` as described above.
+
+**3. Parameters file:**
+
+Use the standard `params.txt` file for evaluation parameters.
+
+#### Running Evaluation
+
+**Option 1: Evaluate from FASTA file**
+
+```bash
+cd workflows
+snakemake -s Snakefile.template \
+  --config mode=evaluate pset=my_primers.fa \
+  --cores all
+```
+
+**Option 2: Evaluate direct sequences**
+
+```bash
+snakemake -s Snakefile.template \
+  --config mode=evaluate \
+    for=ATCGATCGATCGATCGATCG \
+    rev=GCTAGCTAGCTAGCTAGCTA \
+  --cores all
+```
+
+#### Output
+
+Results will be in `evaluate/{pset_name}/` containing Excel reports with:
+- **Summary sheet**: Dimerization, sensitivity, and specificity metrics
+- **Detail sheet**: Per-target alignments with scores and coverage
+
+Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
+
 ## CLI Commands
 
 The `qprimer` CLI provides the following subcommands:
@@ -95,12 +155,14 @@ The `qprimer` CLI provides the following subcommands:
 | Command | Description |
 |---------|-------------|
 | `qprimer generate` | Generate primer candidates from target sequences |
+| `qprimer prepare-features` | Compute features (Tm, GC%, dG) for existing primers |
 | `qprimer pick-representatives` | Select representative sequences from MSA |
 | `qprimer prepare-input` | Prepare input data for ML evaluation |
 | `qprimer evaluate` | Run ML model to score primer candidates |
 | `qprimer filter` | Filter primers based on evaluation scores |
 | `qprimer build-output` | Build final output CSV with scores |
 | `qprimer select-multiplex` | Select best multiplex primer set |
+| `qprimer export-report` | Export evaluation results to Excel reports |
 
 ## GPU Support
 
