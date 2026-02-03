@@ -8,6 +8,9 @@ from typing import Tuple
 import joblib
 import torch
 
+# Import model classes so they're available for torch.load() unpickling
+from .architectures import CombinedModel, CombinedModelClassifier
+
 
 def get_model_path(filename: str) -> Path:
     """
