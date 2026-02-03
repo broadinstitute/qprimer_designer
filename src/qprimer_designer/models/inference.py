@@ -1,5 +1,6 @@
 """Model loading and inference utilities."""
 
+import sys
 import warnings
 from importlib.resources import files
 from pathlib import Path
@@ -10,6 +11,11 @@ import torch
 
 # Import model classes so they're available for torch.load() unpickling
 from .architectures import CombinedModel, CombinedModelClassifier
+
+# Inject classes into __main__ module for torch.load() compatibility
+# The saved models were pickled with __main__ as the module reference
+sys.modules['__main__'].CombinedModel = CombinedModel
+sys.modules['__main__'].CombinedModelClassifier = CombinedModelClassifier
 
 
 def get_model_path(filename: str) -> Path:
