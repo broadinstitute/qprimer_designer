@@ -10,10 +10,25 @@ import joblib
 import torch
 
 # Import model classes so they're available for torch.load() unpickling
-from .architectures import CombinedModel, CombinedModelClassifier
+from .architectures import (
+    PGC,
+    DropoutNd,
+    S4DKernel,
+    S4D,
+    Janus,
+    MLP,
+    CombinedModel,
+    CombinedModelClassifier,
+)
 
-# Inject classes into __main__ module for torch.load() compatibility
+# Inject all classes into __main__ module for torch.load() compatibility
 # The saved models were pickled with __main__ as the module reference
+sys.modules['__main__'].PGC = PGC
+sys.modules['__main__'].DropoutNd = DropoutNd
+sys.modules['__main__'].S4DKernel = S4DKernel
+sys.modules['__main__'].S4D = S4D
+sys.modules['__main__'].Janus = Janus
+sys.modules['__main__'].MLP = MLP
 sys.modules['__main__'].CombinedModel = CombinedModel
 sys.modules['__main__'].CombinedModelClassifier = CombinedModelClassifier
 
