@@ -10,7 +10,7 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.SeqUtils import gc_fraction
 
-from qprimer_designer.utils import reverse_complement_dna, get_tm, parse_params
+from qprimer_designer.utils import reverse_complement_dna, get_tm, parse_params, get_primer_params
 from qprimer_designer.external import compute_self_dimer_dg
 
 
@@ -32,19 +32,24 @@ self-dimer free energy (ΔG).
     parser.set_defaults(func=run)
 
 
-def generate_primers_single(target_seq: str, step: int, primer_len: int, min_amp_len: int):
+def generate_primers_single(target_seq: str, step: int, primer_lens: list[int], min_amp_len: int):
     """Generate forward and reverse primer candidates from a single target."""
     target_seq_rc = reverse_complement_dna(target_seq)
 
     forps, revps = {}, {}
-    for i in range(0, len(target_seq) - primer_len - min_amp_len, step):
-        fseq = target_seq[i : i + primer_len]
-        if "N" not in fseq:
-            forps[fseq] = i
+    max_len = max(primer_lens)
 
-        rseq = target_seq_rc[i : i + primer_len]
-        if "N" not in rseq:
-            revps[rseq] = len(target_seq) - i
+    for i in range(0, len(target_seq) - max_len - min_amp_len, step):
+        for primer_len in primer_lens:
+            # Check if this length fits at this position
+            if i + primer_len <= len(target_seq):
+                fseq = target_seq[i : i + primer_len]
+                if "N" not in fseq:
+                    forps[fseq] = i
+
+                rseq = target_seq_rc[i : i + primer_len]
+                if "N" not in rseq:
+                    revps[rseq] = len(target_seq) - i
 
     return forps, revps
 
@@ -66,7 +71,7 @@ def count_primer_pairs(fors: dict, revs: dict, min_amp_len: int, max_amp_len: in
 def generate_primers_multi(
     target_seqs,
     step: int,
-    primer_len: int,
+    primer_lens: list[int],
     min_amp_len: int,
     max_amp_len: int,
     max_tm: float,
@@ -77,7 +82,7 @@ def generate_primers_multi(
     """Generate and filter primer candidates across multiple target sequences."""
     forps, revps = {}, {}
     for tseq in target_seqs:
-        flist, rlist = generate_primers_single(tseq, step, primer_len, min_amp_len)
+        flist, rlist = generate_primers_single(tseq, step, primer_lens, min_amp_len)
         forps.update(flist)
         revps.update(rlist)
 
@@ -112,24 +117,26 @@ def generate_primers_multi(
 def run(args):
     """Run the generate command."""
     params = parse_params(args.param_file)
+    primer_params = get_primer_params(params)
 
-    max_num = int(params.get("MAX_PRIMER_CANDIDATES", 10000))
-    step = int(params.get("TILING_STEP", 1))
-    primer_len = int(params.get("PRIMER_LEN", 20))
-    min_amp_len = int(params.get("AMPLEN_MIN", 60))
-    max_amp_len = int(params.get("AMPLEN_MAX", 200))
-    max_tm = float(params.get("TM_MAX", 60))
-    min_tm = float(params.get("TM_MIN", 55))
-    max_gc = float(params.get("GC_MAX", 60))
-    min_dg = float(params.get("DG_MIN", -8))
+    max_num = primer_params["max_num"]
+    step = primer_params["step"]
+    primer_lens = primer_params["primer_lens"]
+    min_amp_len = primer_params["min_amp_len"]
+    max_amp_len = primer_params["max_amp_len"]
+    max_tm = primer_params["max_tm"]
+    min_tm = primer_params["min_tm"]
+    max_gc = primer_params["max_gc"]
+    min_dg = primer_params["min_dg"]
 
     target_seqs = [str(s.seq) for s in SeqIO.parse(args.target_seqs, "fasta")]
 
     print(f"Generating primers from {args.target_seqs}...")
+    print(f"Primer lengths: {primer_lens}")
     start_time = time.time()
 
     for_filt, rev_filt, features = generate_primers_multi(
-        target_seqs, step, primer_len, min_amp_len, max_amp_len,
+        target_seqs, step, primer_lens, min_amp_len, max_amp_len,
         max_tm, min_tm, max_gc, min_dg,
     )
 

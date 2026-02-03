@@ -47,7 +47,6 @@ def _ensure_list(x):
 def run(args):
     """Run the prepare-input command."""
     params = parse_params(args.param_file)
-    primer_len = int(params.get("PRIMER_LEN", 20))
     min_amp_len = int(params.get("AMPLEN_MIN", 60))
     max_amp_len = int(params.get("AMPLEN_MAX", 200))
     min_off_len = int(params.get("OFFLEN_MIN", 60))
@@ -162,7 +161,9 @@ def run(args):
                         continue
 
                 # Coordinates assumed 1-based
-                ampseq = tarseqs[t_f][st_f - 1: st_r + primer_len]
+                # Use the reverse primer's actual length from features
+                r_len = int(revs.loc[r_id, 'len'])
+                ampseq = tarseqs[t_f][st_f - 1: st_r + r_len]
                 if minl <= len(ampseq) <= maxl:
                     targets_by_r[r_id].append(t_f)
                     starts_by_r[r_id].append(st_f)
