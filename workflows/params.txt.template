@@ -10,6 +10,14 @@ DG_MIN = -6
 PRIMER_LEN = 20  # Single value or comma-separated list (e.g., 19,20,21); range: 18-24
 TILING_STEP = 5
 
+## Parameters for probe generation
+PROBE_LEN_MIN = 24
+PROBE_LEN_MAX = 28
+PROBE_TM_MIN = 65
+PROBE_TM_MAX = 70
+PROBE_HOMOPOLYMER_MAX = 3
+PROBE_AVOID_5PRIME_G = True
+
 ## Parameters in input preparation
 AMPLEN_MIN = 60
 AMPLEN_MAX = 200

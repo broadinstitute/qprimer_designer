@@ -14,6 +14,7 @@ def main():
         epilog="""
 Examples:
   qprimer generate --in targets.fa --out primers.fa --params params.txt --name myprimer
+  qprimer generate-probe --in targets.fa --out probes.fa --params params.txt --name myprobe
   qprimer prepare-features --fa my_primers.fa --out primers.feat
   qprimer evaluate --in input.csv --out output.csv --ref reference.fa --reftype on
   qprimer export-report --on eval.on --off eval.off1 eval.off2 --out reports/ --names primer1 primer2
@@ -39,6 +40,7 @@ For more information on a specific command:
     # Import and register subcommands
     from qprimer_designer.commands import (
         generate,
+        generate_probe,
         prepare_features,
         pick_representatives,
         prepare_input,
@@ -50,6 +52,7 @@ For more information on a specific command:
     )
 
     generate.register(subparsers)
+    generate_probe.register(subparsers)
     prepare_features.register(subparsers)
     pick_representatives.register(subparsers)
     prepare_input.register(subparsers)
