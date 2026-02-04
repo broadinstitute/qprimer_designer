@@ -413,18 +413,15 @@ rule filter_primer_list:
             f"primer_seqs/{wc.virus}_probe.fa" if PROBE_MODE else []
         )
     output:
-        fasta="primer_seqs/{virus}_filt.fa",
-        probe_csv=lambda wc: (
-            f"primer_seqs/{wc.virus}_filt_probes.csv" if PROBE_MODE else []
-        )
+        "primer_seqs/{virus}_filt.fa"
     params:
-        probe_args=lambda wc, input, output: (
-            f"--probe-mapping {input.probe_mapping} "
-            f"--probe-seqs {input.probe_seqs} "
-            f"--probe-out {output.probe_csv}"
+        probe_args=lambda wc: (
+            f"--probe-mapping probe_mappings/{wc.virus}.csv "
+            f"--probe-seqs primer_seqs/{wc.virus}_probe.fa "
+            f"--probe-out primer_seqs/{wc.virus}_filt_probes.csv"
             if PROBE_MODE else ""
         )
     shell:
         "qprimer filter "
-        "--init {input.init} --scores {input.res} --out {output.fasta} "
+        "--init {input.init} --scores {input.res} --out {output} "
         "--params {PARAMS} {params.probe_args}"
