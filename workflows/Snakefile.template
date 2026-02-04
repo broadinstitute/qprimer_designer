@@ -49,18 +49,8 @@ from pathlib import Path
 import shutil
 import sys
 
-# Check if probe mode is enabled from params.txt
-def get_probe_mode():
-    if not os.path.exists(PARAMS):
-        return False
-    with open(PARAMS) as f:
-        for line in f:
-            if line.strip().startswith('PROBE_MODE'):
-                value = line.split('=')[1].strip().lower()
-                return value in ('true', '1', 'yes')
-    return False
-
-PROBE_MODE = get_probe_mode() and not MULTIPLEX
+# Probe mode (singleplex only)
+PROBE_MODE = bool(int(config.get("probe_mode", 0))) and not MULTIPLEX
 
 # Print mode information
 if PROBE_MODE:
