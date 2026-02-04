@@ -212,8 +212,8 @@ rule generate_probes:
     input:
         "target_seqs/selected/{virus}.fa"
     output:
-        fasta="probe_seqs/{virus}_init.fa",
-        features="probe_seqs/{virus}_init.feat"
+        fasta="primer_seqs/{virus}_probe.fa",
+        features="primer_seqs/{virus}_probe.feat"
     shell:
         "qprimer generate-probe "
         "--in {input} --out {output.fasta} "
@@ -262,7 +262,7 @@ rule align_probes:
     wildcard_constraints:
         virus=TARGETS_PATTERN
     input:
-        fasta="probe_seqs/{virus}_init.fa",
+        fasta="primer_seqs/{virus}_probe.fa",
         index="bt2_index/{virus}.1.bt2"
     output:
         temp("probe_alignments/{virus}.sam")
@@ -410,7 +410,7 @@ rule filter_primer_list:
             f"probe_mappings/{wc.virus}.csv" if PROBE_MODE else []
         ),
         probe_seqs=lambda wc: (
-            f"probe_seqs/{wc.virus}_init.fa" if PROBE_MODE else []
+            f"primer_seqs/{wc.virus}_probe.fa" if PROBE_MODE else []
         )
     output:
         fasta="primer_seqs/{virus}_filt.fa",
