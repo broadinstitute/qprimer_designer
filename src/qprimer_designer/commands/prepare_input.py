@@ -11,7 +11,7 @@ import pandas as pd
 from Bio import SeqIO
 from pandas.errors import EmptyDataError
 
-from qprimer_designer.utils import parse_params, get_tm, fast_reverse_complement
+from qprimer_designer.utils import parse_params, get_tm, reverse_complement_dna
 
 
 def register(subparsers):
@@ -119,8 +119,8 @@ def run(args):
         minl, maxl = min_off_len, max_off_len
         lfunc = min
 
-    revs['pseq'] = revs['pseq'].apply(fast_reverse_complement)
-    revs['tseq'] = revs['tseq'].apply(fast_reverse_complement)
+    revs['pseq'] = revs['pseq'].apply(reverse_complement_dna)
+    revs['tseq'] = revs['tseq'].apply(reverse_complement_dna)
 
     revs_meta = revs.reset_index().rename(columns={'index': 'r_id'})
     rev_index = defaultdict(list)
