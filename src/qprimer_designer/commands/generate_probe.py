@@ -9,7 +9,7 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.SeqUtils import gc_fraction
 
-from qprimer_designer.utils import get_tm, parse_params
+from qprimer_designer.utils import get_tm, parse_params, reverse_complement_dna
 from qprimer_designer.external import compute_self_dimer_dg
 
 
@@ -61,12 +61,21 @@ def generate_probes(
     max_num: int,
 ):
     """Generate and filter probe candidates across multiple target sequences."""
-    # Generate all candidate probes with step=1
+    # Generate all candidate probes with step=1 from both strands
     probes = {}
     for target_seq in target_seqs:
+        # Generate from forward strand
         for probe_len in range(len_min, len_max + 1):
             for i in range(0, len(target_seq) - probe_len + 1):
                 seq = target_seq[i : i + probe_len]
+                if "N" not in seq:
+                    probes[seq] = i
+
+        # Generate from reverse complement strand
+        target_seq_rc = reverse_complement_dna(target_seq)
+        for probe_len in range(len_min, len_max + 1):
+            for i in range(0, len(target_seq_rc) - probe_len + 1):
+                seq = target_seq_rc[i : i + probe_len]
                 if "N" not in seq:
                     probes[seq] = i
 
@@ -92,6 +101,7 @@ def generate_probes(
         features[pseq]["Tm"] = round(tm, 1)
         features[pseq]["GC"] = gc
         features[pseq]["len"] = len(pseq)
+        features[pseq]["position"] = probes[pseq]  # Store start position
 
         # Filter by Tm and GC
         if min_tm <= tm <= max_tm and gc <= max_gc:
@@ -154,9 +164,9 @@ def run(args):
     # Write features CSV
     features_df = pd.DataFrame(features).T
     if features_df.empty:
-        features_df = pd.DataFrame(columns=["pname", "pseq", "len", "Tm", "GC", "dG"])
+        features_df = pd.DataFrame(columns=["pname", "pseq", "len", "position", "Tm", "GC", "dG"])
     else:
-        features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "len", "Tm", "GC", "dG"]]
+        features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "len", "position", "Tm", "GC", "dG"]]
 
     fname = args.probe_seqs.replace(".fa", ".feat")
     features_df.to_csv(fname, index=False)
