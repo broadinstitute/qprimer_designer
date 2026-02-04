@@ -23,7 +23,9 @@ primer-primer dimerization (ΔG).
 """,
     )
     parser.add_argument("--on", dest="eval_on", required=True, help="ON-target evaluation CSV")
-    parser.add_argument("--off", dest="eval_off", nargs="+", required=True, help="OFF-target evaluation CSVs")
+    # Fix: Use nargs="*" to allow zero OFF-target files (valid when CROSS and HOST are empty)
+    parser.add_argument("--off", dest="eval_off", nargs="*", default=[], help="OFF-target evaluation CSVs")
+    # Previous version: parser.add_argument("--off", dest="eval_off", nargs="+", required=True, help="OFF-target evaluation CSVs")
     parser.add_argument("--fa", dest="primers", required=True, help="Primer FASTA")
     parser.add_argument("--out", dest="output", required=True, help="Output CSV")
     parser.add_argument("--name", required=True, help="Target name")

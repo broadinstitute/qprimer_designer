@@ -31,8 +31,17 @@ def run(args):
     num_select = int(params.get("NUM_TOP_SENSITIVITY", 100))
 
     # Load evaluation results
-    res = pd.read_csv(args.scores)
+    # Fix: Handle empty files gracefully (file exists but has no data or no columns)
+    try:
+        res = pd.read_csv(args.scores)
+    except pd.errors.EmptyDataError:
+        # File is empty or has no columns - write empty output and return
+        print(f"Warning: Scores file {args.scores} is empty, writing empty output")
+        open(args.out, "w").close()
+        return
+    # Previous version: res = pd.read_csv(args.scores)
     if res.empty:
+        print(f"Warning: Scores file {args.scores} has no data rows, writing empty output")
         open(args.out, "w").close()
         return
 
