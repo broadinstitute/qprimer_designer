@@ -47,6 +47,7 @@ TARGETS_PATTERN = "|".join(ALL_TARGETS) if ALL_TARGETS else "NO_MATCH"
 import os
 from pathlib import Path
 import shutil
+import sys
 
 # Check if probe mode is enabled from params.txt
 def get_probe_mode():
@@ -60,6 +61,12 @@ def get_probe_mode():
     return False
 
 PROBE_MODE = get_probe_mode() and not MULTIPLEX
+
+# Print mode information
+if PROBE_MODE:
+    print("=== PROBE MODE ENABLED ===", file=sys.stderr)
+else:
+    print("=== PROBE MODE DISABLED ===", file=sys.stderr)
 
 ############################################
 # Helper functions
