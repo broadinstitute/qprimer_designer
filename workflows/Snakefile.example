@@ -45,6 +45,19 @@ MAX_CORES = workflow.cores or 1
 
 import os
 
+# Check if probe mode is enabled from params.txt
+def get_probe_mode():
+    if not os.path.exists(PARAMS):
+        return False
+    with open(PARAMS) as f:
+        for line in f:
+            if line.strip().startswith('PROBE_MODE'):
+                value = line.split('=')[1].strip().lower()
+                return value in ('true', '1', 'yes')
+    return False
+
+PROBE_MODE = get_probe_mode() and not MULTIPLEX
+
 ############################################
 # Helper functions
 ############################################
@@ -192,6 +205,21 @@ rule generate_primers:
         "--params {PARAMS} --name {wildcards.virus}"
 
 
+rule generate_probes:
+    """Generate probe candidates from target sequences."""
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
+    input:
+        "target_seqs/selected/{virus}.fa"
+    output:
+        fasta="probe_seqs/{virus}_init.fa",
+        features="probe_seqs/{virus}_init.feat"
+    shell:
+        "qprimer generate-probe "
+        "--in {input} --out {output.fasta} "
+        "--params {PARAMS} --name {wildcards.virus}"
+
+
 ############################################
 # Alignment
 ############################################
@@ -227,6 +255,42 @@ rule align:
         "bowtie2 -x {params.reference} -U {input.fasta} -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
         "--no-hd --no-unal > {output}"
+
+
+rule align_probes:
+    """Align probes to targets with strict parameters."""
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
+    input:
+        fasta="probe_seqs/{virus}_init.fa",
+        index="bt2_index/{virus}.1.bt2"
+    output:
+        temp("probe_alignments/{virus}.sam")
+    threads:
+        min(2, MAX_CORES)
+    params:
+        reference=lambda wc: f"bt2_index/{wc.virus}",
+        multiMap=lambda wc: min(count_seqs(wc.virus) * 5, 50000),
+        # Strict alignment: end-to-end, no indels, ≤2 mismatches for 24-28bp probes
+        mapOption="--end-to-end --mp 10,10 --rdg 20,20 --rfg 20,20 -N 1 --score-min L,-0.8,-0.8"
+    shell:
+        "bowtie2 -x {params.reference} -U {input.fasta} -f "
+        "-p {threads} -k {params.multiMap} {params.mapOption} "
+        "--no-hd --no-unal > {output}"
+
+
+rule parse_probe_mapping:
+    """Parse probe SAM file into mapping table."""
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
+    input:
+        sam="probe_alignments/{virus}.sam"
+    output:
+        "probe_mappings/{virus}.csv"
+    shell:
+        "qprimer parse-probe-mapping "
+        "--sam {input.sam} --out {output} "
+        "--params {PARAMS}"
 
 
 ############################################
@@ -341,10 +405,26 @@ rule evaluate:
 rule filter_primer_list:
     input:
         res="outputs/{virus}.{virus}.eval",
-        init="primer_seqs/{virus}_init.fa"
+        init="primer_seqs/{virus}_init.fa",
+        probe_mapping=lambda wc: (
+            f"probe_mappings/{wc.virus}.csv" if PROBE_MODE else []
+        ),
+        probe_seqs=lambda wc: (
+            f"probe_seqs/{wc.virus}_init.fa" if PROBE_MODE else []
+        )
     output:
-        "primer_seqs/{virus}_filt.fa"
+        fasta="primer_seqs/{virus}_filt.fa",
+        probe_csv=lambda wc: (
+            f"primer_seqs/{wc.virus}_filt_probes.csv" if PROBE_MODE else []
+        )
+    params:
+        probe_args=lambda wc, input, output: (
+            f"--probe-mapping {input.probe_mapping} "
+            f"--probe-seqs {input.probe_seqs} "
+            f"--probe-out {output.probe_csv}"
+            if PROBE_MODE else ""
+        )
     shell:
         "qprimer filter "
-        "--init {input.init} --scores {input.res} --out {output} "
-        "--params {PARAMS}"
+        "--init {input.init} --scores {input.res} --out {output.fasta} "
+        "--params {PARAMS} {params.probe_args}"

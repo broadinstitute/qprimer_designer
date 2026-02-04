@@ -41,6 +41,7 @@ For more information on a specific command:
     from qprimer_designer.commands import (
         generate,
         generate_probe,
+        parse_probe_mapping,
         prepare_features,
         pick_representatives,
         prepare_input,
@@ -53,6 +54,7 @@ For more information on a specific command:
 
     generate.register(subparsers)
     generate_probe.register(subparsers)
+    parse_probe_mapping.register(subparsers)
     prepare_features.register(subparsers)
     pick_representatives.register(subparsers)
     prepare_input.register(subparsers)
