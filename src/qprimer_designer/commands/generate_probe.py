@@ -166,11 +166,13 @@ def run(args):
             features[seq]["pname"] = pname
             fout.write(f">{pname}\n{seq}\n")
 
-    # Write features CSV
+    # Write features CSV (only for filtered probes)
     features_df = pd.DataFrame(features).T
     if features_df.empty:
         features_df = pd.DataFrame(columns=["pname", "pseq", "len", "position", "Tm", "GC", "dG"])
     else:
+        # Only include probes that passed all filters
+        features_df = features_df.loc[probe_list]
         features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "len", "position", "Tm", "GC", "dG"]]
 
     fname = args.probe_seqs.replace(".fa", ".feat")
