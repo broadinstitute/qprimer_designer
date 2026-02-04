@@ -48,27 +48,8 @@ def has_homopolymer(seq: str, max_len: int) -> bool:
     return False
 
 
-def generate_probes_single(
-    target_seq: str,
-    step: int,
-    len_min: int,
-    len_max: int,
-) -> dict:
-    """Generate probe candidates from a single target sequence."""
-    probes = {}
-
-    for probe_len in range(len_min, len_max + 1):
-        for i in range(0, len(target_seq) - probe_len + 1, step):
-            seq = target_seq[i : i + probe_len]
-            if "N" not in seq:
-                probes[seq] = i
-
-    return probes
-
-
-def generate_probes_multi(
+def generate_probes(
     target_seqs,
-    step: int,
     len_min: int,
     len_max: int,
     max_tm: float,
@@ -80,11 +61,14 @@ def generate_probes_multi(
     max_num: int,
 ):
     """Generate and filter probe candidates across multiple target sequences."""
-    # Generate all candidate probes
+    # Generate all candidate probes with step=1
     probes = {}
-    for tseq in target_seqs:
-        probe_list = generate_probes_single(tseq, step, len_min, len_max)
-        probes.update(probe_list)
+    for target_seq in target_seqs:
+        for probe_len in range(len_min, len_max + 1):
+            for i in range(0, len(target_seq) - probe_len + 1):
+                seq = target_seq[i : i + probe_len]
+                if "N" not in seq:
+                    probes[seq] = i
 
     print(f">> Probes with unique sequence: {len(probes)}")
 
@@ -143,7 +127,6 @@ def run(args):
     # Shared parameters
     max_gc = float(params.get("GC_MAX", 60))
     min_dg = float(params.get("DG_MIN", -6))
-    step = int(params.get("TILING_STEP", 5))
     max_num = int(params.get("MAX_PRIMER_CANDIDATES", 10000))
 
     target_seqs = [str(s.seq) for s in SeqIO.parse(args.target_seqs, "fasta")]
@@ -151,10 +134,11 @@ def run(args):
     print(f"Generating probes from {args.target_seqs}...")
     print(f"Probe length range: {len_min}-{len_max}")
     print(f"Tm range: {min_tm}-{max_tm}")
+    print(f"Using step=1 for comprehensive tiling")
     start_time = time.time()
 
-    filtered, features = generate_probes_multi(
-        target_seqs, step, len_min, len_max,
+    filtered, features = generate_probes(
+        target_seqs, len_min, len_max,
         max_tm, min_tm, max_gc, min_dg,
         homopolymer_max, avoid_5prime_G, max_num,
     )
