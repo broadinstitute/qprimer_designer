@@ -64,9 +64,11 @@ def generate_probes(
     # Generate all candidate probes with step=1 from both strands
     probes = {}
     for target_seq in target_seqs:
+        seq_len = len(target_seq)
+
         # Generate from forward strand
         for probe_len in range(len_min, len_max + 1):
-            for i in range(0, len(target_seq) - probe_len + 1):
+            for i in range(0, seq_len - probe_len + 1):
                 seq = target_seq[i : i + probe_len]
                 if "N" not in seq:
                     probes[seq] = i
@@ -74,10 +76,13 @@ def generate_probes(
         # Generate from reverse complement strand
         target_seq_rc = reverse_complement_dna(target_seq)
         for probe_len in range(len_min, len_max + 1):
-            for i in range(0, len(target_seq_rc) - probe_len + 1):
+            for i in range(0, seq_len - probe_len + 1):
                 seq = target_seq_rc[i : i + probe_len]
                 if "N" not in seq:
-                    probes[seq] = i
+                    # Convert RC position to original sequence coordinates
+                    # Position in original = len - position_in_rc - probe_len
+                    original_pos = seq_len - i - probe_len
+                    probes[seq] = original_pos
 
     print(f">> Probes with unique sequence: {len(probes)}")
 
