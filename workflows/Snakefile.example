@@ -26,7 +26,6 @@ PARAMS = "params.txt"
 
 # Pipeline Design Options
 MULTIPLEX = bool(int(config.get("multiplex", 0)))
-PROBE = bool(int(config.get("probe", 1))) # default value is set to design probes
 
 ############################################
 # Template safety checks (fail fast)
@@ -47,7 +46,7 @@ import os
 import sys
 
 # Probe mode (singleplex only)
-PROBE_MODE = bool(int(config.get("probe_mode", 0))) and not MULTIPLEX
+PROBE_MODE = bool(int(config.get("probe", 0))) and not MULTIPLEX
 
 # Print mode information
 if PROBE_MODE:
@@ -262,7 +261,7 @@ rule align_probes:
         fasta="primer_seqs/{virus}_probe.fa",
         index="bt2_index/{virus}.1.bt2"
     output:
-        temp("probe_alignments/{virus}.sam")
+        temp("alignments/{virus}_probe.sam")
     threads:
         min(2, MAX_CORES)
     params:
@@ -281,9 +280,9 @@ rule parse_probe_mapping:
     wildcard_constraints:
         virus=TARGETS_PATTERN
     input:
-        sam="probe_alignments/{virus}.sam"
+        sam="alignments/{virus}_probe.sam"
     output:
-        "probe_mappings/{virus}.csv"
+        "alignments/{virus}_probe.csv"
     shell:
         "qprimer parse-probe-mapping "
         "--sam {input.sam} --out {output} "
@@ -404,7 +403,7 @@ rule filter_primer_list:
         res="outputs/{virus}.{virus}.eval",
         init="primer_seqs/{virus}_init.fa",
         probe_mapping=lambda wc: (
-            f"probe_mappings/{wc.virus}.csv" if PROBE_MODE else []
+            f"alignments/{wc.virus}_probe.csv" if PROBE_MODE else []
         ),
         probe_seqs=lambda wc: (
             f"primer_seqs/{wc.virus}_probe.fa" if PROBE_MODE else []
@@ -413,7 +412,7 @@ rule filter_primer_list:
         "primer_seqs/{virus}_filt.fa"
     params:
         probe_args=lambda wc: (
-            f"--probe-mapping probe_mappings/{wc.virus}.csv "
+            f"--probe-mapping alignments/{wc.virus}_probe.csv "
             f"--probe-seqs primer_seqs/{wc.virus}_probe.fa "
             f"--probe-out primer_seqs/{wc.virus}_filt_probes.csv"
             if PROBE_MODE else ""
