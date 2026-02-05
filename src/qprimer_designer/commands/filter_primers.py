@@ -259,10 +259,10 @@ def run(args):
             valid_pairs_set = set(valid_pairs)
             top = top_candidates[
                 top_candidates.apply(lambda r: (r['pname_f'], r['pname_r']) in valid_pairs_set, axis=1)
-            ]
+            ].copy()
         else:
             print("WARNING: No primer pairs in top N have compatible probes!")
-            top = top_candidates.iloc[:0]  # Empty DataFrame
+            top = top_candidates.iloc[:0].copy()  # Empty DataFrame
 
         # Add primer sequences and probe count to top DataFrame
         if not top.empty:
@@ -340,7 +340,7 @@ def run(args):
             valid_pairs_set = set((pf, pr) for pf, pr, _ in valid_pairs)
             top = top_candidates[
                 top_candidates.apply(lambda r: (r['pname_f'], r['pname_r']) in valid_pairs_set, axis=1)
-            ]
+            ].copy()
 
             # Add primer sequences and dimer ΔG
             dimer_dict = {(pf, pr): dg for pf, pr, dg in valid_pairs}
@@ -352,7 +352,7 @@ def run(args):
             )
         else:
             print("WARNING: No primer pairs in top N have primer_dimer_dg > DG_MIN!")
-            top = top_candidates.iloc[:0]  # Empty DataFrame
+            top = top_candidates.iloc[:0].copy()  # Empty DataFrame
 
     # Write primer pairs CSV (always)
     csv_out = args.out.replace(".fa", ".csv")
