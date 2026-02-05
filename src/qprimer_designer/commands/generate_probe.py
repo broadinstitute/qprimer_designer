@@ -134,9 +134,8 @@ def run(args):
     target_seqs = [str(s.seq) for s in SeqIO.parse(args.target_seqs, "fasta")]
 
     print(f"Generating probes from {args.target_seqs}...")
-    print(f"Probe length range: {len_min}-{len_max}")
+    print(f"Probe lengths: {len_min}-{len_max}")
     print(f"Tm range: {min_tm}-{max_tm}")
-    print(f"Using step=1 for comprehensive tiling")
     start_time = time.time()
 
     filtered, features = generate_probes(

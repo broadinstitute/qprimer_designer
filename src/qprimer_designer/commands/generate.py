@@ -98,10 +98,15 @@ def generate_primers_multi(
 
     for unfilt, filt in zip([forps, revps], [for_filt, rev_filt]):
         for pseq in unfilt:
+            # Calculate features
             tm = get_tm(pseq)
             gc = gc_fraction(pseq)
+
+            # Filter by Tm and GC
             if min_tm <= tm <= max_tm and gc <= max_gc / 100.0:
                 dG = compute_self_dimer_dg(pseq)
+
+                # Only add features if all filters pass
                 if dG >= min_dg:
                     features[pseq]["Tm"] = round(tm, 1)
                     features[pseq]["GC"] = round(gc, 2)
@@ -134,6 +139,7 @@ def run(args):
 
     print(f"Generating primers from {args.target_seqs}...")
     print(f"Primer lengths: {primer_lens}")
+    print(f"Tm range: {min_tm}-{max_tm}")
     start_time = time.time()
 
     for_filt, rev_filt, features = generate_primers_multi(
@@ -150,6 +156,7 @@ def run(args):
     if len(reverses) > max_num // 2:
         reverses = random.sample(reverses, max_num // 2)
 
+    # Write output FASTA
     with open(args.primer_seqs, "w") as fout:
         for i, seq in enumerate(forwards):
             pname = f"{args.name}_{i+1}_f"
@@ -163,11 +170,12 @@ def run(args):
             features[seq]["forrev"] = "r"
             fout.write(f">{pname}\n{seq}\n")
 
-    features_df = pd.DataFrame(features).T
-    if features_df.empty:
-        features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
-    else:
+    # Write features CSV
+    if features:
+        features_df = pd.DataFrame(features).T
         features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"]]
+    else:
+        features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
 
     fname = args.primer_seqs.replace(".fa", ".feat")
     features_df.to_csv(fname, index=False)

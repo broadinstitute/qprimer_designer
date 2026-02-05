@@ -26,7 +26,12 @@ def find_valid_probes_for_pair(
     buffer
 ):
     """
-    Find probes compatible with a primer pair across all its target mappings.
+    Find probes compatible with a primer pair across ALL its target mappings.
+
+    A probe is only valid if it:
+    1. Maps to ALL targets the primer pair covers
+    2. Falls within amplicon region for ALL those targets
+    3. Has good dimer ΔG with both primers
 
     Args:
         pair_full_rows: List of rows from .full file for this pair (each with different target sets)
@@ -39,8 +44,6 @@ def find_valid_probes_for_pair(
     Returns:
         List of valid probe names
     """
-    valid_probes = []
-
     # Get primer sequences (same for all rows)
     first_row = pair_full_rows[0]
     pname_f = first_row['pname_f']
@@ -48,50 +51,87 @@ def find_valid_probes_for_pair(
     fwd_seq = primer_seqs_dict[pname_f]
     rev_seq = primer_seqs_dict[pname_r]
 
-    # Process each row (each represents mapping to different target set)
+    # Collect all target-position mappings for this primer pair
+    target_positions = {}  # {target_id: [(fwd_start, prod_len), ...]}
+
     for pair_row in pair_full_rows:
-        # Parse target lists from this row
         targets = ast.literal_eval(pair_row['targets'])
         starts = ast.literal_eval(pair_row['starts'])
         prod_len = pair_row['prod_len']
 
-        # Check each target this pair covers in this row
         for target_id, fwd_start in zip(targets, starts):
-            # Find probes mapped to this target
-            probes_on_target = probe_mapping_df[probe_mapping_df['target_id'] == target_id]
+            if target_id not in target_positions:
+                target_positions[target_id] = []
+            target_positions[target_id].append((fwd_start, prod_len))
 
-            for _, probe_row in probes_on_target.iterrows():
-                probe_name = probe_row['probe_name']
+    all_targets = set(target_positions.keys())
 
-                # Skip if we don't have this probe sequence
-                if probe_name not in probe_seqs_dict:
-                    continue
+    # Find all candidate probes that map to at least one target
+    candidate_probes = set()
+    for target_id in all_targets:
+        probes_on_target = probe_mapping_df[probe_mapping_df['target_id'] == target_id]
+        for _, probe_row in probes_on_target.iterrows():
+            candidate_probes.add(probe_row['probe_name'])
 
-                probe_seq = probe_seqs_dict[probe_name]
-                probe_start = probe_row['start_pos']
-                probe_len = len(probe_seq)
-                probe_end = probe_start + probe_len
+    valid_probes = []
 
-                # Check position: must be ≥20nt from both primer ends
+    # Check each candidate probe
+    for probe_name in candidate_probes:
+        if probe_name not in probe_seqs_dict:
+            continue
+
+        probe_seq = probe_seqs_dict[probe_name]
+
+        # Check dimer formation with primers (once, doesn't depend on target)
+        try:
+            dg_fwd = compute_dimer_dg(probe_seq, fwd_seq)
+            dg_rev = compute_dimer_dg(probe_seq, rev_seq)
+
+            if dg_fwd <= min_dg or dg_rev <= min_dg:
+                continue
+        except Exception as e:
+            print(f"Warning: Failed to compute dimer for {probe_name}: {e}")
+            continue
+
+        # Check if probe is valid for ALL targets
+        valid_for_all_targets = True
+
+        for target_id in all_targets:
+            # Get probe mappings for this target
+            probe_on_this_target = probe_mapping_df[
+                (probe_mapping_df['target_id'] == target_id) &
+                (probe_mapping_df['probe_name'] == probe_name)
+            ]
+
+            # Probe must map to this target
+            if probe_on_this_target.empty:
+                valid_for_all_targets = False
+                break
+
+            # Get probe position on this target
+            probe_start = probe_on_this_target.iloc[0]['start_pos']
+            probe_len = len(probe_seq)
+            probe_end = probe_start + probe_len
+
+            # Check if probe is within amplicon for at least one position on this target
+            # (A target may appear multiple times with different positions)
+            target_valid = False
+            for fwd_start, prod_len in target_positions[target_id]:
                 amplicon_start = fwd_start + buffer
                 amplicon_end = fwd_start + prod_len - buffer
 
-                if not (amplicon_start <= probe_start and probe_end <= amplicon_end):
-                    continue
+                if amplicon_start <= probe_start and probe_end <= amplicon_end:
+                    target_valid = True
+                    break
 
-                # Check dimer formation with both primers
-                try:
-                    dg_fwd = compute_dimer_dg(probe_seq, fwd_seq)
-                    dg_rev = compute_dimer_dg(probe_seq, rev_seq)
+            if not target_valid:
+                valid_for_all_targets = False
+                break
 
-                    # Both dimers must be above threshold
-                    if dg_fwd > min_dg and dg_rev > min_dg:
-                        valid_probes.append(probe_name)
-                except Exception as e:
-                    print(f"Warning: Failed to compute dimer for {probe_name}: {e}")
-                    continue
+        if valid_for_all_targets:
+            valid_probes.append(probe_name)
 
-    return list(set(valid_probes))  # Deduplicate
+    return valid_probes
 
 
 def register(subparsers):
