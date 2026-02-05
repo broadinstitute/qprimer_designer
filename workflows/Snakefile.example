@@ -452,47 +452,16 @@ rule align:
 
 
 rule align_probes:
-    """Align probes to targets with strict parameters."""
-    wildcard_constraints:
-        virus=TARGETS_PATTERN
-    input:
-        fasta="primer_seqs/{virus}_probe.fa",
-        index="bt2_index/{virus}.1.bt2"
-    output:
-        temp("alignments/{virus}.{virus}.probe.sam")
-    threads:
-        min(2, MAX_CORES)
-    params:
-        reference=lambda wc: f"bt2_index/{wc.virus}",
-        multiMap=lambda wc: min(count_seqs(wc.virus) * 5, 50000),
-        # Strict alignment: end-to-end, no indels, mismatch penalty based on PROBE_MAX_MISMATCHES
-        mapOption=f"--end-to-end --mp {PROBE_MISMATCH_PENALTY},{PROBE_MISMATCH_PENALTY} --rdg 20,20 --rfg 20,20 -N 1 --score-min L,-0.8,-0.8"
-    shell:
-        "bowtie2 -x {params.reference} -U {input.fasta} -f "
-        "-p {threads} -k {params.multiMap} {params.mapOption} "
-        "--no-hd --no-unal > {output}"
-
-
-rule parse_probe_mapping:
-    """Parse probe SAM file into mapping table."""
-    wildcard_constraints:
-        virus=TARGETS_PATTERN
-    input:
-        sam="alignments/{virus}.{virus}.probe.sam"
-    output:
-        "alignments/{virus}.{virus}.probe.csv"
-    shell:
-        "qprimer parse-probe-mapping "
-        "--sam {input.sam} --out {output}"
-
-
-rule align_filtered_probes_offtarget:
-    """Align filtered probes to off-targets with less strict parameters."""
+    """Align probes to ON-targets (strict) or OFF-targets (less strict)."""
     wildcard_constraints:
         virus=TARGETS_PATTERN,
         target=ALL_TARGETS_PATTERN
     input:
-        fasta="primer_seqs/{virus}_filt_probes.fa",
+        fasta=lambda wc: (
+            f"primer_seqs/{wc.virus}_probe.fa"
+            if wc.virus == wc.target
+            else f"primer_seqs/{wc.virus}_filt_probes.fa"
+        ),
         index="bt2_index/{target}.1.bt2"
     output:
         temp("alignments/{virus}.{target}.probe.sam")
@@ -501,16 +470,20 @@ rule align_filtered_probes_offtarget:
     params:
         reference=lambda wc: f"bt2_index/{wc.target}",
         multiMap=lambda wc: min(count_seqs(wc.target) * 5, 50000),
-        # Less strict alignment for off-target detection
-        mapOption="--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
+        # Strict alignment for ON-target (virus==target), less strict for OFF-target
+        mapOption=lambda wc: (
+            f"--end-to-end --mp {PROBE_MISMATCH_PENALTY},{PROBE_MISMATCH_PENALTY} --rdg 20,20 --rfg 20,20 -N 1 --score-min L,-0.8,-0.8"
+            if wc.virus == wc.target
+            else "--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
+        )
     shell:
         "bowtie2 -x {params.reference} -U {input.fasta} -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
         "--no-hd --no-unal > {output}"
 
 
-rule parse_offtarget_probe_mapping:
-    """Parse off-target probe SAM file into mapping table."""
+rule parse_probe_mapping:
+    """Parse probe SAM file into mapping table."""
     wildcard_constraints:
         virus=TARGETS_PATTERN,
         target=ALL_TARGETS_PATTERN
