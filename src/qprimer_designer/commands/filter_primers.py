@@ -279,13 +279,28 @@ def run(args):
             probe_df.to_csv(args.probe_out, index=False)
             print(f"Wrote {len(probe_df)} probe assignments to {args.probe_out}")
 
-            # Write probe FASTA
+            # Write probe FASTA (limit to first 5 probes per pair)
             probe_fasta_out = args.probe_out.replace(".csv", ".fa")
-            unique_probes = probe_df[['probe_name', 'probe_seq']].drop_duplicates()
+
+            # Limit to first 5 probes per primer pair for FASTA output
+            limited_probes = []
+            for pair_key in valid_pairs:
+                pair_probes = valid_probes_per_pair[pair_key]
+                # Take first 5 probes for this pair
+                for probe_name in pair_probes[:5]:
+                    limited_probes.append({
+                        'probe_name': probe_name,
+                        'probe_seq': probe_seqs_dict[probe_name]
+                    })
+
+            # Get unique probes from limited set
+            limited_df = pd.DataFrame(limited_probes)
+            unique_probes = limited_df.drop_duplicates(subset=['probe_name'])
+
             with open(probe_fasta_out, "w") as out:
                 for _, row in unique_probes.iterrows():
                     out.write(f">{row['probe_name']}\n{row['probe_seq']}\n")
-            print(f"Wrote {len(unique_probes)} unique probes to {probe_fasta_out}")
+            print(f"Wrote {len(unique_probes)} unique probes to {probe_fasta_out} (max 5 per pair)")
 
     else:
         # STANDARD MODE (no probes)
