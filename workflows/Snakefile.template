@@ -628,7 +628,9 @@ rule filter_primer_list:
         )
     output:
         fasta="primer_seqs/{virus}_filt.fa",
-        csv="primer_seqs/{virus}_filt.csv"
+        csv="primer_seqs/{virus}_filt.csv",
+        probe_csv="primer_seqs/{virus}_filt_probes.csv",
+        probe_fasta="primer_seqs/{virus}_filt_probes.fa"
     params:
         probe_args=lambda wc: (
             f"--probe-mapping alignments/{wc.virus}.{wc.virus}.probe.csv "
@@ -637,6 +639,7 @@ rule filter_primer_list:
             if PROBE_MODE else ""
         )
     shell:
-        "qprimer filter "
-        "--init {input.init} --scores {input.res} --out {output.fasta} "
-        "--params {PARAMS} {params.probe_args}"
+        """
+        qprimer filter --init {input.init} --scores {input.res} --out {output.fasta} --params {PARAMS} {params.probe_args}
+        touch {output.probe_csv} {output.probe_fasta}
+        """
