@@ -125,12 +125,12 @@ def check_ids(fasta):
 # Evaluate mode configuration
 ############################################
 
-MODE = config.get("mode", "generate")
+EVALUATE = bool(int(config.get("evaluate", 0)))
 FOR  = config.get("for")
 REV  = config.get("rev")
 PSET = config.get("pset")
 
-if MODE == "evaluate":
+if EVALUATE:
     direct_ok = FOR is not None and REV is not None
     pset_ok   = PSET is not None
 
@@ -153,7 +153,7 @@ if MODE == "evaluate":
 # Final targets
 ############################################
 
-if MODE == "evaluate":
+if EVALUATE:
     rule all:
         input:
             f"evaluate/{PSET_NAME}"
@@ -412,7 +412,7 @@ rule build_index:
 rule align:
     input:
         fasta=lambda wc: (
-            f"evaluate/{wc.virus}.fa" if MODE == "evaluate"
+            f"evaluate/{wc.virus}.fa" if EVALUATE
             else (f"primer_seqs/{wc.virus}_init.fa"
                     if wc.virus == wc.target
                     else f"primer_seqs/{wc.virus}_filt.fa")
@@ -575,11 +575,11 @@ rule prepare_input:
         mapped="alignments/{virus}.{target}.mapped",
         prev=lambda wc: (
             [f"outputs/{wc.virus}.{wc.virus}.eval"]
-            if wc.virus != wc.target and MODE != "evaluate" else []
+            if wc.virus != wc.target and not EVALUATE else []
         ),
         ref="target_seqs/original/{target}.fa",
         features=lambda wc: (
-            "evaluate/{virus}.feat" if MODE == "evaluate"
+            "evaluate/{virus}.feat" if EVALUATE
             else "primer_seqs/{virus}_init.feat"
         )
     output:
@@ -588,7 +588,7 @@ rule prepare_input:
         ref_type=lambda wc: "on" if wc.virus == wc.target else "off",
         prev_arg=lambda wc: (
             f"--prev outputs/{wc.virus}.{wc.virus}.eval"
-            if wc.virus != wc.target and MODE != "evaluate" else ""
+            if wc.virus != wc.target and not EVALUATE else ""
         )
     shell:
         "qprimer prepare-input "
