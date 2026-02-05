@@ -25,10 +25,14 @@ by tiling, then filtering by melting temperature (Tm), GC content, and
 self-dimer free energy (ΔG).
 """,
     )
-    parser.add_argument("--in", dest="target_seqs", required=True, help="Input FASTA of target sequences")
-    parser.add_argument("--out", dest="primer_seqs", required=True, help="Output FASTA for primers")
-    parser.add_argument("--params", dest="param_file", required=True, help="Parameters file (params.txt)")
-    parser.add_argument("--name", required=True, help="Name prefix for primer IDs")
+    parser.add_argument("--in", dest="target_seqs", required=True, 
+                        help="Input FASTA of target sequences")
+    parser.add_argument("--out", dest="primer_seqs", required=True, 
+                        help="Output FASTA for primers")
+    parser.add_argument("--params", dest="param_file", required=True, 
+                        help="Parameters file (params.txt)")
+    parser.add_argument("--name", required=True, 
+                        help="Name prefix for primer IDs")
     parser.set_defaults(func=run)
 
 
@@ -96,16 +100,13 @@ def generate_primers_multi(
         for pseq in unfilt:
             tm = get_tm(pseq)
             gc = gc_fraction(pseq)
-
-            features[pseq]["Tm"] = round(tm, 1)
-            features[pseq]["GC"] = gc
-            features[pseq]["len"] = len(pseq)
-
             if min_tm <= tm <= max_tm and gc <= max_gc / 100.0:
                 dG = compute_self_dimer_dg(pseq)
-                features[pseq]["dG"] = round(dG, 1)
-
                 if dG >= min_dg:
+                    features[pseq]["Tm"] = round(tm, 1)
+                    features[pseq]["GC"] = round(gc, 2)
+                    features[pseq]["len"] = len(pseq)
+                    features[pseq]["dG"] = round(dG, 1)
                     filt[pseq] = unfilt[pseq]
 
     valid_pairs = count_primer_pairs(for_filt, rev_filt, min_amp_len, max_amp_len)

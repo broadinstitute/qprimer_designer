@@ -15,6 +15,11 @@ def reverse_complement_dna(seq: str) -> str:
     return seq.translate(COMPLEMENT_TABLE)[::-1]
 
 
+def complement_dna(seq: str) -> str:
+    """Return complement (not reverse) of a DNA sequence."""
+    return seq.translate(COMPLEMENT_TABLE)
+
+
 def get_tm(seq: str) -> float:
     """Calculate primer melting temperature (Primer3-like ionic conditions)."""
     return MeltingTemp.Tm_NN(seq, Na=50, Mg=1.5, dNTPs=0.6)
@@ -25,6 +30,23 @@ def get_gc_fraction(seq: str) -> float:
     return gc_fraction(seq)
 
 
-def complement_dna(seq: str) -> str:
-    """Return complement (not reverse) of a DNA sequence."""
-    return seq.translate(COMPLEMENT_TABLE)
+def has_homopolymer(seq: str, max_len: int) -> bool:
+    """Check if sequence has homopolymer run > max_len.
+
+    Args:
+        seq: DNA sequence to check
+        max_len: Maximum allowed homopolymer length
+
+    Returns:
+        True if sequence contains homopolymer run exceeding max_len
+    """
+    count = 1
+    for i in range(1, len(seq)):
+        if seq[i] == seq[i-1]:
+            count += 1
+            if count > max_len:
+                return True
+        else:
+            count = 1
+    return False
+

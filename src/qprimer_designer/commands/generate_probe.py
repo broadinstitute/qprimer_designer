@@ -9,7 +9,7 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.SeqUtils import gc_fraction
 
-from qprimer_designer.utils import get_tm, parse_params, reverse_complement_dna
+from qprimer_designer.utils import get_tm, parse_params, reverse_complement_dna, has_homopolymer
 from qprimer_designer.external import compute_self_dimer_dg
 
 
@@ -33,19 +33,6 @@ self-dimer free energy (ΔG), homopolymer runs, and 5' nucleotide constraints.
     parser.add_argument("--name", required=True,
                        help="Name prefix for probe IDs")
     parser.set_defaults(func=run)
-
-
-def has_homopolymer(seq: str, max_len: int) -> bool:
-    """Check if sequence has homopolymer run > max_len."""
-    count = 1
-    for i in range(1, len(seq)):
-        if seq[i] == seq[i-1]:
-            count += 1
-            if count > max_len:
-                return True
-        else:
-            count = 1
-    return False
 
 
 def generate_probes(
@@ -103,17 +90,17 @@ def generate_probes(
         tm = get_tm(pseq)
         gc = gc_fraction(pseq)
 
-        features[pseq]["Tm"] = round(tm, 1)
-        features[pseq]["GC"] = gc
-        features[pseq]["len"] = len(pseq)
-        features[pseq]["position"] = probes[pseq]  # Store start position
-
         # Filter by Tm and GC
         if min_tm <= tm <= max_tm and gc <= max_gc:
             dG = compute_self_dimer_dg(pseq)
-            features[pseq]["dG"] = round(dG, 1)
 
+            # Only add features if all filters pass
             if dG >= min_dg:
+                features[pseq]["Tm"] = round(tm, 1)
+                features[pseq]["GC"] = round(gc, 2)
+                features[pseq]["len"] = len(pseq)
+                features[pseq]["position"] = probes[pseq]
+                features[pseq]["dG"] = round(dG, 1)
                 filtered[pseq] = probes[pseq]
 
     print(f">> Probes filtered: {len(filtered)}")
@@ -166,14 +153,12 @@ def run(args):
             features[seq]["pname"] = pname
             fout.write(f">{pname}\n{seq}\n")
 
-    # Write features CSV (only for filtered probes)
-    features_df = pd.DataFrame(features).T
-    if features_df.empty:
-        features_df = pd.DataFrame(columns=["pname", "pseq", "len", "position", "Tm", "GC", "dG"])
-    else:
-        # Only include probes that passed all filters
-        features_df = features_df.loc[probe_list]
+    # Write features CSV
+    if features:
+        features_df = pd.DataFrame(features).T
         features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "len", "position", "Tm", "GC", "dG"]]
+    else:
+        features_df = pd.DataFrame(columns=["pname", "pseq", "len", "position", "Tm", "GC", "dG"])
 
     fname = args.probe_seqs.replace(".fa", ".feat")
     features_df.to_csv(fname, index=False)
