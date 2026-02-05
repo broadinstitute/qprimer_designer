@@ -179,7 +179,7 @@ elif MULTIPLEX:
             eval_off=lambda wc: [f"outputs/{wc.on}.{t}.eval" for t in off_targets(wc.on)],
             fa="primer_seqs/{on}_filt.fa",
             probe_mapping_on=lambda wc: (
-                f"alignments/{wc.on}_probe.csv" if PROBE_MODE else []
+                f"alignments/{wc.on}.{wc.on}.probe.csv" if PROBE_MODE else []
             ),
             probe_mapping_off=lambda wc: (
                 [f"alignments/{wc.on}.{t}.probe.csv" for t in off_targets(wc.on)]
@@ -215,7 +215,7 @@ else:
             eval_off=lambda wc: [f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS],
             fa="primer_seqs/{virus}_filt.fa",
             probe_mapping_on=lambda wc: (
-                f"alignments/{wc.virus}_probe.csv" if PROBE_MODE else []
+                f"alignments/{wc.virus}.{wc.virus}.probe.csv" if PROBE_MODE else []
             ),
             probe_mapping_off=lambda wc: (
                 [f"alignments/{wc.virus}.{t}.probe.csv" for t in OFF_TARGETS]
@@ -440,7 +440,7 @@ rule align_probes:
         fasta="primer_seqs/{virus}_probe.fa",
         index="bt2_index/{virus}.1.bt2"
     output:
-        temp("alignments/{virus}_probe.sam")
+        temp("alignments/{virus}.{virus}.probe.sam")
     threads:
         min(2, MAX_CORES)
     params:
@@ -459,9 +459,9 @@ rule parse_probe_mapping:
     wildcard_constraints:
         virus=TARGETS_PATTERN
     input:
-        sam="alignments/{virus}_probe.sam"
+        sam="alignments/{virus}.{virus}.probe.sam"
     output:
-        "alignments/{virus}_probe.csv"
+        "alignments/{virus}.{virus}.probe.csv"
     shell:
         "qprimer parse-probe-mapping "
         "--sam {input.sam} --out {output}"
@@ -621,23 +621,17 @@ rule filter_primer_list:
         res="outputs/{virus}.{virus}.eval",
         init="primer_seqs/{virus}_init.fa",
         probe_mapping=lambda wc: (
-            f"alignments/{wc.virus}_probe.csv" if PROBE_MODE else []
+            f"alignments/{wc.virus}.{wc.virus}.probe.csv" if PROBE_MODE else []
         ),
         probe_seqs=lambda wc: (
             f"primer_seqs/{wc.virus}_probe.fa" if PROBE_MODE else []
         )
     output:
         fasta="primer_seqs/{virus}_filt.fa",
-        csv="primer_seqs/{virus}_filt.csv",
-        probe_csv=lambda wc: (
-            f"primer_seqs/{wc.virus}_filt_probes.csv" if PROBE_MODE else []
-        ),
-        probe_fasta=lambda wc: (
-            f"primer_seqs/{wc.virus}_filt_probes.fa" if PROBE_MODE else []
-        )
+        csv="primer_seqs/{virus}_filt.csv"
     params:
         probe_args=lambda wc: (
-            f"--probe-mapping alignments/{wc.virus}_probe.csv "
+            f"--probe-mapping alignments/{wc.virus}.{wc.virus}.probe.csv "
             f"--probe-seqs primer_seqs/{wc.virus}_probe.fa "
             f"--probe-out primer_seqs/{wc.virus}_filt_probes.csv"
             if PROBE_MODE else ""
