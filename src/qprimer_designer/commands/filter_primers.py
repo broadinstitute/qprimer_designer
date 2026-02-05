@@ -115,11 +115,14 @@ def run(args):
     """Run filter command with optional probe mode."""
     params = parse_params(args.params)
     num_select = int(params.get("NUM_TOP_SENSITIVITY", 100))
+    min_dg = float(params.get("DG_MIN", -6))
 
     # Load evaluation results
     res = pd.read_csv(args.scores)
     if res.empty:
         open(args.out, "w").close()
+        csv_out = args.out.replace(".fa", "_pairs.csv")
+        open(csv_out, "w").close()
         if args.probe_out:
             open(args.probe_out, "w").close()
         return
@@ -137,12 +140,11 @@ def run(args):
         )
 
         # Parameters
-        min_dg = float(params.get("DG_MIN", -6))
         buffer = int(params.get("PROBE_AMPLICON_BUFFER", 20))
         min_probes = int(params.get("MIN_PROBES_PER_PAIR", 1))
 
         # Select top N pairs FIRST
-        top_candidates = res.iloc[:num_select]
+        top_candidates = res.iloc[:num_select].copy()
 
         # Load .full file and process row-by-row for memory efficiency
         eval_full_path = f"{args.scores}.full"
@@ -163,6 +165,7 @@ def run(args):
         # Check probe compatibility for top N pairs
         probe_assignments = []
         valid_pairs = []
+        valid_probes_per_pair = {}
 
         for _, row in top_candidates.iterrows():
             pname_f = row['pname_f']
@@ -186,6 +189,7 @@ def run(args):
             # Keep pair if it has enough valid probes
             if len(valid_probes) >= min_probes:
                 valid_pairs.append(pair_key)
+                valid_probes_per_pair[pair_key] = valid_probes
 
                 # Record probe assignments
                 for probe in valid_probes:
@@ -208,20 +212,94 @@ def run(args):
             print("WARNING: No primer pairs in top N have compatible probes!")
             top = top_candidates.iloc[:0]  # Empty DataFrame
 
-        # Write probe assignments (already filtered to final pairs)
+        # Add primer sequences and probe count to top DataFrame
+        if not top.empty:
+            top['pseq_f'] = top['pname_f'].map(primer_seqs)
+            top['pseq_r'] = top['pname_r'].map(primer_seqs)
+            top['num_probes'] = top.apply(
+                lambda r: len(valid_probes_per_pair.get((r['pname_f'], r['pname_r']), [])),
+                axis=1
+            )
+
+        # Write probe assignments CSV
         if args.probe_out:
             probe_df = pd.DataFrame(probe_assignments)
             probe_df.to_csv(args.probe_out, index=False)
             print(f"Wrote {len(probe_df)} probe assignments to {args.probe_out}")
 
+            # Write probe FASTA
+            probe_fasta_out = args.probe_out.replace(".csv", ".fa")
+            unique_probes = probe_df[['probe_name', 'probe_seq']].drop_duplicates()
+            with open(probe_fasta_out, "w") as out:
+                for _, row in unique_probes.iterrows():
+                    out.write(f">{row['probe_name']}\n{row['probe_seq']}\n")
+            print(f"Wrote {len(unique_probes)} unique probes to {probe_fasta_out}")
+
     else:
         # STANDARD MODE (no probes)
-        top = res.iloc[:num_select]
+        print("Standard mode - filtering by primer dimer...")
+
+        # Select top N pairs FIRST
+        top_candidates = res.iloc[:num_select].copy()
+
+        # Compute primer dimer ΔG for each pair
+        print(f"Computing primer dimer ΔG for top {len(top_candidates)} pairs...")
+        valid_pairs = []
+
+        for _, row in top_candidates.iterrows():
+            pname_f = row['pname_f']
+            pname_r = row['pname_r']
+
+            # Get primer sequences
+            fwd_seq = primer_seqs.get(pname_f)
+            rev_seq = primer_seqs.get(pname_r)
+
+            if fwd_seq is None or rev_seq is None:
+                continue
+
+            # Compute primer dimer ΔG
+            try:
+                dimer_dg = compute_dimer_dg(fwd_seq, rev_seq)
+                if dimer_dg > min_dg:
+                    valid_pairs.append((pname_f, pname_r, dimer_dg))
+            except Exception as e:
+                print(f"Warning: Failed to compute dimer for {pname_f}/{pname_r}: {e}")
+                continue
+
+        print(f"Found {len(valid_pairs)} of top {len(top_candidates)} pairs with primer_dimer_dg > {min_dg}")
+
+        # Filter to only pairs with valid primer dimer
+        if valid_pairs:
+            valid_pairs_set = set((pf, pr) for pf, pr, _ in valid_pairs)
+            top = top_candidates[
+                top_candidates.apply(lambda r: (r['pname_f'], r['pname_r']) in valid_pairs_set, axis=1)
+            ]
+
+            # Add primer sequences and dimer ΔG
+            dimer_dict = {(pf, pr): dg for pf, pr, dg in valid_pairs}
+            top['pseq_f'] = top['pname_f'].map(primer_seqs)
+            top['pseq_r'] = top['pname_r'].map(primer_seqs)
+            top['primer_dimer_dg'] = top.apply(
+                lambda r: dimer_dict.get((r['pname_f'], r['pname_r'])),
+                axis=1
+            )
+        else:
+            print("WARNING: No primer pairs in top N have primer_dimer_dg > DG_MIN!")
+            top = top_candidates.iloc[:0]  # Empty DataFrame
+
+    # Write primer pairs CSV (always)
+    csv_out = args.out.replace(".fa", "_pairs.csv")
+    if not top.empty:
+        top.to_csv(csv_out, index=False)
+        print(f"Wrote {len(top)} primer pairs to {csv_out}")
+    else:
+        open(csv_out, "w").close()
+        print(f"No valid pairs - created empty {csv_out}")
 
     # Collect unique primer names from top pairs
-    primer_names = set(top["pname_f"]) | set(top["pname_r"])
+    primer_names = set(top["pname_f"]) | set(top["pname_r"]) if not top.empty else set()
 
-    # Write primer FASTA
+    # Write primer FASTA (always)
     with open(args.out, "w") as out:
         for pname in primer_names:
             if pname not in primer_seqs:
