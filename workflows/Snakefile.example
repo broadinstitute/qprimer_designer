@@ -186,7 +186,7 @@ elif MULTIPLEX:
                 if PROBE_MODE else []
             ),
             probe_seqs=lambda wc: (
-                f"primer_seqs/{wc.on}_probe.fa" if PROBE_MODE else []
+                f"primer_seqs/{wc.on}_filt_probes.fa" if PROBE_MODE else []
             )
         output:
             "final/{on}.csv"
@@ -222,7 +222,7 @@ else:
                 if PROBE_MODE else []
             ),
             probe_seqs=lambda wc: (
-                f"primer_seqs/{wc.virus}_probe.fa" if PROBE_MODE else []
+                f"primer_seqs/{wc.virus}_filt_probes.fa" if PROBE_MODE else []
             )
         output:
             "final/{virus}.csv"
@@ -627,7 +627,14 @@ rule filter_primer_list:
             f"primer_seqs/{wc.virus}_probe.fa" if PROBE_MODE else []
         )
     output:
-        "primer_seqs/{virus}_filt.fa"
+        fasta="primer_seqs/{virus}_filt.fa",
+        csv="primer_seqs/{virus}_filt.csv",
+        probe_csv=lambda wc: (
+            f"primer_seqs/{wc.virus}_filt_probes.csv" if PROBE_MODE else []
+        ),
+        probe_fasta=lambda wc: (
+            f"primer_seqs/{wc.virus}_filt_probes.fa" if PROBE_MODE else []
+        )
     params:
         probe_args=lambda wc: (
             f"--probe-mapping alignments/{wc.virus}_probe.csv "
@@ -637,5 +644,5 @@ rule filter_primer_list:
         )
     shell:
         "qprimer filter "
-        "--init {input.init} --scores {input.res} --out {output} "
+        "--init {input.init} --scores {input.res} --out {output.fasta} "
         "--params {PARAMS} {params.probe_args}"
