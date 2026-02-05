@@ -18,7 +18,7 @@ def load_probe_data(probe_mapping_path, probe_seqs_path):
 
 
 def find_valid_probes_for_pair(
-    pair_full_data,
+    pair_full_rows,
     probe_mapping_df,
     probe_seqs_dict,
     primer_seqs_dict,
@@ -26,10 +26,10 @@ def find_valid_probes_for_pair(
     buffer
 ):
     """
-    Find probes compatible with a primer pair.
+    Find probes compatible with a primer pair across all its target mappings.
 
     Args:
-        pair_full_data: Row from .full file with targets, starts, pname_f, pname_r, etc.
+        pair_full_rows: List of rows from .full file for this pair (each with different target sets)
         probe_mapping_df: DataFrame with probe mappings
         probe_seqs_dict: Dict {probe_name: sequence}
         primer_seqs_dict: Dict {primer_name: sequence}
@@ -41,52 +41,55 @@ def find_valid_probes_for_pair(
     """
     valid_probes = []
 
-    # Parse target lists from .full file
-    targets = ast.literal_eval(pair_full_data['targets'])
-    starts = ast.literal_eval(pair_full_data['starts'])
-
-    # Get primer sequences and amplicon length
-    pname_f = pair_full_data['pname_f']
-    pname_r = pair_full_data['pname_r']
+    # Get primer sequences (same for all rows)
+    first_row = pair_full_rows[0]
+    pname_f = first_row['pname_f']
+    pname_r = first_row['pname_r']
     fwd_seq = primer_seqs_dict[pname_f]
     rev_seq = primer_seqs_dict[pname_r]
-    prod_len = pair_full_data['prod_len']
 
-    # Check each target this pair covers
-    for target_id, fwd_start in zip(targets, starts):
-        # Find probes mapped to this target
-        probes_on_target = probe_mapping_df[probe_mapping_df['target_id'] == target_id]
+    # Process each row (each represents mapping to different target set)
+    for pair_row in pair_full_rows:
+        # Parse target lists from this row
+        targets = ast.literal_eval(pair_row['targets'])
+        starts = ast.literal_eval(pair_row['starts'])
+        prod_len = pair_row['prod_len']
 
-        for _, probe_row in probes_on_target.iterrows():
-            probe_name = probe_row['probe_name']
+        # Check each target this pair covers in this row
+        for target_id, fwd_start in zip(targets, starts):
+            # Find probes mapped to this target
+            probes_on_target = probe_mapping_df[probe_mapping_df['target_id'] == target_id]
 
-            # Skip if we don't have this probe sequence
-            if probe_name not in probe_seqs_dict:
-                continue
+            for _, probe_row in probes_on_target.iterrows():
+                probe_name = probe_row['probe_name']
 
-            probe_seq = probe_seqs_dict[probe_name]
-            probe_start = probe_row['start_pos']
-            probe_len = len(probe_seq)
-            probe_end = probe_start + probe_len
+                # Skip if we don't have this probe sequence
+                if probe_name not in probe_seqs_dict:
+                    continue
 
-            # Check position: must be ≥20nt from both primer ends
-            amplicon_start = fwd_start + buffer
-            amplicon_end = fwd_start + prod_len - buffer
+                probe_seq = probe_seqs_dict[probe_name]
+                probe_start = probe_row['start_pos']
+                probe_len = len(probe_seq)
+                probe_end = probe_start + probe_len
 
-            if not (amplicon_start <= probe_start and probe_end <= amplicon_end):
-                continue
+                # Check position: must be ≥20nt from both primer ends
+                amplicon_start = fwd_start + buffer
+                amplicon_end = fwd_start + prod_len - buffer
 
-            # Check dimer formation with both primers
-            try:
-                dg_fwd = compute_dimer_dg(probe_seq, fwd_seq)
-                dg_rev = compute_dimer_dg(probe_seq, rev_seq)
+                if not (amplicon_start <= probe_start and probe_end <= amplicon_end):
+                    continue
 
-                # Both dimers must be above threshold
-                if dg_fwd > min_dg and dg_rev > min_dg:
-                    valid_probes.append(probe_name)
-            except Exception as e:
-                print(f"Warning: Failed to compute dimer for {probe_name}: {e}")
-                continue
+                # Check dimer formation with both primers
+                try:
+                    dg_fwd = compute_dimer_dg(probe_seq, fwd_seq)
+                    dg_rev = compute_dimer_dg(probe_seq, rev_seq)
+
+                    # Both dimers must be above threshold
+                    if dg_fwd > min_dg and dg_rev > min_dg:
+                        valid_probes.append(probe_name)
+                except Exception as e:
+                    print(f"Warning: Failed to compute dimer for {probe_name}: {e}")
+                    continue
 
     return list(set(valid_probes))  # Deduplicate
 
@@ -152,13 +155,16 @@ def run(args):
         # Build lookup of top pairs we care about
         top_pairs_set = set(zip(top_candidates['pname_f'], top_candidates['pname_r']))
 
-        # Read .full file in chunks and extract only rows for top pairs
+        # Read .full file in chunks and extract ALL rows for top pairs
+        # Each pair may have multiple rows with different target sets
         pair_full_data = {}
         for chunk in pd.read_csv(eval_full_path, chunksize=10000):
             for _, row in chunk.iterrows():
                 pair_key = (row['pname_f'], row['pname_r'])
                 if pair_key in top_pairs_set:
-                    pair_full_data[pair_key] = row
+                    if pair_key not in pair_full_data:
+                        pair_full_data[pair_key] = []
+                    pair_full_data[pair_key].append(row)
 
         print(f"Checking top {len(top_candidates)} pairs for probe compatibility...")
 
@@ -288,7 +294,7 @@ def run(args):
             top = top_candidates.iloc[:0]  # Empty DataFrame
 
     # Write primer pairs CSV (always)
-    csv_out = args.out.replace(".fa", "_pairs.csv")
+    csv_out = args.out.replace(".fa", ".csv")
     if not top.empty:
         top.to_csv(csv_out, index=False)
         print(f"Wrote {len(top)} primer pairs to {csv_out}")
