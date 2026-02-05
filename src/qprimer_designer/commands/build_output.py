@@ -192,7 +192,7 @@ def run(args):
             else:
                 tmp.loc[pair, f"cov_{oname}"] = sub["coverage"].sum()
                 tmp.loc[pair, f"act_{oname}"] = sub["activity"].max()
-                tmp.loc[pair, f"sco_{oname}"] = sub["score"].sum()
+                tmp.loc[pair, f"sco_{oname}"] = round(sub["score"].sum(), 3)
 
         merged = merged.join(tmp)
 
@@ -207,7 +207,7 @@ def run(args):
     final = merged.copy()
 
     # PROBE MODE: Filter probes by off-target amplicon overlap
-    if args.probe_mapping_on and args.probe_mapping_off and args.probe_seqs and args.probe_csv:
+    if args.probe_mapping_on and args.probe_mapping_off and args.probe_seqs:
         print("Probe mode enabled - filtering probes by off-target amplicons...")
 
         # Load probe data
@@ -228,7 +228,7 @@ def run(args):
         offtarget_probe_mappings = [pd.read_csv(path) for path in args.probe_mapping_off]
 
         # Load off-target .full files
-        buffer = int(params.get("PROBE_AMPLICON_BUFFER", 20))
+        buffer = 1 
         offtarget_full_data_list = []
         for off_path in args.eval_off:
             full_path = f"{off_path}.full"
@@ -260,14 +260,16 @@ def run(args):
 
         # Add probe information to final DataFrame
         final['valid_probes'] = final.index.map(lambda p: ','.join(valid_probes_dict.get(p, [])))
-        final['num_valid_probes'] = final.index.map(lambda p: len(valid_probes_dict.get(p, [])))
+        final['valid_probe_sequences'] = final.index.map(
+            lambda p: ','.join([probe_seqs_dict[pname] for pname in valid_probes_dict.get(p, []) if pname in probe_seqs_dict])
+        )
 
-        print(f"Probe filtering complete. Pairs with valid probes: {(final['num_valid_probes'] > 0).sum()}")
+        print(f"Probe filtering complete. Pairs with valid probes: {(final['valid_probe_sequences'].str.len() > 0).sum()}")
 
     # Sort by sum of off-target scores (ascending - lower is better)
     offtarget_score_cols = [col for col in final.columns if col.startswith('sco_') and col != 'sco_target']
     if offtarget_score_cols:
-        final['offtarget_score_sum'] = final[offtarget_score_cols].sum(axis=1)
+        final['offtarget_score_sum'] = round(final[offtarget_score_cols].sum(axis=1), 3)
         final = final.sort_values('offtarget_score_sum')
         print(f"Sorted by sum of off-target scores")
 
