@@ -347,6 +347,9 @@ rule parse_probe_mapping:
 
 rule align_filtered_probes_offtarget:
     """Align filtered probes to off-targets with less strict parameters."""
+    wildcard_constraints:
+        virus=TARGETS_PATTERN,
+        target="(?!.*_probe$).*"  # Exclude patterns ending in _probe
     input:
         fasta="primer_seqs/{virus}_filt_probes.fa",
         index="bt2_index/{target}.1.bt2"
@@ -367,6 +370,9 @@ rule align_filtered_probes_offtarget:
 
 rule parse_offtarget_probe_mapping:
     """Parse off-target probe SAM file into mapping table."""
+    wildcard_constraints:
+        virus=TARGETS_PATTERN,
+        target="(?!.*_probe$).*"  # Exclude patterns ending in _probe
     input:
         sam="alignments/{virus}.{target}.probe.sam"
     output:
