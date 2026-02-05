@@ -5,14 +5,14 @@
 ############################################
 
 # SINGLEPLEX REQUIRED: user must fill these for singleplex, ignored if not multiplex
-TARGETS = ['H5']
+TARGETS = []
 CROSS   = []
 
 # shared option for multiplex and singleplex
-HOST    = ['HUMAN']
+HOST    = []
 
 # MULTIPLEX REQUIRED: Multiplex targets, will be ignored if not multiplex
-PANEL = ['H1', 'H3']
+PANEL = []
 
 # Derived sets
 OFF_TARGETS = CROSS + HOST
