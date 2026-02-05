@@ -120,7 +120,7 @@ if MULTIPLEX == 1:
                 f"alignments/{wc.on}_probe.csv" if PROBE_MODE else []
             ),
             probe_mapping_off=lambda wc: (
-                [f"alignments/{wc.on}.{t}_probe_offtarget.csv" for t in off_targets(wc.on)]
+                [f"alignments/{wc.on}.{t}_probe.csv" for t in off_targets(wc.on)]
                 if PROBE_MODE else []
             ),
             probe_seqs=lambda wc: (
@@ -156,7 +156,7 @@ else:
                 f"alignments/{wc.virus}_probe.csv" if PROBE_MODE else []
             ),
             probe_mapping_off=lambda wc: (
-                [f"alignments/{wc.virus}.{t}_probe_offtarget.csv" for t in OFF_TARGETS]
+                [f"alignments/{wc.virus}.{t}_probe.csv" for t in OFF_TARGETS]
                 if PROBE_MODE else []
             ),
             probe_seqs=lambda wc: (
@@ -351,7 +351,7 @@ rule align_filtered_probes_offtarget:
         fasta="primer_seqs/{virus}_filt_probes.fa",
         index="bt2_index/{target}.1.bt2"
     output:
-        temp("alignments/{virus}.{target}_probe_offtarget.sam")
+        temp("alignments/{virus}.{target}_probe.sam")
     threads:
         min(2, MAX_CORES)
     params:
@@ -368,9 +368,9 @@ rule align_filtered_probes_offtarget:
 rule parse_offtarget_probe_mapping:
     """Parse off-target probe SAM file into mapping table."""
     input:
-        sam="alignments/{virus}.{target}_probe_offtarget.sam"
+        sam="alignments/{virus}.{target}_probe.sam"
     output:
-        "alignments/{virus}.{target}_probe_offtarget.csv"
+        "alignments/{virus}.{target}_probe.csv"
     shell:
         "qprimer parse-probe-mapping "
         "--sam {input.sam} --out {output}"
