@@ -44,6 +44,8 @@ MAX_CORES = workflow.cores or 1
 
 import os
 import sys
+from pathlib import Path
+import shutil
 
 # Probe mode (singleplex only)
 PROBE_MODE = bool(int(config.get("probe", 0))) and not MULTIPLEX
@@ -92,11 +94,71 @@ def count_seqs(target):
 def off_targets(on):
     return [t for t in PANEL if t != on]
 
+def check_ids(fasta):
+    """Validate primer pairs in FASTA file."""
+    seen = {}
+
+    with open(fasta) as f:
+        for line in f:
+            if not line.startswith(">"):
+                continue
+
+            name = line[1:].strip()
+            if name.endswith("_for"):
+                seen.setdefault(name[:-4], set()).add("for")
+            elif name.endswith("_rev"):
+                seen.setdefault(name[:-4], set()).add("rev")
+
+    ids = sorted(pid for pid, tags in seen.items() if tags == {"for", "rev"})
+
+    if not ids:
+        raise ValueError(
+            f"No valid primer pairs found in {fasta} "
+            "(expected *_for and *_rev entries)."
+        )
+
+    print(f"{len(ids)} primer set(s) will be evaluated from {fasta}")
+
+    return ids
+
+############################################
+# Evaluate mode configuration
+############################################
+
+MODE = config.get("mode", "generate")
+FOR  = config.get("for")
+REV  = config.get("rev")
+PSET = config.get("pset")
+
+if MODE == "evaluate":
+    direct_ok = FOR is not None and REV is not None
+    pset_ok   = PSET is not None
+
+    if direct_ok and pset_ok:
+        raise ValueError("Use either (for, rev) OR pset, not both")
+
+    if not direct_ok and not pset_ok:
+        raise ValueError("Evaluate mode requires either (for, rev) or pset")
+
+    if pset_ok:
+        PSET_PATH = Path(PSET)
+        if not PSET_PATH.exists():
+            raise FileNotFoundError(f"PSET not found: {PSET_PATH}")
+
+        PSET_NAME = PSET_PATH.stem
+    else:
+        PSET_NAME = "ps2eval"
+
 ############################################
 # Final targets
 ############################################
 
-if MULTIPLEX == 1:
+if MODE == "evaluate":
+    rule all:
+        input:
+            f"evaluate/{PSET_NAME}"
+
+elif MULTIPLEX == 1:
     rule all:
         input:
             "final/multiplex_output.csv"
@@ -274,6 +336,65 @@ rule generate_probes:
 
 
 ############################################
+# Evaluation of user-defined primers
+############################################
+
+rule prepare_pset_fasta:
+    wildcard_constraints:
+        filename="[^./]+"
+    output:
+        fasta="evaluate/{filename}.fa"
+    run:
+        out = Path(output.fasta)
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        # case 1: pset provided → copy
+        if config.get("pset"):
+            src = Path(config["pset"])
+            shutil.copyfile(src, out)
+
+        # case 2: direct for / rev → generate
+        else:
+            for_seq = config["for"]
+            rev_seq = config["rev"]
+
+            with open(out, "w") as f:
+                f.write(f">1_for\n{for_seq}\n>1_rev\n{rev_seq}\n")
+
+        ids = check_ids(out)
+
+rule prepare_features:
+    wildcard_constraints:
+        filename="[^./]+"
+    input:
+        fa="evaluate/{filename}.fa"
+    output:
+        feat="evaluate/{filename}.feat"
+    shell:
+        "qprimer prepare-features "
+        "--fa {input.fa} "
+        "--out {output.feat}"
+
+rule evaluate_pset:
+    wildcard_constraints:
+        filename="[^./]+"
+    input:
+        eval_on=f"outputs/{{filename}}.{TARGETS[0]}.eval",
+        eval_off=lambda wc: [f"outputs/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
+        fasta="evaluate/{filename}.fa"
+    output:
+        directory("evaluate/{filename}")
+    params:
+        ids=lambda wc: " ".join(check_ids(f"evaluate/{wc.filename}.fa"))
+    shell:
+        "qprimer export-report "
+        "--on {input.eval_on} "
+        "--off {input.eval_off} "
+        "--out evaluate/{wildcards.filename} "
+        "--names {params.ids}"
+
+
+############################################
 # Alignment
 ############################################
 
@@ -291,9 +412,10 @@ rule build_index:
 rule align:
     input:
         fasta=lambda wc: (
-            f"primer_seqs/{wc.virus}_init.fa"
-            if wc.virus == wc.target
-            else f"primer_seqs/{wc.virus}_filt.fa"
+            f"evaluate/{wc.virus}.fa" if MODE == "evaluate"
+            else (f"primer_seqs/{wc.virus}_init.fa"
+                    if wc.virus == wc.target
+                    else f"primer_seqs/{wc.virus}_filt.fa")
         ),
         index="bt2_index/{target}.1.bt2"
     output:
@@ -453,17 +575,20 @@ rule prepare_input:
         mapped="alignments/{virus}.{target}.mapped",
         prev=lambda wc: (
             [f"outputs/{wc.virus}.{wc.virus}.eval"]
-            if wc.virus != wc.target else []
+            if wc.virus != wc.target and MODE != "evaluate" else []
         ),
         ref="target_seqs/original/{target}.fa",
-        features="primer_seqs/{virus}_init.feat"
+        features=lambda wc: (
+            "evaluate/{virus}.feat" if MODE == "evaluate"
+            else "primer_seqs/{virus}_init.feat"
+        )
     output:
         "inputs/{virus}.{target}.input"
     params:
         ref_type=lambda wc: "on" if wc.virus == wc.target else "off",
         prev_arg=lambda wc: (
             f"--prev outputs/{wc.virus}.{wc.virus}.eval"
-            if wc.virus != wc.target else ""
+            if wc.virus != wc.target and MODE != "evaluate" else ""
         )
     shell:
         "qprimer prepare-input "
