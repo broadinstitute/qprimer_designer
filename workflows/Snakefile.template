@@ -4,15 +4,15 @@
 # User-defined parameters
 ############################################
 
-# SINGLEPLEX REQUIRED: user must fill these for singleplex, ignored if multiplex
-TARGETS = []
+# SINGLEPLEX REQUIRED: user must fill these for singleplex, ignored if not multiplex
+TARGETS = ['H5']
 CROSS   = []
 
-#  for multiplex and singleplex
-HOST    = []
+# shared option for multiplex and singleplex
+HOST    = ['HUMAN']
 
 # MULTIPLEX REQUIRED: Multiplex targets, will be ignored if not multiplex
-PANEL = []
+PANEL = ['H1', 'H3']
 
 # Derived sets
 OFF_TARGETS = CROSS + HOST
@@ -41,15 +41,18 @@ if not TARGETS and not MULTIPLEX:
 ############################################
 
 MAX_CORES = workflow.cores or 1
-TARGETS_PATTERN = "|".join(ALL_TARGETS) if ALL_TARGETS else "NO_MATCH"
 
 import os
-from pathlib import Path
-import shutil
 import sys
 
 # Probe mode (singleplex only)
 PROBE_MODE = bool(int(config.get("probe", 0))) and not MULTIPLEX
+
+# Create wildcard pattern for targets
+if MULTIPLEX:
+    TARGETS_PATTERN = "|".join(PANEL) if PANEL else ".*"
+else:
+    TARGETS_PATTERN = "|".join(TARGETS) if TARGETS else ".*"
 
 # Print mode information
 if PROBE_MODE:
@@ -72,71 +75,11 @@ def count_seqs(target):
 def off_targets(on):
     return [t for t in PANEL if t != on]
 
-def check_ids(fasta):
-    """Validate primer pairs in FASTA file."""
-    seen = {}
-
-    with open(fasta) as f:
-        for line in f:
-            if not line.startswith(">"):
-                continue
-
-            name = line[1:].strip()
-            if name.endswith("_for"):
-                seen.setdefault(name[:-4], set()).add("for")
-            elif name.endswith("_rev"):
-                seen.setdefault(name[:-4], set()).add("rev")
-
-    ids = sorted(pid for pid, tags in seen.items() if tags == {"for", "rev"})
-
-    if not ids:
-        raise ValueError(
-            f"No valid primer pairs found in {fasta} "
-            "(expected *_for and *_rev entries)."
-        )
-
-    print(f"{len(ids)} primer set(s) will be evaluated from {fasta}")
-
-    return ids
-
-############################################
-# Evaluate mode configuration
-############################################
-
-MODE = config.get("mode", "generate")
-FOR  = config.get("for")
-REV  = config.get("rev")
-PSET = config.get("pset")
-
-if MODE == "evaluate":
-    direct_ok = FOR is not None and REV is not None
-    pset_ok   = PSET is not None
-
-    if direct_ok and pset_ok:
-        raise ValueError("Use either (for, rev) OR pset, not both")
-
-    if not direct_ok and not pset_ok:
-        raise ValueError("Evaluate mode requires either (for, rev) or pset")
-
-    if pset_ok:
-        PSET_PATH = Path(PSET)
-        if not PSET_PATH.exists():
-            raise FileNotFoundError(f"PSET not found: {PSET_PATH}")
-
-        PSET_NAME = PSET_PATH.stem
-    else:
-        PSET_NAME = "ps2eval"
-
 ############################################
 # Final targets
 ############################################
 
-if MODE == "evaluate":
-    rule all:
-        input:
-            f"evaluate/{PSET_NAME}"
-
-elif MULTIPLEX == 1:
+if MULTIPLEX == 1:
     rule all:
         input:
             "final/multiplex_output.csv"
@@ -155,14 +98,35 @@ elif MULTIPLEX == 1:
         input:
             eval_on="outputs/{on}.{on}.eval",
             eval_off=lambda wc: [f"outputs/{wc.on}.{t}.eval" for t in off_targets(wc.on)],
-            fa="primer_seqs/{on}_filt.fa"
+            fa="primer_seqs/{on}_filt.fa",
+            probe_mapping_on=lambda wc: (
+                f"alignments/{wc.on}_probe.csv" if PROBE_MODE else []
+            ),
+            probe_mapping_off=lambda wc: (
+                [f"alignments/{wc.on}.{t}_probe_offtarget.csv" for t in off_targets(wc.on)]
+                if PROBE_MODE else []
+            ),
+            probe_seqs=lambda wc: (
+                f"primer_seqs/{wc.on}_probe.fa" if PROBE_MODE else []
+            ),
+            probe_csv=lambda wc: (
+                f"primer_seqs/{wc.on}_filt_probes.csv" if PROBE_MODE else []
+            )
         output:
             "final/{on}.csv"
+        params:
+            probe_args=lambda wc, input: (
+                f"--probe-mapping-on {input.probe_mapping_on} "
+                f"--probe-mapping-off {' '.join(input.probe_mapping_off)} "
+                f"--probe-seqs {input.probe_seqs} "
+                f"--probe-csv {input.probe_csv}"
+                if PROBE_MODE else ""
+            )
         shell:
             "qprimer build-output "
             "--on {input.eval_on} --off {input.eval_off} "
             "--fa {input.fa} --out {output} --name {wildcards.on} "
-            "--params {PARAMS}"
+            "--params {PARAMS} {params.probe_args}"
 
 
 else:
@@ -174,14 +138,35 @@ else:
         input:
             eval_on="outputs/{virus}.{virus}.eval",
             eval_off=lambda wc: [f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS],
-            fa="primer_seqs/{virus}_filt.fa"
+            fa="primer_seqs/{virus}_filt.fa",
+            probe_mapping_on=lambda wc: (
+                f"alignments/{wc.virus}_probe.csv" if PROBE_MODE else []
+            ),
+            probe_mapping_off=lambda wc: (
+                [f"alignments/{wc.virus}.{t}_probe_offtarget.csv" for t in OFF_TARGETS]
+                if PROBE_MODE else []
+            ),
+            probe_seqs=lambda wc: (
+                f"primer_seqs/{wc.virus}_probe.fa" if PROBE_MODE else []
+            ),
+            probe_csv=lambda wc: (
+                f"primer_seqs/{wc.virus}_filt_probes.csv" if PROBE_MODE else []
+            )
         output:
             "final/{virus}.csv"
+        params:
+            probe_args=lambda wc, input: (
+                f"--probe-mapping-on {input.probe_mapping_on} "
+                f"--probe-mapping-off {' '.join(input.probe_mapping_off)} "
+                f"--probe-seqs {input.probe_seqs} "
+                f"--probe-csv {input.probe_csv}"
+                if PROBE_MODE else ""
+            )
         shell:
             "qprimer build-output "
             "--on {input.eval_on} --off {input.eval_off} "
             "--fa {input.fa} --out {output} --name {wildcards.virus} "
-            "--params {PARAMS}"
+            "--params {PARAMS} {params.probe_args}"
 
 
 ############################################
@@ -189,8 +174,6 @@ else:
 ############################################
 
 checkpoint choose_target_seq:
-    wildcard_constraints:
-        virus=TARGETS_PATTERN
     input:
         "target_seqs/original/{virus}.fa"
     output:
@@ -211,8 +194,6 @@ checkpoint choose_target_seq:
 
 
 rule make_MSA:
-    wildcard_constraints:
-        virus=TARGETS_PATTERN
     input:
         "target_seqs/original/{virus}.fa"
     output:
@@ -224,8 +205,6 @@ rule make_MSA:
 
 
 rule pick_representative_seqs:
-    wildcard_constraints:
-        virus=TARGETS_PATTERN
     input:
         "target_seqs/msa/{virus}.aln"
     output:
@@ -246,8 +225,6 @@ def selected_source_fa(wc):
         return f"target_seqs/original/{wc.virus}.fa"
 
 rule resolve_target_seq:
-    wildcard_constraints:
-        virus=TARGETS_PATTERN
     input:
         choice=lambda wc: checkpoints.choose_target_seq.get(virus=wc.virus).output[0], src=selected_source_fa
     output:
@@ -261,8 +238,6 @@ rule resolve_target_seq:
 ############################################
 
 rule generate_primers:
-    wildcard_constraints:
-        virus=TARGETS_PATTERN
     input:
         "target_seqs/selected/{virus}.fa"
     output:
@@ -290,53 +265,10 @@ rule generate_probes:
 
 
 ############################################
-# Evaluate mode: prepare user primers
-############################################
-
-rule prepare_pset_fasta:
-    wildcard_constraints:
-        filename="[^./]+"
-    output:
-        fasta="evaluate/{filename}.fa"
-    run:
-        out = Path(output.fasta)
-        out.parent.mkdir(parents=True, exist_ok=True)
-
-        # case 1: pset provided → copy
-        if config.get("pset"):
-            src = Path(config["pset"])
-            shutil.copyfile(src, out)
-
-        # case 2: direct for / rev → generate
-        else:
-            for_seq = config["for"]
-            rev_seq = config["rev"]
-
-            with open(out, "w") as f:
-                f.write(f">1_for\n{for_seq}\n>1_rev\n{rev_seq}\n")
-
-        ids = check_ids(out)
-
-rule prepare_features:
-    wildcard_constraints:
-        filename="[^./]+"
-    input:
-        fa="evaluate/{filename}.fa"
-    output:
-        feat="evaluate/{filename}.feat"
-    shell:
-        "qprimer prepare-features "
-        "--fa {input.fa} "
-        "--out {output.feat}"
-
-
-############################################
 # Alignment
 ############################################
 
 rule build_index:
-    wildcard_constraints:
-        virus=TARGETS_PATTERN
     input:
         "target_seqs/original/{virus}.fa"
     output:
@@ -348,14 +280,11 @@ rule build_index:
 
 
 rule align:
-    wildcard_constraints:
-        target=TARGETS_PATTERN
     input:
         fasta=lambda wc: (
-            f"evaluate/{wc.virus}.fa" if MODE == "evaluate"
-            else (f"primer_seqs/{wc.virus}_init.fa"
-                    if wc.virus == wc.target
-                    else f"primer_seqs/{wc.virus}_filt.fa")
+            f"primer_seqs/{wc.virus}_init.fa"
+            if wc.virus == wc.target
+            else f"primer_seqs/{wc.virus}_filt.fa"
         ),
         index="bt2_index/{target}.1.bt2"
     output:
@@ -402,6 +331,38 @@ rule parse_probe_mapping:
         sam="alignments/{virus}_probe.sam"
     output:
         "alignments/{virus}_probe.csv"
+    shell:
+        "qprimer parse-probe-mapping "
+        "--sam {input.sam} --out {output} "
+        "--params {PARAMS}"
+
+
+rule align_filtered_probes_offtarget:
+    """Align filtered probes to off-targets with less strict parameters."""
+    input:
+        fasta="primer_seqs/{virus}_filt_probes.fa",
+        index="bt2_index/{target}.1.bt2"
+    output:
+        temp("alignments/{virus}.{target}_probe_offtarget.sam")
+    threads:
+        min(2, MAX_CORES)
+    params:
+        reference=lambda wc: f"bt2_index/{wc.target}",
+        multiMap=lambda wc: min(count_seqs(wc.target) * 5, 50000),
+        # Less strict alignment for off-target detection
+        mapOption="--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
+    shell:
+        "bowtie2 -x {params.reference} -U {input.fasta} -f "
+        "-p {threads} -k {params.multiMap} {params.mapOption} "
+        "--no-hd --no-unal > {output}"
+
+
+rule parse_offtarget_probe_mapping:
+    """Parse off-target probe SAM file into mapping table."""
+    input:
+        sam="alignments/{virus}.{target}_probe_offtarget.sam"
+    output:
+        "alignments/{virus}.{target}_probe_offtarget.csv"
     shell:
         "qprimer parse-probe-mapping "
         "--sam {input.sam} --out {output} "
@@ -475,26 +436,21 @@ rule check_coverage:
 ############################################
 
 rule prepare_input:
-    wildcard_constraints:
-        target=TARGETS_PATTERN
     input:
         mapped="alignments/{virus}.{target}.mapped",
         prev=lambda wc: (
             [f"outputs/{wc.virus}.{wc.virus}.eval"]
-            if wc.virus != wc.target and MODE != "evaluate" else []
+            if wc.virus != wc.target else []
         ),
         ref="target_seqs/original/{target}.fa",
-        features=lambda wc: (
-            "evaluate/{virus}.feat" if MODE == "evaluate"
-            else "primer_seqs/{virus}_init.feat"
-        )
+        features="primer_seqs/{virus}_init.feat"
     output:
         "inputs/{virus}.{target}.input"
     params:
         ref_type=lambda wc: "on" if wc.virus == wc.target else "off",
         prev_arg=lambda wc: (
             f"--prev outputs/{wc.virus}.{wc.virus}.eval"
-            if wc.virus != wc.target and MODE != "evaluate" else ""
+            if wc.virus != wc.target else ""
         )
     shell:
         "qprimer prepare-input "
@@ -504,8 +460,6 @@ rule prepare_input:
 
 
 rule evaluate:
-    wildcard_constraints:
-        target=TARGETS_PATTERN
     input:
         inp="inputs/{virus}.{target}.input",
         ref="target_seqs/original/{target}.fa"
@@ -547,26 +501,3 @@ rule filter_primer_list:
         "qprimer filter "
         "--init {input.init} --scores {input.res} --out {output} "
         "--params {PARAMS} {params.probe_args}"
-
-
-############################################
-# Evaluation of user-defined primers
-############################################
-
-rule evaluate_pset:
-    wildcard_constraints:
-        filename="[^./]+"
-    input:
-        eval_on=f"outputs/{{filename}}.{TARGETS[0]}.eval",
-        eval_off=lambda wc: [f"outputs/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
-        fasta="evaluate/{filename}.fa"
-    output:
-        directory("evaluate/{filename}")
-    params:
-        ids=lambda wc: " ".join(check_ids(f"evaluate/{wc.filename}.fa"))
-    shell:
-        "qprimer export-report "
-        "--on {input.eval_on} "
-        "--off {input.eval_off} "
-        "--out evaluate/{wildcards.filename} "
-        "--names {params.ids}"
