@@ -156,7 +156,7 @@ primer-primer dimerization (ΔG).
 def run(args):
     """Run the build-output command."""
     params = parse_params(args.param_file)
-    min_dg = float(params.get("DG_MIN", -8))
+    min_dg = float(params.get("DG_MIN", -6))
     num_select = int(params.get("NUM_TOP_SENSITIVITY", 100))
 
     print(f"Building final output for {args.name}...")

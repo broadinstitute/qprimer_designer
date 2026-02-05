@@ -53,8 +53,10 @@ PROBE_MODE = bool(int(config.get("probe", 0))) and not MULTIPLEX
 # Create wildcard pattern for targets
 if MULTIPLEX:
     TARGETS_PATTERN = "|".join(PANEL) if PANEL else ".*"
+    ALL_TARGETS_PATTERN = "|".join(set(PANEL + HOST)) if (PANEL or HOST) else ".*"
 else:
     TARGETS_PATTERN = "|".join(TARGETS) if TARGETS else ".*"
+    ALL_TARGETS_PATTERN = "|".join(ALL_TARGETS) if ALL_TARGETS else ".*"
 
 # Print mode information
 if PROBE_MODE:
@@ -174,6 +176,8 @@ elif MULTIPLEX:
             "--out {output}"
 
     rule build_final_output:
+        wildcard_constraints:
+            on=TARGETS_PATTERN
         input:
             eval_on="outputs/{on}.{on}.eval",
             eval_off=lambda wc: [f"outputs/{wc.on}.{t}.eval" for t in off_targets(wc.on)],
@@ -210,6 +214,8 @@ else:
             expand("final/{virus}.csv", virus=TARGETS)
 
     rule build_final_output:
+        wildcard_constraints:
+            virus=TARGETS_PATTERN
         input:
             eval_on="outputs/{virus}.{virus}.eval",
             eval_off=lambda wc: [f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS],
@@ -265,6 +271,8 @@ checkpoint choose_target_seq:
 
 
 rule make_MSA:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         "target_seqs/original/{virus}.fa"
     output:
@@ -276,6 +284,8 @@ rule make_MSA:
 
 
 rule pick_representative_seqs:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         "target_seqs/msa/{virus}.aln"
     output:
@@ -296,6 +306,8 @@ def selected_source_fa(wc):
         return f"target_seqs/original/{wc.virus}.fa"
 
 rule resolve_target_seq:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         choice=lambda wc: checkpoints.choose_target_seq.get(virus=wc.virus).output[0], src=selected_source_fa
     output:
@@ -309,6 +321,8 @@ rule resolve_target_seq:
 ############################################
 
 rule generate_primers:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         "target_seqs/selected/{virus}.fa"
     output:
@@ -399,6 +413,8 @@ rule evaluate_pset:
 ############################################
 
 rule build_index:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         "target_seqs/original/{virus}.fa"
     output:
@@ -410,6 +426,9 @@ rule build_index:
 
 
 rule align:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN,
+        target=ALL_TARGETS_PATTERN
     input:
         fasta=lambda wc: (
             f"evaluate/{wc.virus}.fa" if EVALUATE
@@ -471,7 +490,7 @@ rule align_filtered_probes_offtarget:
     """Align filtered probes to off-targets with less strict parameters."""
     wildcard_constraints:
         virus=TARGETS_PATTERN,
-        target="(?!.*_probe$).*"  # Exclude patterns ending in _probe
+        target=ALL_TARGETS_PATTERN
     input:
         fasta="primer_seqs/{virus}_filt_probes.fa",
         index="bt2_index/{target}.1.bt2"
@@ -494,7 +513,7 @@ rule parse_offtarget_probe_mapping:
     """Parse off-target probe SAM file into mapping table."""
     wildcard_constraints:
         virus=TARGETS_PATTERN,
-        target="(?!.*_probe$).*"  # Exclude patterns ending in _probe
+        target=ALL_TARGETS_PATTERN
     input:
         sam="alignments/{virus}.{target}.probe.sam"
     output:
@@ -540,6 +559,9 @@ rule process_map:
 
 
 rule check_coverage:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN,
+        target=ALL_TARGETS_PATTERN
     input:
         mapped="alignments/{virus}.{target}.mapped.temp"
     output:
@@ -571,6 +593,9 @@ rule check_coverage:
 ############################################
 
 rule prepare_input:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN,
+        target=ALL_TARGETS_PATTERN
     input:
         mapped="alignments/{virus}.{target}.mapped",
         prev=lambda wc: (
@@ -598,6 +623,9 @@ rule prepare_input:
 
 
 rule evaluate:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN,
+        target=ALL_TARGETS_PATTERN
     input:
         inp="inputs/{virus}.{target}.input",
         ref="target_seqs/original/{target}.fa"
@@ -617,6 +645,8 @@ rule evaluate:
 
 
 rule filter_primer_list:
+    wildcard_constraints:
+        virus=TARGETS_PATTERN
     input:
         res="outputs/{virus}.{virus}.eval",
         init="primer_seqs/{virus}_init.fa",
