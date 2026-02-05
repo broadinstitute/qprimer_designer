@@ -166,6 +166,14 @@ def run(args):
     # Load ON-target evaluation
     teval = pd.read_csv(args.eval_on, index_col=[0, 1]).iloc[:num_select].copy()
     teval.columns = ["cov_target", "act_target", "sco_target"]
+
+    # Filter teval to only include pairs that exist in the filtered primer CSV
+    filt_csv_path = args.primers.replace(".fa", ".csv")
+    filt_pairs = pd.read_csv(filt_csv_path)
+    valid_pairs = set(zip(filt_pairs['pname_f'], filt_pairs['pname_r']))
+    teval = teval[teval.index.isin(valid_pairs)].copy()
+    print(f"Filtered to {len(teval)} pairs from {filt_csv_path}")
+
     merged = teval.copy()
 
     # Merge OFF-target evaluations
