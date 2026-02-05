@@ -60,6 +60,23 @@ if PROBE_MODE:
 else:
     print("=== PROBE MODE DISABLED ===", file=sys.stderr)
 
+# Get probe mismatch penalty from params
+def get_probe_mismatch_penalty():
+    """Calculate bowtie2 mismatch penalty from PROBE_MAX_MISMATCHES."""
+    if not os.path.exists(PARAMS):
+        return 10  # Default
+    with open(PARAMS) as f:
+        for line in f:
+            if line.strip().startswith('PROBE_MAX_MISMATCHES'):
+                try:
+                    max_mm = int(line.split('=')[1].strip().split('#')[0].strip())
+                    return int(20 / max_mm)
+                except:
+                    return 10
+    return 10  # Default if not found
+
+PROBE_MISMATCH_PENALTY = get_probe_mismatch_penalty()
+
 ############################################
 # Helper functions
 ############################################
@@ -307,8 +324,8 @@ rule align_probes:
     params:
         reference=lambda wc: f"bt2_index/{wc.virus}",
         multiMap=lambda wc: min(count_seqs(wc.virus) * 5, 50000),
-        # Strict alignment: end-to-end, no indels, ≤2 mismatches for 24-28bp probes
-        mapOption="--end-to-end --mp 10,10 --rdg 20,20 --rfg 20,20 -N 1 --score-min L,-0.8,-0.8"
+        # Strict alignment: end-to-end, no indels, mismatch penalty based on PROBE_MAX_MISMATCHES
+        mapOption=f"--end-to-end --mp {PROBE_MISMATCH_PENALTY},{PROBE_MISMATCH_PENALTY} --rdg 20,20 --rfg 20,20 -N 1 --score-min L,-0.8,-0.8"
     shell:
         "bowtie2 -x {params.reference} -U {input.fasta} -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
