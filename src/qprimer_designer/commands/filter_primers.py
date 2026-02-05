@@ -82,18 +82,10 @@ def find_valid_probes_for_pair(
 
         probe_seq = probe_seqs_dict[probe_name]
 
-        # Check dimer formation with primers (once, doesn't depend on target)
-        try:
-            dg_fwd = compute_dimer_dg(probe_seq, fwd_seq)
-            dg_rev = compute_dimer_dg(probe_seq, rev_seq)
+        # OPTIMIZATION: Check cheaper operations first (mapping + position)
+        # before computing expensive dimer ΔG
 
-            if dg_fwd <= min_dg or dg_rev <= min_dg:
-                continue
-        except Exception as e:
-            print(f"Warning: Failed to compute dimer for {probe_name}: {e}")
-            continue
-
-        # Check if probe is valid for ALL targets
+        # Check if probe is valid for ALL targets (mapping + position)
         valid_for_all_targets = True
 
         for target_id in all_targets:
@@ -128,8 +120,18 @@ def find_valid_probes_for_pair(
                 valid_for_all_targets = False
                 break
 
+        # Only compute expensive dimer ΔG if probe passed all mapping/position checks
         if valid_for_all_targets:
-            valid_probes.append(probe_name)
+            try:
+                dg_fwd = compute_dimer_dg(probe_seq, fwd_seq)
+                dg_rev = compute_dimer_dg(probe_seq, rev_seq)
+
+                # Both dimers must be above threshold
+                if dg_fwd > min_dg and dg_rev > min_dg:
+                    valid_probes.append(probe_name)
+            except Exception as e:
+                print(f"Warning: Failed to compute dimer for {probe_name}: {e}")
+                continue
 
     return valid_probes
 
