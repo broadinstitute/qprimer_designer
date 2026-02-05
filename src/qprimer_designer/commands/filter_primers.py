@@ -199,10 +199,14 @@ def run(args):
 
         # Read .full file in chunks and extract ALL rows for top pairs
         # Each pair may have multiple rows with different target sets
+        # Only keep rows with classifier >= 0.5 (high confidence predictions)
         pair_full_data = {}
         for chunk in pd.read_csv(eval_full_path, chunksize=10000):
             for _, row in chunk.iterrows():
                 pair_key = (row['pname_f'], row['pname_r'])
+                # Skip low-confidence predictions
+                if row.get('classifier', 1.0) < 0.5:
+                    continue
                 if pair_key in top_pairs_set:
                     if pair_key not in pair_full_data:
                         pair_full_data[pair_key] = []
