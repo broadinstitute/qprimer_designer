@@ -150,7 +150,6 @@ primer-primer dimerization (ΔG).
     parser.add_argument("--probe-mapping-on", help="ON-target probe mapping CSV (for probe mode)")
     parser.add_argument("--probe-mapping-off", nargs="+", help="OFF-target probe mapping CSVs (for probe mode)")
     parser.add_argument("--probe-seqs", help="Probe FASTA (for probe mode)")
-    parser.add_argument("--probe-csv", help="Filtered probe CSV from filter step (for probe mode)")
     parser.set_defaults(func=run)
 
 

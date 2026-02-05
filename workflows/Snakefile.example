@@ -108,9 +108,6 @@ if MULTIPLEX == 1:
             ),
             probe_seqs=lambda wc: (
                 f"primer_seqs/{wc.on}_probe.fa" if PROBE_MODE else []
-            ),
-            probe_csv=lambda wc: (
-                f"primer_seqs/{wc.on}_filt_probes.csv" if PROBE_MODE else []
             )
         output:
             "final/{on}.csv"
@@ -118,8 +115,7 @@ if MULTIPLEX == 1:
             probe_args=lambda wc, input: (
                 f"--probe-mapping-on {input.probe_mapping_on} "
                 f"--probe-mapping-off {' '.join(input.probe_mapping_off)} "
-                f"--probe-seqs {input.probe_seqs} "
-                f"--probe-csv {input.probe_csv}"
+                f"--probe-seqs {input.probe_seqs}"
                 if PROBE_MODE else ""
             )
         shell:
@@ -148,9 +144,6 @@ else:
             ),
             probe_seqs=lambda wc: (
                 f"primer_seqs/{wc.virus}_probe.fa" if PROBE_MODE else []
-            ),
-            probe_csv=lambda wc: (
-                f"primer_seqs/{wc.virus}_filt_probes.csv" if PROBE_MODE else []
             )
         output:
             "final/{virus}.csv"
@@ -158,8 +151,7 @@ else:
             probe_args=lambda wc, input: (
                 f"--probe-mapping-on {input.probe_mapping_on} "
                 f"--probe-mapping-off {' '.join(input.probe_mapping_off)} "
-                f"--probe-seqs {input.probe_seqs} "
-                f"--probe-csv {input.probe_csv}"
+                f"--probe-seqs {input.probe_seqs}"
                 if PROBE_MODE else ""
             )
         shell:
