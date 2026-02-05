@@ -333,8 +333,7 @@ rule parse_probe_mapping:
         "alignments/{virus}_probe.csv"
     shell:
         "qprimer parse-probe-mapping "
-        "--sam {input.sam} --out {output} "
-        "--params {PARAMS}"
+        "--sam {input.sam} --out {output}"
 
 
 rule align_filtered_probes_offtarget:
@@ -365,8 +364,7 @@ rule parse_offtarget_probe_mapping:
         "alignments/{virus}.{target}_probe_offtarget.csv"
     shell:
         "qprimer parse-probe-mapping "
-        "--sam {input.sam} --out {output} "
-        "--params {PARAMS}"
+        "--sam {input.sam} --out {output}"
 
 
 ############################################

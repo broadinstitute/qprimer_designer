@@ -2,7 +2,6 @@
 
 import argparse
 import pandas as pd
-from qprimer_designer.utils import parse_params
 
 
 def register(subparsers):
@@ -14,15 +13,15 @@ def register(subparsers):
     )
     parser.add_argument("--sam", required=True, help="Input SAM file from probe alignment")
     parser.add_argument("--out", required=True, help="Output CSV file")
-    parser.add_argument("--params", required=True, help="Parameters file")
     parser.set_defaults(func=run)
 
 
 def run(args):
-    """Parse SAM file and create probe mapping CSV."""
-    params = parse_params(args.params)
-    max_mismatches = int(params.get("PROBE_MAX_MISMATCHES", 2))
+    """Parse SAM file and create probe mapping CSV.
 
+    Note: Mismatch filtering is handled by bowtie2's --score-min parameter,
+    so we simply extract all reported alignments without additional filtering.
+    """
     mappings = []
 
     with open(args.sam) as f:
@@ -36,17 +35,6 @@ def run(args):
             target_id = fields[2]
             start_pos = int(fields[3]) - 1  # Convert to 0-based
             probe_seq = fields[9]
-
-            # Extract NM tag (edit distance)
-            nm_tag = None
-            for field in fields[11:]:
-                if field.startswith('NM:i:'):
-                    nm_tag = int(field.split(':')[2])
-                    break
-
-            if nm_tag is None or nm_tag > max_mismatches:
-                continue
-
             orientation = '-' if (flag & 16) else '+'
 
             mappings.append({
@@ -54,7 +42,6 @@ def run(args):
                 'probe_seq': probe_seq,
                 'target_id': target_id,
                 'start_pos': start_pos,
-                'num_mismatches': nm_tag,
                 'orientation': orientation
             })
 
