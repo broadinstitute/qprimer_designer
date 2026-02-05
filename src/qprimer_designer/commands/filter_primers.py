@@ -215,7 +215,6 @@ def run(args):
         print(f"Checking top {len(top_candidates)} pairs for probe compatibility...")
 
         # Check probe compatibility for top N pairs
-        probe_assignments = []
         valid_pairs = []
         valid_probes_per_pair = {}
 
@@ -243,15 +242,6 @@ def run(args):
                 valid_pairs.append(pair_key)
                 valid_probes_per_pair[pair_key] = valid_probes
 
-                # Record probe assignments
-                for probe in valid_probes:
-                    probe_assignments.append({
-                        'pname_f': pname_f,
-                        'pname_r': pname_r,
-                        'probe_name': probe,
-                        'probe_seq': probe_seqs_dict[probe]
-                    })
-
         print(f"Found {len(valid_pairs)} of top {len(top_candidates)} pairs with compatible probes")
 
         # Filter to only pairs with valid probes
@@ -264,7 +254,7 @@ def run(args):
             print("WARNING: No primer pairs in top N have compatible probes!")
             top = top_candidates.iloc[:0].copy()  # Empty DataFrame
 
-        # Add primer sequences and probe count to top DataFrame
+        # Add primer sequences, probe count, and probe names to top DataFrame
         if not top.empty:
             top['pseq_f'] = top['pname_f'].map(primer_seqs)
             top['pseq_r'] = top['pname_r'].map(primer_seqs)
@@ -272,35 +262,41 @@ def run(args):
                 lambda r: len(valid_probes_per_pair.get((r['pname_f'], r['pname_r']), [])),
                 axis=1
             )
+            # Add top 5 probe names (comma-separated)
+            top['probe_names'] = top.apply(
+                lambda r: ','.join(valid_probes_per_pair.get((r['pname_f'], r['pname_r']), [])[:5]),
+                axis=1
+            )
 
-        # Write probe assignments CSV
+        # Write probe assignments (limit to first 5 probes per pair)
         if args.probe_out:
-            probe_df = pd.DataFrame(probe_assignments)
-            probe_df.to_csv(args.probe_out, index=False)
-            print(f"Wrote {len(probe_df)} probe assignments to {args.probe_out}")
-
-            # Write probe FASTA (limit to first 5 probes per pair)
-            probe_fasta_out = args.probe_out.replace(".csv", ".fa")
-
-            # Limit to first 5 probes per primer pair for FASTA output
-            limited_probes = []
+            # Limit to first 5 probes per primer pair
+            probe_assignments = []
             for pair_key in valid_pairs:
+                pname_f, pname_r = pair_key
                 pair_probes = valid_probes_per_pair[pair_key]
                 # Take first 5 probes for this pair
                 for probe_name in pair_probes[:5]:
-                    limited_probes.append({
+                    probe_assignments.append({
+                        'pname_f': pname_f,
+                        'pname_r': pname_r,
                         'probe_name': probe_name,
                         'probe_seq': probe_seqs_dict[probe_name]
                     })
 
-            # Get unique probes from limited set
-            limited_df = pd.DataFrame(limited_probes)
-            unique_probes = limited_df.drop_duplicates(subset=['probe_name'])
+            # Write CSV with limited probes
+            probe_df = pd.DataFrame(probe_assignments)
+            probe_df.to_csv(args.probe_out, index=False)
+            print(f"Wrote {len(probe_df)} probe assignments to {args.probe_out} (max 5 per pair)")
+
+            # Write probe FASTA with unique probes from limited set
+            probe_fasta_out = args.probe_out.replace(".csv", ".fa")
+            unique_probes = probe_df.drop_duplicates(subset=['probe_name'])
 
             with open(probe_fasta_out, "w") as out:
                 for _, row in unique_probes.iterrows():
                     out.write(f">{row['probe_name']}\n{row['probe_seq']}\n")
-            print(f"Wrote {len(unique_probes)} unique probes to {probe_fasta_out} (max 5 per pair)")
+            print(f"Wrote {len(unique_probes)} unique probes to {probe_fasta_out}")
 
     else:
         # STANDARD MODE (no probes)

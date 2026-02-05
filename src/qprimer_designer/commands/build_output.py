@@ -197,17 +197,15 @@ def run(args):
 
         merged = merged.join(tmp)
 
-    # Primer-primer dimer filtering
     primer_seqs = {s.id: str(s.seq) for s in SeqIO.parse(args.primers, "fasta")}
 
     for fname, rname in merged.index:
         fseq = primer_seqs[fname]
         rseq = primer_seqs[rname]
-        merged.loc[(fname, rname), "Dimer_dG"] = compute_dimer_dg(fseq, rseq)
         merged.loc[(fname, rname), "pseq_f"] = fseq
         merged.loc[(fname, rname), "pseq_r"] = rseq
 
-    final = merged[merged["Dimer_dG"] > min_dg].copy()
+    final = merged.copy()
 
     # PROBE MODE: Filter probes by off-target amplicon overlap
     if args.probe_mapping_on and args.probe_mapping_off and args.probe_seqs and args.probe_csv:
@@ -216,14 +214,16 @@ def run(args):
         # Load probe data
         probe_seqs_dict = {rec.id: str(rec.seq) for rec in SeqIO.parse(args.probe_seqs, "fasta")}
 
-        # Load filtered probe CSV to get primer-probe assignments
-        probe_csv = pd.read_csv(args.probe_csv)
+        # Get probe names from filtered primer pairs CSV (top 5 probes per pair)
         pair_to_probes = {}
-        for _, row in probe_csv.iterrows():
+        for _, row in filt_pairs.iterrows():
             pair_key = (row['pname_f'], row['pname_r'])
-            if pair_key not in pair_to_probes:
+            if 'probe_names' in row and pd.notna(row['probe_names']) and row['probe_names']:
+                # Split comma-separated probe names
+                probe_names = [p.strip() for p in row['probe_names'].split(',') if p.strip()]
+                pair_to_probes[pair_key] = probe_names
+            else:
                 pair_to_probes[pair_key] = []
-            pair_to_probes[pair_key].append(row['probe_name'])
 
         # Load off-target probe mappings
         offtarget_probe_mappings = [pd.read_csv(path) for path in args.probe_mapping_off]
@@ -271,6 +271,7 @@ def run(args):
         final['offtarget_score_sum'] = final[offtarget_score_cols].sum(axis=1)
         final = final.sort_values('offtarget_score_sum')
         print(f"Sorted by sum of off-target scores")
+
 
     # Write output
     final.round(3).to_csv(args.output)
