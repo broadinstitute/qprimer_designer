@@ -88,27 +88,26 @@ def align_sequences(
     ) as tmp_file:
         tmp_path = Path(tmp_file.name)
         try:
-            # FIX: Add stderr capture and timeout
+            # FIX: Add stderr capture
             result = subprocess.run(
                 cmd,
                 stdout=tmp_file,
                 stderr=subprocess.PIPE,  # FIX: Capture stderr for error messages
                 check=True,
-                timeout=600,  # FIX: 10 minute timeout
             )
             tmp_file.flush()
 
             # FIX: Atomic move only after successful completion
             shutil.move(str(tmp_path), str(output_fasta))
 
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        except subprocess.CalledProcessError as e:
             # FIX: Clean up temp file on failure
             if tmp_path.exists():
                 tmp_path.unlink()
             # Include stderr in error message if available
-            if hasattr(e, "stderr") and e.stderr:
+            if e.stderr:
                 raise subprocess.CalledProcessError(
-                    e.returncode if hasattr(e, "returncode") else 1,
+                    e.returncode,
                     cmd,
                     stderr=e.stderr
                 ) from e

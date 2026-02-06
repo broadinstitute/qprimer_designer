@@ -76,14 +76,13 @@ def build_index(fasta_path: str | Path, index_prefix: str | Path, threads: int =
     #   index_files = list(Path(index_prefix).parent.glob(f"{Path(index_prefix).name}*.bt2*"))
     #   for f in index_files: f.unlink()
 
-    # FIX: Add timeout parameter and expose stderr in exception
+    # FIX: Expose stderr in exception for better error messages
     cmd = ["bowtie2-build", "--threads", str(threads), str(fasta_path), str(index_prefix)]
     try:
         subprocess.run(
             cmd,
             check=True,
             capture_output=True,
-            timeout=300,  # 5 minute timeout
         )
     except subprocess.CalledProcessError as e:
         # FIX: Include stderr in exception for better error messages
@@ -151,12 +150,12 @@ def align_primers(
     if very_sensitive:
         cmd.append("--very-sensitive-local" if local else "--very-sensitive")
 
-    # ORIGINAL: subprocess.run without timeout
+    # ORIGINAL: subprocess.run without stderr exposure
     # subprocess.run(cmd, check=True, capture_output=True)
 
-    # FIX: Add timeout parameter and expose stderr in exception
+    # FIX: Expose stderr in exception for better error messages
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        subprocess.run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
         # FIX: Include stderr in exception for better error messages
         raise subprocess.CalledProcessError(
