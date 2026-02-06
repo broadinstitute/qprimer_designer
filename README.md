@@ -71,15 +71,11 @@ snakemake -s Snakefile.example --cores all
 
 Output will be in the `final/` directory as a CSV file with the following format:
 
-<small>
-
 | pname_f | pname_r | cov_target | act_target | sco_target | cov_offtarget1 | act_offtarget1 | sco_offtarget1 | ... | pseq_f | pseq_r |
 |---------|---------|------------|------------|------------|----------------|----------------|----------------|-----|--------|--------|
 | p_19_f | p_286_r | 1.0 | 1.084 | 1.084 | 0 | 0.0 | 0.0 | ... | CATTACGTTTGGTGGACCCT | TTCCTTGCCATGTTGAGTGA |
 | p_19_f | p_283_r | 1.0 | 1.083 | 1.083 | 12 | 0.412 | 4.116 | ... | CATTACGTTTGGTGGACCCT | GTCTTCCTTGCCATGTTGAG |
 | p_19_f | p_285_r | 1.0 | 1.088 | 1.088 | 14 | 0.540 | 5.572 | ... | CATTACGTTTGGTGGACCCT | CTTCCTTGCCATGTTGAGTG |
-
-</small>
 
 **Column descriptions:**
 - `pname_f/r`: Forward/reverse primer names
@@ -165,8 +161,6 @@ Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
 
 **Summary sheet format:**
 
-<small>
-
 | Dimerization | | |
 |--------------|---------|---------|
 | | forward | reverse |
@@ -181,22 +175,16 @@ Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
 |-------------|----------|----------|------------|---------|---------|
 | offtarget1 | 10 | 0.248 | 0.212 | 0.138 | 0.393 |
 
-</small>
-
 - **Dimerization**: Dimer ΔG values for forward and reverse primers
 - **Sensitivity**: On-target coverage and activity statistics
 - **Specificity**: Off-target coverage and activity statistics
 
 **Detail sheet format:**
 
-<small>
-
 | seq_id | target | eval_type | classifier | regressor | pname_f | pname_r | prod_len |
 |--------|--------|-----------|------------|-----------|---------|---------|----------|
 | target | target | on | 1 | 1.084 | 1_for | 1_rev | 146 |
 | ENST00000580258.1 | offtarget1 | off | 1 | 0.393 | 1_rev | 1_rev | 413 |
-
-</small>
 
 Additional columns (not shown above): `align_f`, `align_r`, `prod_Tm`, `mm_f`, `indel_f`, `len_f`, `Tm_f`, `GC_f`, `mm_r`, `indel_r`, `len_r`, `Tm_r`, `GC_r`
 
@@ -232,8 +220,6 @@ The `qprimer` CLI provides the following subcommands:
 
 ### Core Commands
 
-<small>
-
 | Command | Description |
 |---------|-------------|
 | `qprimer generate` | Generate primer candidates from target sequences |
@@ -245,19 +231,8 @@ The `qprimer` CLI provides the following subcommands:
 | `qprimer build-output` | Build final output CSV with scores |
 | `qprimer select-multiplex` | Select best multiplex primer set |
 | `qprimer export-report` | Export evaluation results to Excel reports |
-
-</small>
-
-### Probe Mode Commands
-
-<small>
-
-| Command | Description |
-|---------|-------------|
 | `qprimer generate-probe` | Generate probe candidates from target sequences (for TaqMan assays) |
 | `qprimer parse-probe-mapping` | Parse probe SAM alignments into mapping table |
-
-</small>
 
 ## GPU Support
 
