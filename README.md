@@ -69,15 +69,7 @@ cd workflows
 snakemake -s Snakefile.example --cores all
 ```
 
-Output will be in the `final/` directory as a CSV file with the following format:
-
-| pname_f | pname_r | cov_target | act_target | sco_target | cov_offtarget1 | act_offtarget1 | sco_offtarget1 | ... | pseq_f | pseq_r |
-|---------|---------|------------|------------|------------|----------------|----------------|----------------|-----|--------|--------|
-| p_19_f | p_286_r | 1.0 | 1.084 | 1.084 | 0 | 0.0 | 0.0 | ... | CATTACGTTTGGTGGACCCT | TTCCTTGCCATGTTGAGTGA |
-| p_19_f | p_283_r | 1.0 | 1.083 | 1.083 | 12 | 0.412 | 4.116 | ... | CATTACGTTTGGTGGACCCT | GTCTTCCTTGCCATGTTGAG |
-| p_19_f | p_285_r | 1.0 | 1.088 | 1.088 | 14 | 0.540 | 5.572 | ... | CATTACGTTTGGTGGACCCT | CTTCCTTGCCATGTTGAGTG |
-
-**Column descriptions:**
+Output will be in the `final/` directory as a CSV file with the following columns:
 - `pname_f/r`: Forward/reverse primer names
 - `cov_target`: Coverage on target sequences (fraction)
 - `act_target`: Activity score on target
@@ -115,9 +107,8 @@ Output will be `final/multiplex_output.csv` containing top candidates for each t
 
 You can evaluate your own primers instead of generating them. This is useful when you have existing primers and want to assess their performance.
 
-**Option 1: Evaluate direct sequences**
-
 ```bash
+## Option 1: Evaluate direct sequences
 snakemake -s Snakefile.template \
   --config evaluate=1 \
     for=ATCGATCGATCGATCGATCG \
@@ -125,9 +116,8 @@ snakemake -s Snakefile.template \
   --cores all
 ```
 
-**Option 2: Evaluate from FASTA file**
-
 ```bash
+## Option 2: Evaluate from FASTA file
 cd workflows
 snakemake -s Snakefile.template \
   --config evaluate=1 pset=my_primers.fa \
@@ -159,34 +149,14 @@ Results will be in `evaluate/{pset_name}/` containing Excel reports with:
 
 Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
 
-**Summary sheet format:**
-
-| Dimerization | | |
-|--------------|---------|---------|
-| | forward | reverse |
-| forward | -4.9 | -4.4 |
-| reverse | -4.4 | -4.1 |
-
-| Sensitivity | Coverage | Act_mean | Act_median | Act_min | Act_max |
-|-------------|----------|----------|------------|---------|---------|
-| target | 1 | 1.084 | 1.084 | 1.084 | 1.084 |
-
-| Specificity | Coverage | Act_mean | Act_median | Act_min | Act_max |
-|-------------|----------|----------|------------|---------|---------|
-| offtarget1 | 10 | 0.248 | 0.212 | 0.138 | 0.393 |
-
+**Summary sheet** contains:
 - **Dimerization**: Dimer ΔG values for forward and reverse primers
 - **Sensitivity**: On-target coverage and activity statistics
 - **Specificity**: Off-target coverage and activity statistics
 
-**Detail sheet format:**
-
-| seq_id | target | eval_type | classifier | regressor | pname_f | pname_r | prod_len |
-|--------|--------|-----------|------------|-----------|---------|---------|----------|
-| target | target | on | 1 | 1.084 | 1_for | 1_rev | 146 |
-| ENST00000580258.1 | offtarget1 | off | 1 | 0.393 | 1_rev | 1_rev | 413 |
-
-Additional columns (not shown above): `align_f`, `align_r`, `prod_Tm`, `mm_f`, `indel_f`, `len_f`, `Tm_f`, `GC_f`, `mm_r`, `indel_r`, `len_r`, `Tm_r`, `GC_r`
+**Detail sheet** contains per-target alignments with the following columns:
+- `seq_id`, `target`, `eval_type`, `classifier`, `regressor`, `pname_f`, `pname_r`, `prod_len`
+- `align_f`, `align_r`, `prod_Tm`, `mm_f`, `indel_f`, `len_f`, `Tm_f`, `GC_f`, `mm_r`, `indel_r`, `len_r`, `Tm_r`, `GC_r`
 
 **Example alignment strings** (from `align_f` and `align_r` columns):
 
