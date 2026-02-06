@@ -269,7 +269,7 @@ def run(args):
     # Sort by sum of off-target scores (ascending - lower is better)
     offtarget_score_cols = [col for col in final.columns if col.startswith('sco_') and col != 'sco_target']
     if offtarget_score_cols:
-        final['offtarget_score_sum'] = round(final[offtarget_score_cols].sum(axis=1), 3)
+        final['offtarget_score_sum'] = final[offtarget_score_cols].sum(axis=1).round(3)
         final = final.sort_values('offtarget_score_sum')
         print(f"Sorted by sum of off-target scores")
 
