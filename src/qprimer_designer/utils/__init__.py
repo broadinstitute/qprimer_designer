@@ -7,7 +7,7 @@ from .sequences import (
     get_gc_fraction,
     has_homopolymer,
 )
-from .params import parse_params, get_primer_params, get_evaluation_params
+from .params import parse_params, get_primer_params, get_probe_params, get_evaluation_params
 from .encoding import one_hot_encode, encode_primer_pair, encode_batch_parallel
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     "has_homopolymer",
     "parse_params",
     "get_primer_params",
+    "get_probe_params",
     "get_evaluation_params",
     "one_hot_encode",
     "encode_primer_pair",

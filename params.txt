@@ -7,7 +7,8 @@ TM_MIN = 55
 TM_MAX = 60
 GC_MAX = 60
 DG_MIN = -6
-PRIMER_LEN = 20  # Single value or comma-separated list (e.g., 19,20,21); range: 18-24
+PRIMER_LEN_MIN = 19
+PRIMER_LEN_MAX = 21
 TILING_STEP = 5
 
 ## Parameters for probe generation

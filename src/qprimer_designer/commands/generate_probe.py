@@ -9,7 +9,7 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.SeqUtils import gc_fraction
 
-from qprimer_designer.utils import get_tm, parse_params, reverse_complement_dna, has_homopolymer
+from qprimer_designer.utils import get_tm, parse_params, get_probe_params, reverse_complement_dna, has_homopolymer
 from qprimer_designer.external import compute_self_dimer_dg
 
 
@@ -117,19 +117,17 @@ def generate_probes(
 def run(args):
     """Run the generate-probe command."""
     params = parse_params(args.param_file)
+    probe_params = get_probe_params(params)
 
-    # Probe-specific parameters
-    len_min = int(params.get("PROBE_LEN_MIN", 24))
-    len_max = int(params.get("PROBE_LEN_MAX", 28))
-    min_tm = float(params.get("PROBE_TM_MIN", 65))
-    max_tm = float(params.get("PROBE_TM_MAX", 70))
-    homopolymer_max = int(params.get("PROBE_HOMOPOLYMER_MAX", 3))
-    avoid_5prime_G = params.get("PROBE_AVOID_5PRIME_G", "True").lower() in ("true", "1", "yes")
-
-    # Shared parameters
-    max_gc = float(params.get("GC_MAX", 60))
-    min_dg = float(params.get("DG_MIN", -6))
-    max_num = int(params.get("MAX_PRIMER_CANDIDATES", 10000))
+    len_min = probe_params["len_min"]
+    len_max = probe_params["len_max"]
+    min_tm = probe_params["min_tm"]
+    max_tm = probe_params["max_tm"]
+    max_gc = probe_params["max_gc"]
+    min_dg = probe_params["min_dg"]
+    homopolymer_max = probe_params["homopolymer_max"]
+    avoid_5prime_G = probe_params["avoid_5prime_g"]
+    max_num = probe_params["max_num"]
 
     target_seqs = [str(s.seq) for s in SeqIO.parse(args.target_seqs, "fasta")]
 
