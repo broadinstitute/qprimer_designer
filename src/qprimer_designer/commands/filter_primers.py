@@ -187,6 +187,7 @@ def run(args):
         # Parameters
         buffer = int(params.get("PROBE_AMPLICON_BUFFER", 20))
         min_probes = int(params.get("MIN_PROBES_PER_PAIR", 1))
+        max_probes = int(params.get("MAX_PROBES_PER_PAIR", 5))
 
         # Select top N pairs FIRST
         top_candidates = res.iloc[:num_select].copy()
@@ -262,21 +263,21 @@ def run(args):
                 lambda r: len(valid_probes_per_pair.get((r['pname_f'], r['pname_r']), [])),
                 axis=1
             )
-            # Add top 5 probe names (comma-separated)
+            # Add top N probe names (comma-separated)
             top['probe_names'] = top.apply(
-                lambda r: ','.join(valid_probes_per_pair.get((r['pname_f'], r['pname_r']), [])[:5]),
+                lambda r: ','.join(valid_probes_per_pair.get((r['pname_f'], r['pname_r']), [])[:max_probes]),
                 axis=1
             )
 
-        # Write probe assignments (limit to first 5 probes per pair)
+        # Write probe assignments (limit to first N probes per pair)
         if args.probe_out:
-            # Limit to first 5 probes per primer pair
+            # Limit to first N probes per primer pair (configurable via MAX_PROBES_PER_PAIR)
             probe_assignments = []
             for pair_key in valid_pairs:
                 pname_f, pname_r = pair_key
                 pair_probes = valid_probes_per_pair[pair_key]
-                # Take first 5 probes for this pair
-                for probe_name in pair_probes[:5]:
+                # Take first N probes for this pair
+                for probe_name in pair_probes[:max_probes]:
                     probe_assignments.append({
                         'pname_f': pname_f,
                         'pname_r': pname_r,
@@ -287,7 +288,7 @@ def run(args):
             # Write CSV with limited probes
             probe_df = pd.DataFrame(probe_assignments)
             probe_df.to_csv(args.probe_out, index=False)
-            print(f"Wrote {len(probe_df)} probe assignments to {args.probe_out} (max 5 per pair)")
+            print(f"Wrote {len(probe_df)} probe assignments to {args.probe_out} (max {max_probes} per pair)")
 
             # Write probe FASTA with unique probes from limited set
             probe_fasta_out = args.probe_out.replace(".csv", ".fa")

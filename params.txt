@@ -24,6 +24,7 @@ PROBE_MODE = False  # Enable/disable probe mode
 PROBE_MAX_MISMATCHES = 2  # Maximum mismatches for probe-to-target alignment
 PROBE_AMPLICON_BUFFER = 20  # Minimum distance (nt) from primer ends
 MIN_PROBES_PER_PAIR = 1  # Minimum valid probes required per primer pair
+MAX_PROBES_PER_PAIR = 5  # Maximum number of probes to output per primer pair
 
 ## Parameters in input preparation
 AMPLEN_MIN = 60
