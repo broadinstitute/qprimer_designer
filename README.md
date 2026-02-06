@@ -71,7 +71,7 @@ snakemake -s Snakefile.example --cores all
 
 Output will be in the `final/` directory as a CSV file with the following format:
 
-<div style="font-size: 0.85em">
+<div style="font-size: 0.5em">
 
 | pname_f | pname_r | cov_target | act_target | sco_target | cov_offtarget1 | act_offtarget1 | sco_offtarget1 | ... | pseq_f | pseq_r |
 |---------|---------|------------|------------|------------|----------------|----------------|----------------|-----|--------|--------|
@@ -165,13 +165,13 @@ Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
 
 **Summary sheet format:**
 
-<div style="font-size: 0.85em">
+<div style="font-size: 0.5em">
 
-| Dimerization | | | | | |
-|--------------|---------|---------|-----|-----|-----|
-| | forward | reverse | | | |
-| forward | -4.9 | -4.4 | | | |
-| reverse | -4.4 | -4.1 | | | |
+| Dimerization | | |
+|--------------|---------|---------|
+| | forward | reverse |
+| forward | -4.9 | -4.4 |
+| reverse | -4.4 | -4.1 |
 
 | Sensitivity | Coverage | Act_mean | Act_median | Act_min | Act_max |
 |-------------|----------|----------|------------|---------|---------|
@@ -189,7 +189,7 @@ Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
 
 **Detail sheet format:**
 
-<div style="font-size: 0.85em">
+<div style="font-size: 0.5em">
 
 | seq_id | target | eval_type | classifier | regressor | pname_f | pname_r | prod_len |
 |--------|--------|-----------|------------|-----------|---------|---------|----------|
