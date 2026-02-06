@@ -118,7 +118,6 @@ snakemake -s Snakefile.template \
 
 ```bash
 ## Option 2: Evaluate from FASTA file
-cd workflows
 snakemake -s Snakefile.template \
   --config evaluate=1 pset=my_primers.fa \
   --cores all
@@ -148,41 +147,6 @@ Results will be in `evaluate/{pset_name}/` containing Excel reports with:
 - **Detail sheet**: Per-target alignments with scores and coverage
 
 Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
-
-**Summary sheet** contains:
-- **Dimerization**: Dimer ΔG values for forward and reverse primers
-- **Sensitivity**: On-target coverage and activity statistics
-- **Specificity**: Off-target coverage and activity statistics
-
-**Detail sheet** contains per-target alignments with the following columns:
-- `seq_id`, `target`, `eval_type`, `classifier`, `regressor`, `pname_f`, `pname_r`, `prod_len`
-- `align_f`, `align_r`, `prod_Tm`, `mm_f`, `indel_f`, `len_f`, `Tm_f`, `GC_f`, `mm_r`, `indel_r`, `len_r`, `Tm_r`, `GC_r`
-
-**Example alignment strings** (from `align_f` and `align_r` columns):
-
-```
-align_f (on-target):
-1    CATTACGTTTGGTGGACCCT   20
-     ||||||||||||||||||||
-42   GTAATGCAAACCACCTGGGA   61
-
-align_f (off-target with mismatches):
-1    TTCCTTGCCATGTTGAGTGA   20
-      || |  || || |||||||
-33   GAGTATGGGCACGACTCACT   52
-```
-
-**Column descriptions:**
-- **seq_id**: Target sequence identifier
-- **target**: Target name (on-target or off-target)
-- **eval_type**: Evaluation type ("on" or "off")
-- **classifier**: Binary classification score (0-1)
-- **regressor**: Activity prediction score
-- **pname_f/r**: Forward/reverse primer names
-- **align_f/r**: Multi-line alignment strings showing primer-target matches with positions
-- **prod_len**: Amplicon length (bp)
-- **mm_f/r**: Number of mismatches in forward/reverse primer
-- **indel_f/r**: Number of indels in forward/reverse primer
 
 ## CLI Commands
 
