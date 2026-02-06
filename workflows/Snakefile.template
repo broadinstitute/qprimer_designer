@@ -58,12 +58,6 @@ else:
     TARGETS_PATTERN = "|".join(TARGETS) if TARGETS else ".*"
     ALL_TARGETS_PATTERN = "|".join(ALL_TARGETS) if ALL_TARGETS else ".*"
 
-# Print mode information
-if PROBE_MODE:
-    print("=== PROBE MODE ENABLED ===", file=sys.stderr)
-else:
-    print("=== PROBE MODE DISABLED ===", file=sys.stderr)
-
 # Get probe mismatch penalty from params
 def get_probe_mismatch_penalty():
     """Calculate bowtie2 mismatch penalty from PROBE_MAX_MISMATCHES."""
