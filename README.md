@@ -71,11 +71,15 @@ snakemake -s Snakefile.example --cores all
 
 Output will be in the `final/` directory as a CSV file with the following format:
 
+<div style="font-size: 0.85em">
+
 | pname_f | pname_r | cov_target | act_target | sco_target | cov_offtarget1 | act_offtarget1 | sco_offtarget1 | ... | pseq_f | pseq_r |
 |---------|---------|------------|------------|------------|----------------|----------------|----------------|-----|--------|--------|
-| p_19_f | p_286_r | 1.0 | 1.084 | 1.084 | 10 | 0.393 | 3.153 | ... | CATTACGTTTGGTGGACCCT | TTCCTTGCCATGTTGAGTGA |
+| p_19_f | p_286_r | 1.0 | 1.084 | 1.084 | 0 | 0.0 | 0.0 | ... | CATTACGTTTGGTGGACCCT | TTCCTTGCCATGTTGAGTGA |
 | p_19_f | p_283_r | 1.0 | 1.083 | 1.083 | 12 | 0.412 | 4.116 | ... | CATTACGTTTGGTGGACCCT | GTCTTCCTTGCCATGTTGAG |
 | p_19_f | p_285_r | 1.0 | 1.088 | 1.088 | 14 | 0.540 | 5.572 | ... | CATTACGTTTGGTGGACCCT | CTTCCTTGCCATGTTGAGTG |
+
+</div>
 
 **Column descriptions:**
 - `pname_f/r`: Forward/reverse primer names
@@ -161,6 +165,8 @@ Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
 
 **Summary sheet format:**
 
+<div style="font-size: 0.85em">
+
 | Dimerization | | | | | |
 |--------------|---------|---------|-----|-----|-----|
 | | forward | reverse | | | |
@@ -175,16 +181,22 @@ Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
 |-------------|----------|----------|------------|---------|---------|
 | offtarget1 | 10 | 0.248 | 0.212 | 0.138 | 0.393 |
 
+</div>
+
 - **Dimerization**: Dimer ΔG values for forward and reverse primers
 - **Sensitivity**: On-target coverage and activity statistics
 - **Specificity**: Off-target coverage and activity statistics
 
 **Detail sheet format:**
 
+<div style="font-size: 0.85em">
+
 | seq_id | target | eval_type | classifier | regressor | pname_f | pname_r | prod_len |
 |--------|--------|-----------|------------|-----------|---------|---------|----------|
 | SC2N | SC2N | on | 1 | 1.084 | 1_for | 1_rev | 146 |
 | ENST00000580258.1 | HUMAN | off | 1 | 0.393 | 1_rev | 1_rev | 413 |
+
+</div>
 
 Additional columns (not shown above): `align_f`, `align_r`, `prod_Tm`, `mm_f`, `indel_f`, `len_f`, `Tm_f`, `GC_f`, `mm_r`, `indel_r`, `len_r`, `Tm_r`, `GC_r`
 
@@ -195,11 +207,6 @@ align_f (on-target):
 1    CATTACGTTTGGTGGACCCT   20
      ||||||||||||||||||||
 42   GTAATGCAAACCACCTGGGA   61
-
-align_r (on-target):
-1    TTCCTTGCCATGTTGAGTGA   20
-     ||||||||||||||||||||
-168  AAGGAACGGTACAACTCACT  187
 
 align_f (off-target with mismatches):
 1    TTCCTTGCCATGTTGAGTGA   20
@@ -225,6 +232,8 @@ The `qprimer` CLI provides the following subcommands:
 
 ### Core Commands
 
+<div style="font-size: 0.85em">
+
 | Command | Description |
 |---------|-------------|
 | `qprimer generate` | Generate primer candidates from target sequences |
@@ -237,12 +246,18 @@ The `qprimer` CLI provides the following subcommands:
 | `qprimer select-multiplex` | Select best multiplex primer set |
 | `qprimer export-report` | Export evaluation results to Excel reports |
 
+</div>
+
 ### Probe Mode Commands
+
+<div style="font-size: 0.85em">
 
 | Command | Description |
 |---------|-------------|
 | `qprimer generate-probe` | Generate probe candidates from target sequences (for TaqMan assays) |
 | `qprimer parse-probe-mapping` | Parse probe SAM alignments into mapping table |
+
+</div>
 
 ## GPU Support
 
