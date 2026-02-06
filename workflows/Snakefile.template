@@ -427,7 +427,7 @@ rule build_index:
 
 rule align:
     wildcard_constraints:
-        virus=TARGETS_PATTERN,
+        virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
         fasta=lambda wc: (
@@ -533,7 +533,7 @@ rule process_map:
 
 rule check_coverage:
     wildcard_constraints:
-        virus=TARGETS_PATTERN,
+        virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
         mapped="alignments/{virus}.{target}.mapped.temp"
@@ -567,7 +567,7 @@ rule check_coverage:
 
 rule prepare_input:
     wildcard_constraints:
-        virus=TARGETS_PATTERN,
+        virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
         mapped="alignments/{virus}.{target}.mapped",
@@ -597,7 +597,7 @@ rule prepare_input:
 
 rule evaluate:
     wildcard_constraints:
-        virus=TARGETS_PATTERN,
+        virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
         inp="inputs/{virus}.{target}.input",
