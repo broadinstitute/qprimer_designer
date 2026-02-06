@@ -76,10 +76,6 @@ def find_valid_probes_offtarget(
             # Collect all target-position mappings for this pair in this off-target
             target_positions = {}
             for _, row in pair_rows.iterrows():
-                # Skip low-confidence predictions
-                if row.get('classifier', 1.0) < 0.5:
-                    continue
-
                 targets = ast.literal_eval(row['targets'])
                 starts = ast.literal_eval(row['starts'])
                 prod_len = row['prod_len']
@@ -192,7 +188,7 @@ def run(args):
             else:
                 tmp.loc[pair, f"cov_{oname}"] = sub["coverage"].sum()
                 tmp.loc[pair, f"act_{oname}"] = sub["activity"].max()
-                tmp.loc[pair, f"sco_{oname}"] = round(sub["score"].sum(), 3)
+                tmp.loc[pair, f"sco_{oname}"] = sub["score"].sum()
 
         merged = merged.join(tmp)
 
@@ -227,13 +223,16 @@ def run(args):
         # Load off-target probe mappings
         offtarget_probe_mappings = [pd.read_csv(path) for path in args.probe_mapping_off]
 
-        # Load off-target .full files
-        buffer = 1 
+        # Load off-target .full files and filter by classifier >= 0.5
+        buffer = 1
         offtarget_full_data_list = []
         for off_path in args.eval_off:
             full_path = f"{off_path}.full"
             if os.path.exists(full_path):
-                offtarget_full_data_list.append(pd.read_csv(full_path))
+                df = pd.read_csv(full_path)
+                # Filter to high-confidence predictions only
+                df = df[df.get('classifier', pd.Series([1.0] * len(df))) >= 0.5]
+                offtarget_full_data_list.append(df)
             else:
                 print(f"Warning: .full file not found: {full_path}")
                 offtarget_full_data_list.append(pd.DataFrame())
@@ -269,7 +268,7 @@ def run(args):
     # Sort by sum of off-target scores (ascending - lower is better)
     offtarget_score_cols = [col for col in final.columns if col.startswith('sco_') and col != 'sco_target']
     if offtarget_score_cols:
-        final['offtarget_score_sum'] = final[offtarget_score_cols].sum(axis=1).round(3)
+        final['offtarget_score_sum'] = final[offtarget_score_cols].sum(axis=1)
         final = final.sort_values('offtarget_score_sum')
         print(f"Sorted by sum of off-target scores")
 
