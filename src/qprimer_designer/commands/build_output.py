@@ -138,13 +138,13 @@ primer-primer dimerization (ΔG).
 """,
     )
     parser.add_argument("--on", dest="eval_on", required=True, help="ON-target evaluation CSV")
-    parser.add_argument("--off", dest="eval_off", nargs="+", required=True, help="OFF-target evaluation CSVs")
+    parser.add_argument("--off", dest="eval_off", nargs="*", required=False, default=[], help="OFF-target evaluation CSVs")
     parser.add_argument("--fa", dest="primers", required=True, help="Primer FASTA")
     parser.add_argument("--out", dest="output", required=True, help="Output CSV")
     parser.add_argument("--name", required=True, help="Target name")
     parser.add_argument("--params", dest="param_file", required=True, help="Parameters file")
     parser.add_argument("--probe-mapping-on", help="ON-target probe mapping CSV (for probe mode)")
-    parser.add_argument("--probe-mapping-off", nargs="+", help="OFF-target probe mapping CSVs (for probe mode)")
+    parser.add_argument("--probe-mapping-off", nargs="*", help="OFF-target probe mapping CSVs (for probe mode)")
     parser.add_argument("--probe-seqs", help="Probe FASTA (for probe mode)")
     parser.set_defaults(func=run)
 

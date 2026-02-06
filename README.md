@@ -65,8 +65,7 @@ HOST    = ['offtarget1']
 Run the pipeline:
 
 ```bash
-cd workflows
-snakemake -s Snakefile.example --cores all
+snakemake -s ./workflows/Snakefile.example --cores all
 ```
 
 Output will be in the `final/` directory as a CSV file with the following columns:
@@ -82,8 +81,7 @@ Output will be in the `final/` directory as a CSV file with the following column
 For TaqMan-style qPCR assays, you can enable probe mode to generate and filter probes alongside primers:
 
 ```bash
-cd workflows
-snakemake -s Snakefile.example --config probe=1 --cores all
+snakemake -s./workflows/Snakefile.example --config probe=1 --cores all
 ```
 
 ### Multiplex qPCR
@@ -98,7 +96,7 @@ HOST  = ['offtarget']
 Run with multiplex enabled:
 
 ```bash
-snakemake -s Snakefile.example --config multiplex=1 --cores all
+snakemake -s /workflows/Snakefile.example --config multiplex=1 probe=1 --cores all
 ```
 
 Output will be `final/multiplex_output.csv` containing top candidates for each target.
