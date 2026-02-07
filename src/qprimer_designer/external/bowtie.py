@@ -58,38 +58,17 @@ def build_index(fasta_path: str | Path, index_prefix: str | Path, threads: int =
     """
     find_bowtie2_build()  # Verify it exists
 
-    # FIX: Add input file validation (was missing)
     fasta_path = Path(fasta_path)
     if not fasta_path.exists():
         raise FileNotFoundError(f"Input FASTA file not found: {fasta_path}")
 
-    # ORIGINAL: subprocess.run without timeout
-    # subprocess.run(
-    #     ["bowtie2-build", "--threads", str(threads), str(fasta_path), str(index_prefix)],
-    #     check=True,
-    #     capture_output=True,
-    # )
-
-    # TODO: Implement cleanup of partial .bt2 index files on failure.
-    # If bowtie2-build fails partway through, partial index files may remain.
-    # Could use try/finally with glob to find and remove partial files:
-    #   index_files = list(Path(index_prefix).parent.glob(f"{Path(index_prefix).name}*.bt2*"))
-    #   for f in index_files: f.unlink()
-
-    # FIX: Expose stderr in exception for better error messages
     cmd = ["bowtie2-build", "--threads", str(threads), str(fasta_path), str(index_prefix)]
     try:
-        subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-        )
+        subprocess.run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
-        # FIX: Include stderr in exception for better error messages
-        stderr_msg = e.stderr.decode() if e.stderr else ""
         raise subprocess.CalledProcessError(
             e.returncode, cmd, output=e.stdout, stderr=e.stderr
-        ) from None  # Re-raise with stderr accessible via e.stderr
+        ) from None
 
 
 def align_primers(
@@ -117,26 +96,13 @@ def align_primers(
     """
     find_bowtie2()  # Verify it exists
 
-    # FIX: Add input file validation (was missing)
     query_fasta = Path(query_fasta)
     if not query_fasta.exists():
         raise FileNotFoundError(f"Query FASTA file not found: {query_fasta}")
 
-    # ORIGINAL: Missing -f flag for FASTA input - bowtie2 defaults to FASTQ
-    # cmd = [
-    #     "bowtie2",
-    #     "-x", str(index_prefix),
-    #     "-U", str(query_fasta),
-    #     "-S", str(output_sam),
-    #     "-p", str(threads),
-    #     "--no-hd",  # No header
-    #     "-a",  # Report all alignments
-    # ]
-
-    # FIX: Added "-f" flag to indicate FASTA input format (CRITICAL FIX)
     cmd = [
         "bowtie2",
-        "-f",  # FIX: FASTA input format (was missing - caused "not FASTQ" error)
+        "-f",  # FASTA input format
         "-x", str(index_prefix),
         "-U", str(query_fasta),
         "-S", str(output_sam),
@@ -150,14 +116,9 @@ def align_primers(
     if very_sensitive:
         cmd.append("--very-sensitive-local" if local else "--very-sensitive")
 
-    # ORIGINAL: subprocess.run without stderr exposure
-    # subprocess.run(cmd, check=True, capture_output=True)
-
-    # FIX: Expose stderr in exception for better error messages
     try:
         subprocess.run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
-        # FIX: Include stderr in exception for better error messages
         raise subprocess.CalledProcessError(
             e.returncode, cmd, output=e.stdout, stderr=e.stderr
         ) from None

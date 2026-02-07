@@ -5,8 +5,8 @@ import shutil
 import subprocess
 
 
-# Valid DNA characters (IUPAC nucleotide codes)
-VALID_DNA_CHARS = set("ATCGatcgNnRrYySsWwKkMmBbDdHhVv-")
+# Valid DNA characters (standard bases only; RNAduplex does not support IUPAC ambiguity codes)
+VALID_DNA_CHARS = set("ATCGatcgNn-")
 
 
 def find_rnaduplex() -> str:
@@ -43,27 +43,23 @@ def _validate_sequence(seq: str, name: str = "sequence") -> str:
         TypeError: If sequence is not a string
         ValueError: If sequence is empty or contains invalid characters
     """
-    # FIX: Check for None/non-string input (was missing)
     if seq is None:
         raise TypeError(f"{name} cannot be None")
     if not isinstance(seq, str):
         raise TypeError(f"{name} must be a string, got {type(seq).__name__}")
 
-    # FIX: Strip whitespace and validate not empty (was missing)
     seq = seq.strip()
     if not seq:
         raise ValueError(f"{name} cannot be empty")
 
-    # FIX: Check for internal whitespace (was missing)
     if any(c.isspace() for c in seq):
         raise ValueError(f"{name} contains internal whitespace")
 
-    # FIX: Validate DNA characters (was missing)
     invalid_chars = set(seq) - VALID_DNA_CHARS
     if invalid_chars:
         raise ValueError(
             f"{name} contains invalid characters: {sorted(invalid_chars)}. "
-            f"Valid characters are: ATCGNRYSWKMBDHV (case-insensitive) and -"
+            f"Valid characters are: ATCGN (case-insensitive) and -"
         )
 
     return seq
@@ -88,33 +84,20 @@ def compute_dimer_dg(seq1: str, seq2: str) -> float:
         ValueError: If sequences are empty or contain invalid characters
         ValueError: If ΔG cannot be parsed from output
         subprocess.CalledProcessError: If RNAduplex fails
-        subprocess.TimeoutExpired: If RNAduplex takes too long
     """
     find_rnaduplex()  # Verify it exists
 
-    # FIX: Add input validation (was missing)
     seq1 = _validate_sequence(seq1, "seq1")
     seq2 = _validate_sequence(seq2, "seq2")
 
     inp = f"{seq1}\n{seq2}\n"
 
-    # ORIGINAL: No input validation, no timeout
-    # result = subprocess.run(
-    #     ["RNAduplex", "--noconv", "--paramFile=DNA"],
-    #     input=inp,
-    #     capture_output=True,
-    #     text=True,
-    #     check=True,
-    # )
-
-    # FIX: Add timeout parameter (30 seconds should be plenty for dimer calc)
     result = subprocess.run(
         ["RNAduplex", "--noconv", "--paramFile=DNA"],
         input=inp,
         capture_output=True,
         text=True,
         check=True,
-        timeout=30,  # FIX: 30 second timeout
     )
 
     match = re.search(r"\(\s*([-+]?\d*\.?\d+)\s*\)", result.stdout)

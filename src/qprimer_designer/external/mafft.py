@@ -49,16 +49,13 @@ def align_sequences(
     """
     find_mafft()  # Verify it exists
 
-    # FIX: Add input file validation (was missing)
     input_fasta = Path(input_fasta)
     if not input_fasta.exists():
         raise FileNotFoundError(f"Input FASTA file not found: {input_fasta}")
 
-    # FIX: Validate input file is not empty
     if input_fasta.stat().st_size == 0:
         raise ValueError(f"Input FASTA file is empty: {input_fasta}")
 
-    # FIX: Basic FASTA format validation
     content = input_fasta.read_text()
     if not content.strip().startswith(">"):
         raise ValueError(f"Input file does not appear to be in FASTA format: {input_fasta}")
@@ -72,13 +69,6 @@ def align_sequences(
 
     cmd.append(str(input_fasta))
 
-    # ORIGINAL: Output file opened BEFORE subprocess runs
-    # This leaves an empty file if mafft fails, breaking downstream processing
-    # with open(output_fasta, "w") as outfile:
-    #     subprocess.run(cmd, stdout=outfile, check=True)
-
-    # FIX: Use temporary file + atomic move pattern
-    # Only create final output file after successful completion
     output_fasta = Path(output_fasta)
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -88,23 +78,20 @@ def align_sequences(
     ) as tmp_file:
         tmp_path = Path(tmp_file.name)
         try:
-            # FIX: Add stderr capture
             result = subprocess.run(
                 cmd,
                 stdout=tmp_file,
-                stderr=subprocess.PIPE,  # FIX: Capture stderr for error messages
+                stderr=subprocess.PIPE,
                 check=True,
             )
             tmp_file.flush()
-
-            # FIX: Atomic move only after successful completion
             shutil.move(str(tmp_path), str(output_fasta))
 
         except subprocess.CalledProcessError as e:
-            # FIX: Clean up temp file on failure
-            if tmp_path.exists():
+            try:
                 tmp_path.unlink()
-            # Include stderr in error message if available
+            except FileNotFoundError:
+                pass
             if e.stderr:
                 raise subprocess.CalledProcessError(
                     e.returncode,
