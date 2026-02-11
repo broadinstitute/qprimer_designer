@@ -53,16 +53,22 @@ def build_index(fasta_path: str | Path, index_prefix: str | Path, threads: int =
         threads: Number of threads to use
 
     Raises:
-        FileNotFoundError: If bowtie2-build is not found
-        subprocess.CalledProcessError: If index building fails
+        FileNotFoundError: If bowtie2-build is not found or input file doesn't exist
+        subprocess.CalledProcessError: If index building fails (includes stderr in message)
     """
     find_bowtie2_build()  # Verify it exists
 
-    subprocess.run(
-        ["bowtie2-build", "--threads", str(threads), str(fasta_path), str(index_prefix)],
-        check=True,
-        capture_output=True,
-    )
+    fasta_path = Path(fasta_path)
+    if not fasta_path.exists():
+        raise FileNotFoundError(f"Input FASTA file not found: {fasta_path}")
+
+    cmd = ["bowtie2-build", "--threads", str(threads), str(fasta_path), str(index_prefix)]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        raise subprocess.CalledProcessError(
+            e.returncode, cmd, output=e.stdout, stderr=e.stderr
+        ) from None
 
 
 def align_primers(
@@ -85,13 +91,18 @@ def align_primers(
         very_sensitive: Use very-sensitive preset (default: True)
 
     Raises:
-        FileNotFoundError: If bowtie2 is not found
+        FileNotFoundError: If bowtie2 is not found or query file doesn't exist
         subprocess.CalledProcessError: If alignment fails
     """
     find_bowtie2()  # Verify it exists
 
+    query_fasta = Path(query_fasta)
+    if not query_fasta.exists():
+        raise FileNotFoundError(f"Query FASTA file not found: {query_fasta}")
+
     cmd = [
         "bowtie2",
+        "-f",  # FASTA input format
         "-x", str(index_prefix),
         "-U", str(query_fasta),
         "-S", str(output_sam),
@@ -105,4 +116,9 @@ def align_primers(
     if very_sensitive:
         cmd.append("--very-sensitive-local" if local else "--very-sensitive")
 
-    subprocess.run(cmd, check=True, capture_output=True)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        raise subprocess.CalledProcessError(
+            e.returncode, cmd, output=e.stdout, stderr=e.stderr
+        ) from None
