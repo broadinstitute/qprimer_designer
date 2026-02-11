@@ -24,7 +24,7 @@ Selection rule (per input CSV / target):
 """,
     )
     parser.add_argument("csvs", nargs="+", help="Input per-target CSV files")
-    parser.add_argument("--out", required=True, help="Output combined CSV path")
+    parser.add_argument("--out", default=None, help="Output combined CSV path (default: auto-generated from target names)")
     parser.add_argument("--top-n", type=int, default=3, help="Number of top rows to keep per target (default: 3)")
     parser.add_argument(
         "--target-from",
@@ -142,5 +142,12 @@ def run(args):
         cols = ["target"] + [c for c in cols if c != "target"]
         combined = combined[cols]
 
-    combined.to_csv(args.out, index=False)
-    print(f"Wrote {len(combined)} rows to {args.out}")
+    out_path = args.out
+    if out_path is None:
+        # Auto-generate filename from target names
+        targets = combined["target"].unique().tolist()
+        targets.sort()
+        out_path = "_".join(targets) + ".csv"
+
+    combined.to_csv(out_path, index=False)
+    print(f"Wrote {len(combined)} rows to {out_path}")

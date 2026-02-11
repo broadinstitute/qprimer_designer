@@ -47,8 +47,8 @@ import sys
 from pathlib import Path
 import shutil
 
-# Probe mode (singleplex only)
-PROBE_MODE = bool(int(config.get("probe", 0))) and not MULTIPLEX
+# Probe mode
+PROBE_MODE = bool(int(config.get("probe", 0)))
 
 # Create wildcard pattern for targets
 if MULTIPLEX:
@@ -155,15 +155,17 @@ if EVALUATE:
             f"evaluate/{PSET_NAME}"
 
 elif MULTIPLEX:
+    MULTIPLEX_STEM = "_".join(sorted(PANEL))
+
     rule all:
         input:
-            "final/multiplex_output.csv"
+            f"final/{MULTIPLEX_STEM}.csv"
 
     rule select_best_multiplex:
         input:
             csvs=expand("final/{on}.csv", on=PANEL)
         output:
-            "final/multiplex_output.csv"
+            f"final/{MULTIPLEX_STEM}.csv"
         shell:
             "qprimer select-multiplex "
             "{input.csvs} "
