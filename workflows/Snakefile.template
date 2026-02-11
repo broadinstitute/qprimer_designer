@@ -189,6 +189,7 @@ elif MULTIPLEX:
         output:
             "final/{on}.csv"
         params:
+            off_arg=lambda wc, input: f"--off {input.eval_off}" if input.eval_off else "",
             probe_args=lambda wc, input: (
                 f"--probe-mapping-on {input.probe_mapping_on} "
                 f"--probe-mapping-off {' '.join(input.probe_mapping_off)} "
@@ -197,7 +198,7 @@ elif MULTIPLEX:
             )
         shell:
             "qprimer build-output "
-            "--on {input.eval_on} --off {input.eval_off} "
+            "--on {input.eval_on} {params.off_arg} "
             "--fa {input.fa} --out {output} --name {wildcards.on} "
             "--params {PARAMS} {params.probe_args}"
 
@@ -227,6 +228,7 @@ else:
         output:
             "final/{virus}.csv"
         params:
+            off_arg=lambda wc, input: f"--off {input.eval_off}" if input.eval_off else "",
             probe_args=lambda wc, input: (
                 f"--probe-mapping-on {input.probe_mapping_on} "
                 f"--probe-mapping-off {' '.join(input.probe_mapping_off)} "
@@ -235,7 +237,7 @@ else:
             )
         shell:
             "qprimer build-output "
-            "--on {input.eval_on} --off {input.eval_off} "
+            "--on {input.eval_on} {params.off_arg} "
             "--fa {input.fa} --out {output} --name {wildcards.virus} "
             "--params {PARAMS} {params.probe_args}"
 
@@ -393,11 +395,12 @@ rule evaluate_pset:
     output:
         directory("evaluate/{filename}")
     params:
-        ids=lambda wc: " ".join(check_ids(f"evaluate/{wc.filename}.fa"))
+        ids=lambda wc: " ".join(check_ids(f"evaluate/{wc.filename}.fa")),
+        off_arg=lambda wc, input: f"--off {input.eval_off}" if input.eval_off else ""
     shell:
         "qprimer export-report "
         "--on {input.eval_on} "
-        "--off {input.eval_off} "
+        "{params.off_arg} "
         "--out evaluate/{wildcards.filename} "
         "--names {params.ids}"
 

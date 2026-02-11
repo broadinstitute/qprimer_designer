@@ -283,7 +283,7 @@ def run(args):
     """Run the pick-representatives command."""
     params = parse_params(args.param_file)
     num_reps = int(params.get("NUM_REPRESENTATIVE_SEQS", 5))
-    window_size = int(params.get("REPRESENTATIVE_WINDOW", 200))
+    window_size = int(params.get("DESIGN_WINDOW", 200))
     kmer_size = int(params.get("MINHASH_KMER_SIZE", 10))
 
     print(f"Selecting representative sequences from {args.input}...")
