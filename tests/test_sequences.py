@@ -4,7 +4,6 @@ import pytest
 from qprimer_designer.utils.sequences import (
     reverse_complement_dna,
     get_gc_fraction,
-    fast_reverse_complement,
 )
 
 
@@ -18,15 +17,6 @@ class TestReverseComplement:
     def test_reverse_complement_empty(self):
         """Test reverse complement of empty string."""
         assert reverse_complement_dna("") == ""
-
-    def test_fast_reverse_complement_simple(self):
-        """Test fast reverse complement of a simple sequence."""
-        assert fast_reverse_complement("ATCG") == "CGAT"
-
-    def test_fast_reverse_complement_matches_standard(self):
-        """Ensure fast and standard implementations match."""
-        seq = "ATCGATCGATCGATCGATCG"
-        assert fast_reverse_complement(seq) == reverse_complement_dna(seq)
 
 
 class TestGCFraction:

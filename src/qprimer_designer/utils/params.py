@@ -28,6 +28,9 @@ def parse_params(param_file: str | Path) -> dict[str, Any]:
                 name, value = line.split("=", 1)
                 name = name.strip()
                 value = value.strip()
+                # Remove inline comments
+                if "#" in value:
+                    value = value.split("#")[0].strip()
                 try:
                     params[name] = float(value)
                 except ValueError:
@@ -40,20 +43,43 @@ def get_primer_params(params: dict) -> dict:
     return {
         "max_num": int(params.get("MAX_PRIMER_CANDIDATES", 10000)),
         "step": int(params.get("TILING_STEP", 1)),
-        "primer_len": int(params.get("PRIMER_LEN", 20)),
+        "min_pri_len": int(params.get("PRIMER_LEN_MIN", 20)),
+        "max_pri_len": int(params.get("PRIMER_LEN_MAX", 20)),
         "min_amp_len": int(params.get("AMPLEN_MIN", 60)),
         "max_amp_len": int(params.get("AMPLEN_MAX", 200)),
         "max_tm": float(params.get("TM_MAX", 60)),
         "min_tm": float(params.get("TM_MIN", 55)),
         "max_gc": float(params.get("GC_MAX", 60)),
-        "min_dg": float(params.get("DG_MIN", -8)),
+        "min_dg": float(params.get("DG_MIN", -6)),
+    }
+
+
+def get_probe_params(params: dict) -> dict:
+    """Extract probe generation parameters from parsed params dict."""
+    # Parse avoid_5prime_G as boolean
+    avoid_5prime_g_str = params.get("PROBE_AVOID_5PRIME_G", "True")
+    if isinstance(avoid_5prime_g_str, str):
+        avoid_5prime_g = avoid_5prime_g_str.lower() in ("true", "1", "yes")
+    else:
+        avoid_5prime_g = bool(avoid_5prime_g_str)
+
+    return {
+        "len_min": int(params.get("PROBE_LEN_MIN", 24)),
+        "len_max": int(params.get("PROBE_LEN_MAX", 28)),
+        "min_tm": float(params.get("PROBE_TM_MIN", 65)),
+        "max_tm": float(params.get("PROBE_TM_MAX", 70)),
+        "homopolymer_max": int(params.get("PROBE_HOMOPOLYMER_MAX", 3)),
+        "avoid_5prime_g": avoid_5prime_g,
+        "max_gc": float(params.get("GC_MAX", 60)),
+        "min_dg": float(params.get("DG_MIN", -6)),
+        "max_num": int(params.get("MAX_PRIMER_CANDIDATES", 10000)),
     }
 
 
 def get_evaluation_params(params: dict) -> dict:
     """Extract evaluation parameters from parsed params dict."""
     return {
-        "primer_len": int(params.get("PRIMER_LEN", 20)),
+        "primer_len": int(params.get("PRIMER_LEN_MIN", 20)),  # Use min as default single value
         "min_amp_len": int(params.get("AMPLEN_MIN", 60)),
         "max_amp_len": int(params.get("AMPLEN_MAX", 200)),
         "min_off_len": int(params.get("OFFLEN_MIN", 60)),

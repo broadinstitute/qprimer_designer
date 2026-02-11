@@ -7,8 +7,23 @@ TM_MIN = 55
 TM_MAX = 60
 GC_MAX = 60
 DG_MIN = -6
-PRIMER_LEN = 20
+PRIMER_LEN_MIN = 19
+PRIMER_LEN_MAX = 21
 TILING_STEP = 5
+
+## Parameters for probe generation
+PROBE_LEN_MIN = 24
+PROBE_LEN_MAX = 28
+PROBE_TM_MIN = 65
+PROBE_TM_MAX = 70
+PROBE_HOMOPOLYMER_MAX = 3
+PROBE_AVOID_5PRIME_G = True
+
+## Probe mode configuration (singleplex only)
+PROBE_MAX_MISMATCHES = 2  # Maximum mismatches for probe-to-target alignment
+PROBE_AMPLICON_BUFFER = 20  # Minimum distance (nt) from primer ends
+MIN_PROBES_PER_PAIR = 1  # Minimum valid probes required per primer pair
+MAX_PROBES_PER_PAIR = 5  # Maximum number of probes to output per primer pair
 
 ## Parameters in input preparation
 AMPLEN_MIN = 60

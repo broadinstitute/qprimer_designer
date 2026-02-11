@@ -11,7 +11,7 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.SeqUtils import gc_fraction
 
-from qprimer_designer.utils import reverse_complement_dna, get_tm, parse_params
+from qprimer_designer.utils import reverse_complement_dna, get_tm, parse_params, get_primer_params
 from qprimer_designer.external import compute_self_dimer_dg
 
 
@@ -34,19 +34,23 @@ self-dimer free energy (ΔG).
     parser.set_defaults(func=run)
 
 
-def generate_primers_single(target_seq: str, step: int, primer_len: int, min_amp_len: int):
+def generate_primers_single(target_seq: str, step: int, min_pri_len: int, max_pri_len: int, min_amp_len: int):
     """Generate forward and reverse primer candidates from a single target."""
     target_seq_rc = reverse_complement_dna(target_seq)
 
     forps, revps = {}, {}
-    for i in range(0, len(target_seq) - primer_len - min_amp_len, step):
-        fseq = target_seq[i : i + primer_len]
-        if "N" not in fseq:
-            forps[fseq] = i
 
-        rseq = target_seq_rc[i : i + primer_len]
-        if "N" not in rseq:
-            revps[rseq] = len(target_seq) - i
+    for i in range(0, len(target_seq) - max_pri_len - min_amp_len, step):
+        for primer_len in range(min_pri_len, max_pri_len + 1):
+            # Check if this length fits at this position
+            if i + primer_len <= len(target_seq):
+                fseq = target_seq[i : i + primer_len]
+                if "N" not in fseq:
+                    forps[fseq] = i
+
+                rseq = target_seq_rc[i : i + primer_len]
+                if "N" not in rseq:
+                    revps[rseq] = len(target_seq) - i
 
     return forps, revps
 
@@ -68,7 +72,8 @@ def count_primer_pairs(fors: dict, revs: dict, min_amp_len: int, max_amp_len: in
 def generate_primers_multi(
     target_seqs,
     step: int,
-    primer_len: int,
+    min_pri_len: int,
+    max_pri_len: int,
     min_amp_len: int,
     max_amp_len: int,
     max_tm: float,
@@ -79,7 +84,7 @@ def generate_primers_multi(
     """Generate and filter primer candidates across multiple target sequences."""
     forps, revps = {}, {}
     for tseq in target_seqs:
-        flist, rlist = generate_primers_single(tseq, step, primer_len, min_amp_len)
+        flist, rlist = generate_primers_single(tseq, step, min_pri_len, max_pri_len, min_amp_len)
         forps.update(flist)
         revps.update(rlist)
 
@@ -91,18 +96,20 @@ def generate_primers_multi(
 
     for unfilt, filt in zip([forps, revps], [for_filt, rev_filt]):
         for pseq in unfilt:
+            # Calculate features
             tm = get_tm(pseq)
             gc = gc_fraction(pseq)
 
-            features[pseq]["Tm"] = round(tm, 1)
-            features[pseq]["GC"] = gc
-            features[pseq]["len"] = len(pseq)
-
+            # Filter by Tm and GC
             if min_tm <= tm <= max_tm and gc <= max_gc / 100.0:
                 dG = compute_self_dimer_dg(pseq)
-                features[pseq]["dG"] = round(dG, 1)
 
+                # Only add features if all filters pass
                 if dG >= min_dg:
+                    features[pseq]["Tm"] = round(tm, 1)
+                    features[pseq]["GC"] = round(gc, 2)
+                    features[pseq]["len"] = len(pseq)
+                    features[pseq]["dG"] = round(dG, 1)
                     filt[pseq] = unfilt[pseq]
 
     valid_pairs = count_primer_pairs(for_filt, rev_filt, min_amp_len, max_amp_len)
@@ -114,24 +121,28 @@ def generate_primers_multi(
 def run(args):
     """Run the generate command."""
     params = parse_params(args.param_file)
+    primer_params = get_primer_params(params)
 
-    max_num = int(params.get("MAX_PRIMER_CANDIDATES", 10000))
-    step = int(params.get("TILING_STEP", 1))
-    primer_len = int(params.get("PRIMER_LEN", 20))
-    min_amp_len = int(params.get("AMPLEN_MIN", 60))
-    max_amp_len = int(params.get("AMPLEN_MAX", 200))
-    max_tm = float(params.get("TM_MAX", 60))
-    min_tm = float(params.get("TM_MIN", 55))
-    max_gc = float(params.get("GC_MAX", 60))
-    min_dg = float(params.get("DG_MIN", -8))
+    max_num = primer_params["max_num"]
+    step = primer_params["step"]
+    min_pri_len = primer_params["min_pri_len"]
+    max_pri_len = primer_params["max_pri_len"]
+    min_amp_len = primer_params["min_amp_len"]
+    max_amp_len = primer_params["max_amp_len"]
+    max_tm = primer_params["max_tm"]
+    min_tm = primer_params["min_tm"]
+    max_gc = primer_params["max_gc"]
+    min_dg = primer_params["min_dg"]
 
     target_seqs = [str(s.seq) for s in SeqIO.parse(args.target_seqs, "fasta")]
 
     print(f"Generating primers from {args.target_seqs}...")
+    print(f"Primer lengths: {min_pri_len}-{max_pri_len}")
+    print(f"Tm range: {min_tm}-{max_tm}")
     start_time = time.time()
 
     for_filt, rev_filt, features = generate_primers_multi(
-        target_seqs, step, primer_len, min_amp_len, max_amp_len,
+        target_seqs, step, min_pri_len, max_pri_len, min_amp_len, max_amp_len,
         max_tm, min_tm, max_gc, min_dg,
     )
 
@@ -149,6 +160,7 @@ def run(args):
     if len(reverses) > max_num // 2:
         reverses = random.sample(reverses, max_num // 2)
 
+    # Write output FASTA
     with open(args.primer_seqs, "w") as fout:
         for i, seq in enumerate(forwards):
             pname = f"{args.name}_{i+1}_f"
@@ -162,19 +174,12 @@ def run(args):
             features[seq]["forrev"] = "r"
             fout.write(f">{pname}\n{seq}\n")
 
-    features_df = pd.DataFrame(features).T
-    # Original code: crashed with KeyError when no primers passed filtering,
-    # because 'pname' and 'forrev' columns are only added for primers written to output.
-    # if features_df.empty:
-    #     features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
-    # else:
-    #     features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"]]
-    #
-    # Fixed: check for 'pname' column presence, not just empty DataFrame.
-    if features_df.empty or "pname" not in features_df.columns:
-        features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
-    else:
+    # Write features CSV
+    if features:
+        features_df = pd.DataFrame(features).T
         features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"]]
+    else:
+        features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
 
     # Original code: only handled .fa extension.
     # fname = args.primer_seqs.replace(".fa", ".feat")
