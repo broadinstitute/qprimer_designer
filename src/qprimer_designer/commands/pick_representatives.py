@@ -41,15 +41,30 @@ for downstream primer design using MinHash-based approximate clustering.
 class MinHashFamily:
     """LSH family using MinHash for Jaccard distance."""
 
-    def __init__(self, kmer_size, N=1, use_fast_str_hash=False):
+    # BUG FIX: Added seed parameter for reproducibility.
+    # Original __init__ did not accept a seed, and make_h() used random.randint()
+    # without seeding, causing non-reproducible clustering results.
+    # Original:
+    # def __init__(self, kmer_size, N=1, use_fast_str_hash=False):
+    #     self.kmer_size = kmer_size
+    #     self.N = N
+    #     self.use_fast_str_hash = use_fast_str_hash
+    def __init__(self, kmer_size, N=1, use_fast_str_hash=False, seed=None):
         self.kmer_size = kmer_size
         self.N = N
         self.use_fast_str_hash = use_fast_str_hash
+        self.seed = seed
+        self._rng = random.Random(seed)  # Instance-specific RNG for reproducibility
 
     def make_h(self):
         p = 2**31 - 1
-        a = random.randint(1, p)
-        b = random.randint(0, p)
+        # BUG FIX: Use instance-specific RNG instead of global random.
+        # Original used random.randint() which is non-deterministic.
+        # Original:
+        # a = random.randint(1, p)
+        # b = random.randint(0, p)
+        a = self._rng.randint(1, p)
+        b = self._rng.randint(0, p)
 
         if self.use_fast_str_hash:
             def kmer_hash(x):
@@ -117,7 +132,11 @@ class HashConcatenation:
 
     def g(self, x):
         if self.join_as_str:
-            return ''.join(h(x) for h in self.hs)
+            # BUG FIX: h(x) returns a tuple, not a string, so str.join() fails.
+            # Convert each hash result to string before joining.
+            # Original:
+            # return ''.join(h(x) for h in self.hs)
+            return ''.join(str(h(x)) for h in self.hs)
         else:
             return tuple([h(x) for h in self.hs])
 
@@ -183,7 +202,13 @@ def find_low_gap_window(seqs, window_size=200):
     best_pos = 0
     min_gaps = float('inf')
 
-    for pos in range(0, max(1, seq_len - window_size)):
+    # BUG FIX: Off-by-one error - original code missed the last valid window position.
+    # For a 30bp sequence with window_size=20, last valid position is 10 (0-indexed).
+    # Original range(0, 10) checked 0-9, missing position 10.
+    # Fixed range(0, 11) checks 0-10 (all valid positions).
+    # Original:
+    # for pos in range(0, max(1, seq_len - window_size)):
+    for pos in range(0, max(1, seq_len - window_size + 1)):
         gaps = sum(s[pos:pos + window_size].count('-') for s in seqs)
         if gaps < min_gaps:
             min_gaps = gaps

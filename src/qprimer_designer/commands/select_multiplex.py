@@ -43,8 +43,16 @@ Selection rule (per input CSV / target):
 def infer_target_name(path: str) -> str:
     """Infer target name from filename like final/A.csv -> 'A'."""
     base = os.path.basename(path)
+    # Original code: case-sensitive extension matching (e.g., ".CSV" not handled).
+    # for ext in [".csv.gz", ".tsv.gz", ".csv", ".tsv"]:
+    #     if base.endswith(ext):
+    #         base = base[: -len(ext)]
+    #         break
+    #
+    # Fixed: use case-insensitive extension matching.
+    base_lower = base.lower()
     for ext in [".csv.gz", ".tsv.gz", ".csv", ".tsv"]:
-        if base.endswith(ext):
+        if base_lower.endswith(ext):
             base = base[: -len(ext)]
             break
     return base
@@ -96,9 +104,19 @@ def run(args):
     if args.top_n < 1:
         raise ValueError("--top-n must be >= 1")
 
+    # Original code: empty csvs list raised unclear pandas error "No objects to concatenate".
+    # Fixed: provide a clear error message for empty input.
+    if not args.csvs:
+        raise ValueError("No input CSV files provided. Please specify at least one CSV file.")
+
     selected_frames: List[pd.DataFrame] = []
 
     for path in args.csvs:
+        # Original code: relied on pandas error for missing files.
+        # Fixed: check file existence with a clear error message.
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Input file not found: {path}")
+
         df = pd.read_csv(path)
 
         if args.target_from == "column":

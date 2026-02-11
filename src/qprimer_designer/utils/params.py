@@ -19,7 +19,12 @@ def parse_params(param_file: str | Path) -> dict[str, Any]:
     params = {}
     with open(param_file) as f:
         for line in f:
-            if "=" in line:
+            # BUG FIX: Skip comment lines before checking for '='
+            # Original code only checked `if "=" in line:` which incorrectly
+            # parsed comment lines like '# MAX_VALUE = 100' as parameters.
+            # Original:
+            # if "=" in line:
+            if "=" in line and not line.lstrip().startswith("#"):
                 name, value = line.split("=", 1)
                 name = name.strip()
                 value = value.strip()

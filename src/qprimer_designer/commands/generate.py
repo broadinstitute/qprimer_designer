@@ -3,6 +3,7 @@
 import argparse
 import bisect
 import random
+import re
 import time
 from collections import defaultdict
 
@@ -25,14 +26,11 @@ by tiling, then filtering by melting temperature (Tm), GC content, and
 self-dimer free energy (ΔG).
 """,
     )
-    parser.add_argument("--in", dest="target_seqs", required=True, 
-                        help="Input FASTA of target sequences")
-    parser.add_argument("--out", dest="primer_seqs", required=True, 
-                        help="Output FASTA for primers")
-    parser.add_argument("--params", dest="param_file", required=True, 
-                        help="Parameters file (params.txt)")
-    parser.add_argument("--name", required=True, 
-                        help="Name prefix for primer IDs")
+    parser.add_argument("--in", dest="target_seqs", required=True, help="Input FASTA of target sequences")
+    parser.add_argument("--out", dest="primer_seqs", required=True, help="Output FASTA for primers")
+    parser.add_argument("--params", dest="param_file", required=True, help="Parameters file (params.txt)")
+    parser.add_argument("--name", required=True, help="Name prefix for primer IDs")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible primer sampling (optional)")
     parser.set_defaults(func=run)
 
 
@@ -151,6 +149,11 @@ def run(args):
     forwards = list(for_filt.keys())
     reverses = list(rev_filt.keys())
 
+    # Set random seed for reproducibility if provided.
+    # Original code did not support seeding, making results non-reproducible.
+    if hasattr(args, "seed") and args.seed is not None:
+        random.seed(args.seed)
+
     # Randomly subsample to keep output bounded
     if len(forwards) > max_num // 2:
         forwards = random.sample(forwards, max_num // 2)
@@ -171,14 +174,30 @@ def run(args):
             features[seq]["forrev"] = "r"
             fout.write(f">{pname}\n{seq}\n")
 
-    # Write features CSV
-    if features:
-        features_df = pd.DataFrame(features).T
+    features_df = pd.DataFrame(features).T
+    # Original code: crashed with KeyError when no primers passed filtering,
+    # because 'pname' and 'forrev' columns are only added for primers written to output.
+    # if features_df.empty:
+    #     features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
+    # else:
+    #     features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"]]
+    #
+    # Fixed: check for 'pname' column presence, not just empty DataFrame.
+    if features_df.empty or "pname" not in features_df.columns:
+        features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
+    else:
         features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"]]
     else:
         features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
 
-    fname = args.primer_seqs.replace(".fa", ".feat")
+    # Original code: only handled .fa extension.
+    # fname = args.primer_seqs.replace(".fa", ".feat")
+    #
+    # Fixed: handle both .fa and .fasta extensions.
+    fname = re.sub(r"\.(fa|fasta)$", ".feat", args.primer_seqs, flags=re.IGNORECASE)
+    if fname == args.primer_seqs:
+        # If no recognized extension, append .feat
+        fname = args.primer_seqs + ".feat"
     features_df.to_csv(fname, index=False)
 
     runtime = time.time() - start_time

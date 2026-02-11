@@ -9,7 +9,18 @@ def one_hot_encode(seq: str, length: int = 28) -> np.ndarray:
     One-hot encode a nucleotide sequence with gap support.
 
     Encoding order: A, T, C, G, gap
-    Sequence is left-padded/truncated to fixed length.
+
+    BUG FIX: Corrected docstring to match actual behavior.
+    Original docstring said "left-padded/truncated" but code actually:
+    - Right-pads short sequences with 'N' (ljust)
+    - Keeps the LAST N characters for long sequences ([-length:])
+
+    # Original docstring:
+    # Sequence is left-padded/truncated to fixed length.
+
+    Sequence handling:
+    - Short sequences: Right-padded with 'N' to reach fixed length
+    - Long sequences: Last N characters are kept (left-truncated)
 
     Args:
         seq: DNA/RNA sequence
@@ -26,6 +37,7 @@ def one_hot_encode(seq: str, length: int = 28) -> np.ndarray:
         "N": [0, 0, 0, 0, 0],
         "-": [0, 0, 0, 0, 1],
     }
+    # Right-pad with N, then take last 'length' characters
     seq = seq.ljust(length, "N")[-length:]
     return np.array([mapping[c.upper()] for c in seq])
 

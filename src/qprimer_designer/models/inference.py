@@ -1,6 +1,6 @@
 """Model loading and inference utilities."""
 
-import sys
+import __main__
 import warnings
 from importlib.resources import files
 from pathlib import Path
@@ -9,8 +9,7 @@ from typing import Tuple
 import joblib
 import torch
 
-# Import model classes so they're available for torch.load() unpickling
-from .architectures import (
+from qprimer_designer.models.architectures import (
     PGC,
     DropoutNd,
     S4DKernel,
@@ -19,18 +18,30 @@ from .architectures import (
     MLP,
     CombinedModel,
     CombinedModelClassifier,
+    PcrDataset,
 )
 
-# Inject all classes into __main__ module for torch.load() compatibility
-# The saved models were pickled with __main__ as the module reference
-sys.modules['__main__'].PGC = PGC
-sys.modules['__main__'].DropoutNd = DropoutNd
-sys.modules['__main__'].S4DKernel = S4DKernel
-sys.modules['__main__'].S4D = S4D
-sys.modules['__main__'].Janus = Janus
-sys.modules['__main__'].MLP = MLP
-sys.modules['__main__'].CombinedModel = CombinedModel
-sys.modules['__main__'].CombinedModelClassifier = CombinedModelClassifier
+
+def _register_model_classes_for_pickle():
+    """Register model classes in __main__ for pickle compatibility.
+
+    Models saved with torch.save() when the class was defined in __main__
+    need the classes to be accessible from __main__ when loading.
+    """
+    if not hasattr(__main__, 'CombinedModelClassifier'):
+        __main__.PGC = PGC
+        __main__.DropoutNd = DropoutNd
+        __main__.S4DKernel = S4DKernel
+        __main__.S4D = S4D
+        __main__.Janus = Janus
+        __main__.MLP = MLP
+        __main__.CombinedModel = CombinedModel
+        __main__.CombinedModelClassifier = CombinedModelClassifier
+        __main__.PcrDataset = PcrDataset
+
+
+# Register classes at import time
+_register_model_classes_for_pickle()
 
 
 def get_model_path(filename: str) -> Path:
