@@ -174,18 +174,9 @@ def run(args):
             features[seq]["forrev"] = "r"
             fout.write(f">{pname}\n{seq}\n")
 
-    features_df = pd.DataFrame(features).T
-    # Original code: crashed with KeyError when no primers passed filtering,
-    # because 'pname' and 'forrev' columns are only added for primers written to output.
-    # if features_df.empty:
-    #     features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
-    # else:
-    #     features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"]]
-    #
-    # Fixed: check for 'pname' column presence, not just empty DataFrame.
-    if features_df.empty or "pname" not in features_df.columns:
-        features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
-    else:
+    # Write features CSV
+    if features:
+        features_df = pd.DataFrame(features).T
         features_df = features_df.reset_index(names="pseq")[["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"]]
     else:
         features_df = pd.DataFrame(columns=["pname", "pseq", "forrev", "len", "Tm", "GC", "dG"])
