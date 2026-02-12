@@ -413,15 +413,15 @@ rule evaluate_pset:
 
 rule build_index:
     wildcard_constraints:
-        virus=TARGETS_PATTERN
+        target=ALL_TARGETS_PATTERN
     input:
-        "target_seqs/original/{virus}.fa"
+        "target_seqs/original/{target}.fa"
     output:
-        "bt2_index/{virus}.1.bt2"
+        "bt2_index/{target}.1.bt2"
     threads:
-        lambda wc: min(4, MAX_CORES) if count_seqs(wc.virus) > 1000 else 1
+        lambda wc: min(4, MAX_CORES) if count_seqs(wc.target) > 1000 else 1
     shell:
-        "bowtie2-build --threads {threads} {input} bt2_index/{wildcards.virus}"
+        "bowtie2-build --threads {threads} {input} bt2_index/{wildcards.target}"
 
 
 rule align:

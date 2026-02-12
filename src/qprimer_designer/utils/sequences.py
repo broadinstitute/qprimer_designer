@@ -1,6 +1,11 @@
 """Sequence manipulation utilities."""
 
+import re
+
 from Bio.SeqUtils import MeltingTemp, gc_fraction
+
+# IUPAC ambiguity codes (everything except A, T, C, G, N)
+_IUPAC_AMBIGUITY = re.compile(r'[RYWSMKBDHVryswmkbdhv]')
 
 # Complement translation table
 COMPLEMENT_TABLE = str.maketrans({
@@ -28,6 +33,17 @@ def get_tm(seq: str) -> float:
 def get_gc_fraction(seq: str) -> float:
     """Calculate GC content as a fraction (0-1)."""
     return gc_fraction(seq)
+
+
+def sanitize_iupac(seq: str) -> str:
+    """Replace IUPAC ambiguity codes with N.
+
+    RNAduplex and primer generation only support A, T, C, G, and N.
+    Ambiguity codes (R, Y, W, S, M, K, B, D, H, V) are replaced with N
+    so that primer/probe candidates overlapping those positions are
+    filtered out by the existing 'N' checks.
+    """
+    return _IUPAC_AMBIGUITY.sub('N', seq)
 
 
 def has_homopolymer(seq: str, max_len: int) -> bool:

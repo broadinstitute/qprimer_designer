@@ -9,7 +9,7 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.SeqUtils import gc_fraction
 
-from qprimer_designer.utils import get_tm, parse_params, get_probe_params, reverse_complement_dna, has_homopolymer
+from qprimer_designer.utils import get_tm, parse_params, get_probe_params, reverse_complement_dna, has_homopolymer, sanitize_iupac
 from qprimer_designer.external import compute_self_dimer_dg
 
 
@@ -129,7 +129,7 @@ def run(args):
     avoid_5prime_G = probe_params["avoid_5prime_g"]
     max_num = probe_params["max_num"]
 
-    target_seqs = [str(s.seq) for s in SeqIO.parse(args.target_seqs, "fasta")]
+    target_seqs = [sanitize_iupac(str(s.seq)) for s in SeqIO.parse(args.target_seqs, "fasta")]
 
     print(f"Generating probes from {args.target_seqs}...")
     print(f"Probe lengths: {len_min}-{len_max}")

@@ -2,55 +2,56 @@
 
 import argparse
 import ast
+from collections import defaultdict
 
 import pandas as pd
 from Bio import SeqIO
 
 from qprimer_designer.utils import parse_params
-from qprimer_designer.external import compute_dimer_dg
+from qprimer_designer.external import compute_batch_dimer_dg
 
 
 def load_probe_data(probe_mapping_path, probe_seqs_path):
-    """Load probe mapping table and sequences."""
+    """Load probe mapping table and sequences, with pre-built indexes."""
     mapping_df = pd.read_csv(probe_mapping_path)
     probe_seqs = {rec.id: str(rec.seq) for rec in SeqIO.parse(probe_seqs_path, "fasta")}
-    return mapping_df, probe_seqs
+
+    # Build dict indexes for O(1) lookups instead of repeated DataFrame filtering
+    probes_by_target = defaultdict(set)
+    probe_positions = {}
+    for row in mapping_df.itertuples(index=False):
+        tid = row.target_id
+        pname = row.probe_name
+        probes_by_target[tid].add(pname)
+        key = (tid, pname)
+        if key not in probe_positions:
+            probe_positions[key] = row.start_pos
+
+    return dict(probes_by_target), probe_positions, probe_seqs
 
 
-def find_valid_probes_for_pair(
+def _find_position_valid_probes(
     pair_full_rows,
-    probe_mapping_df,
+    probes_by_target,
+    probe_positions,
     probe_seqs_dict,
-    primer_seqs_dict,
-    min_dg,
     buffer
 ):
     """
-    Find probes compatible with a primer pair across ALL its target mappings.
+    Find probes that pass mapping and position checks for a primer pair.
 
-    A probe is only valid if it:
-    1. Maps to ALL targets the primer pair covers
-    2. Falls within amplicon region for ALL those targets
-    3. Has good dimer ΔG with both primers
+    Does NOT check dimer ΔG — that is handled via batching in the caller.
 
     Args:
-        pair_full_rows: List of rows from .full file for this pair (each with different target sets)
-        probe_mapping_df: DataFrame with probe mappings
+        pair_full_rows: List of rows from .full file for this pair
+        probes_by_target: Dict {target_id: set of probe_names}
+        probe_positions: Dict {(target_id, probe_name): start_pos}
         probe_seqs_dict: Dict {probe_name: sequence}
-        primer_seqs_dict: Dict {primer_name: sequence}
-        min_dg: Minimum ΔG threshold for dimers
         buffer: Buffer distance from primer ends (nt)
 
     Returns:
-        List of valid probe names
+        List of probe names passing position checks
     """
-    # Get primer sequences (same for all rows)
-    first_row = pair_full_rows[0]
-    pname_f = first_row['pname_f']
-    pname_r = first_row['pname_r']
-    fwd_seq = primer_seqs_dict[pname_f]
-    rev_seq = primer_seqs_dict[pname_r]
-
     # Collect all target-position mappings for this primer pair
     target_positions = {}  # {target_id: [(fwd_start, prod_len), ...]}
 
@@ -66,74 +67,45 @@ def find_valid_probes_for_pair(
 
     all_targets = set(target_positions.keys())
 
-    # Find all candidate probes that map to at least one target
+    # Find candidate probes that map to at least one target
     candidate_probes = set()
     for target_id in all_targets:
-        probes_on_target = probe_mapping_df[probe_mapping_df['target_id'] == target_id]
-        for _, probe_row in probes_on_target.iterrows():
-            candidate_probes.add(probe_row['probe_name'])
+        candidate_probes.update(probes_by_target.get(target_id, set()))
 
-    valid_probes = []
+    passing = []
 
-    # Check each candidate probe
     for probe_name in candidate_probes:
         if probe_name not in probe_seqs_dict:
             continue
 
-        probe_seq = probe_seqs_dict[probe_name]
-
-        # OPTIMIZATION: Check cheaper operations first (mapping + position)
-        # before computing expensive dimer ΔG
-
-        # Check if probe is valid for ALL targets (mapping + position)
-        valid_for_all_targets = True
+        probe_len = len(probe_seqs_dict[probe_name])
+        valid_for_all = True
 
         for target_id in all_targets:
-            # Get probe mappings for this target
-            probe_on_this_target = probe_mapping_df[
-                (probe_mapping_df['target_id'] == target_id) &
-                (probe_mapping_df['probe_name'] == probe_name)
-            ]
-
-            # Probe must map to this target
-            if probe_on_this_target.empty:
-                valid_for_all_targets = False
+            pos_key = (target_id, probe_name)
+            if pos_key not in probe_positions:
+                valid_for_all = False
                 break
 
-            # Get probe position on this target
-            probe_start = probe_on_this_target.iloc[0]['start_pos']
-            probe_len = len(probe_seq)
+            probe_start = probe_positions[pos_key]
             probe_end = probe_start + probe_len
 
-            # Check if probe is within amplicon for at least one position on this target
-            # (A target may appear multiple times with different positions)
             target_valid = False
             for fwd_start, prod_len in target_positions[target_id]:
-                amplicon_start = fwd_start + buffer
-                amplicon_end = fwd_start + prod_len - buffer
-
-                if amplicon_start <= probe_start and probe_end <= amplicon_end:
+                amp_start = fwd_start + buffer
+                amp_end = fwd_start + prod_len - buffer
+                if amp_start <= probe_start and probe_end <= amp_end:
                     target_valid = True
                     break
 
             if not target_valid:
-                valid_for_all_targets = False
+                valid_for_all = False
                 break
 
-        # Only compute expensive dimer ΔG if probe passed all mapping/position checks
-        if valid_for_all_targets:
-            try:
-                dg_fwd = compute_dimer_dg(probe_seq, fwd_seq)
-                dg_rev = compute_dimer_dg(probe_seq, rev_seq)
+        if valid_for_all:
+            passing.append(probe_name)
 
-                # Both dimers must be above threshold
-                if dg_fwd > min_dg and dg_rev > min_dg:
-                    valid_probes.append(probe_name)
-            except Exception as e:
-                print(f"Warning: Failed to compute dimer for {probe_name}: {e}")
-                continue
-
-    return valid_probes
+    return passing
 
 
 def register(subparsers):
@@ -163,15 +135,12 @@ def run(args):
     min_dg = float(params.get("DG_MIN", -6))
 
     # Load evaluation results
-    # Fix: Handle empty files gracefully (file exists but has no data or no columns)
     try:
         res = pd.read_csv(args.scores)
     except pd.errors.EmptyDataError:
-        # File is empty or has no columns - write empty output and return
         print(f"Warning: Scores file {args.scores} is empty, writing empty output")
         open(args.out, "w").close()
         return
-    # Previous version: res = pd.read_csv(args.scores)
     if res.empty:
         print(f"Warning: Scores file {args.scores} has no data rows, writing empty output")
         open(args.out, "w").close()
@@ -188,8 +157,8 @@ def run(args):
     if args.probe_mapping and args.probe_seqs:
         print("Probe mode enabled - filtering by probe compatibility...")
 
-        # Load probe data
-        probe_mapping_df, probe_seqs_dict = load_probe_data(
+        # Load probe data with pre-built indexes
+        probes_by_target, probe_positions, probe_seqs_dict = load_probe_data(
             args.probe_mapping, args.probe_seqs
         )
 
@@ -208,13 +177,11 @@ def run(args):
         top_pairs_set = set(zip(top_candidates['pname_f'], top_candidates['pname_r']))
 
         # Read .full file in chunks and extract ALL rows for top pairs
-        # Each pair may have multiple rows with different target sets
         # Only keep rows with classifier >= 0.5 (high confidence predictions)
         pair_full_data = {}
         for chunk in pd.read_csv(eval_full_path, chunksize=10000):
             for _, row in chunk.iterrows():
                 pair_key = (row['pname_f'], row['pname_r'])
-                # Skip low-confidence predictions
                 if row.get('classifier', 1.0) < 0.5:
                     continue
                 if pair_key in top_pairs_set:
@@ -224,33 +191,66 @@ def run(args):
 
         print(f"Checking top {len(top_candidates)} pairs for probe compatibility...")
 
-        # Check probe compatibility for top N pairs
-        valid_pairs = []
-        valid_probes_per_pair = {}
+        # Phase 1: position filtering (cheap) — collect all position-passing
+        # probes per pair, and accumulate dimer pairs for batch computation
+        pair_candidates = []  # [(pair_key, [probe_names...])]
+        all_dimer_pairs = []  # flat list of (probe_seq, primer_seq) for batch
 
         for _, row in top_candidates.iterrows():
             pname_f = row['pname_f']
             pname_r = row['pname_r']
             pair_key = (pname_f, pname_r)
 
-            # Get detailed data from .full file
             if pair_key not in pair_full_data:
                 continue
 
-            # Find valid probes for this pair
-            valid_probes = find_valid_probes_for_pair(
+            candidates = _find_position_valid_probes(
                 pair_full_data[pair_key],
-                probe_mapping_df,
+                probes_by_target,
+                probe_positions,
                 probe_seqs_dict,
-                primer_seqs,
-                min_dg,
                 buffer
             )
 
-            # Keep pair if it has enough valid probes
-            if len(valid_probes) >= min_probes:
+            if not candidates:
+                continue
+
+            pair_candidates.append((pair_key, candidates))
+            fwd_seq = primer_seqs[pname_f]
+            rev_seq = primer_seqs[pname_r]
+            for probe_name in candidates:
+                probe_seq = probe_seqs_dict[probe_name]
+                all_dimer_pairs.append((probe_seq, fwd_seq))
+                all_dimer_pairs.append((probe_seq, rev_seq))
+
+        # Phase 2: batch dimer computation (single RNAduplex process)
+        all_dg = []
+        if all_dimer_pairs:
+            print(f"Computing {len(all_dimer_pairs)} dimer ΔG values in batch...")
+            try:
+                all_dg = compute_batch_dimer_dg(all_dimer_pairs)
+            except Exception as e:
+                print(f"Warning: Batch dimer computation failed: {e}")
+                all_dg = [None] * len(all_dimer_pairs)
+
+        # Phase 3: distribute results and filter by ΔG threshold
+        valid_pairs = []
+        valid_probes_per_pair = {}
+        dg_idx = 0
+
+        for pair_key, candidates in pair_candidates:
+            pair_valid_probes = []
+            for probe_name in candidates:
+                dg_fwd = all_dg[dg_idx]
+                dg_rev = all_dg[dg_idx + 1]
+                dg_idx += 2
+                if dg_fwd is not None and dg_rev is not None:
+                    if dg_fwd > min_dg and dg_rev > min_dg:
+                        pair_valid_probes.append(probe_name)
+
+            if len(pair_valid_probes) >= min_probes:
                 valid_pairs.append(pair_key)
-                valid_probes_per_pair[pair_key] = valid_probes
+                valid_probes_per_pair[pair_key] = pair_valid_probes
 
         print(f"Found {len(valid_pairs)} of top {len(top_candidates)} pairs with compatible probes")
 
@@ -272,7 +272,6 @@ def run(args):
                 lambda r: len(valid_probes_per_pair.get((r['pname_f'], r['pname_r']), [])),
                 axis=1
             )
-            # Add top N probe names (comma-separated)
             top['probe_names'] = top.apply(
                 lambda r: ','.join(valid_probes_per_pair.get((r['pname_f'], r['pname_r']), [])[:max_probes]),
                 axis=1
@@ -280,12 +279,10 @@ def run(args):
 
         # Write probe assignments (limit to first N probes per pair)
         if args.probe_out:
-            # Limit to first N probes per primer pair (configurable via MAX_PROBES_PER_PAIR)
             probe_assignments = []
             for pair_key in valid_pairs:
                 pname_f, pname_r = pair_key
                 pair_probes = valid_probes_per_pair[pair_key]
-                # Take first N probes for this pair
                 for probe_name in pair_probes[:max_probes]:
                     probe_assignments.append({
                         'pname_f': pname_f,
@@ -294,7 +291,6 @@ def run(args):
                         'probe_seq': probe_seqs_dict[probe_name]
                     })
 
-            # Write CSV with limited probes
             probe_df = pd.DataFrame(probe_assignments)
             probe_df.to_csv(args.probe_out, index=False)
             print(f"Wrote {len(probe_df)} probe assignments to {args.probe_out} (max {max_probes} per pair)")
@@ -315,31 +311,33 @@ def run(args):
         # Select top N pairs FIRST
         top_candidates = res.iloc[:num_select].copy()
 
-        # Compute primer dimer ΔG for each pair
-        print(f"Computing primer dimer ΔG for top {len(top_candidates)} pairs...")
-        valid_pairs = []
-
+        # Collect all sequence pairs for batch dimer computation
+        pairs_to_check = []
+        pair_info = []
         for _, row in top_candidates.iterrows():
             pname_f = row['pname_f']
             pname_r = row['pname_r']
-
-            # Get primer sequences
             fwd_seq = primer_seqs.get(pname_f)
             rev_seq = primer_seqs.get(pname_r)
-
             if fwd_seq is None or rev_seq is None:
                 continue
+            pairs_to_check.append((fwd_seq, rev_seq))
+            pair_info.append((pname_f, pname_r))
 
-            # Compute primer dimer ΔG
-            try:
-                dimer_dg = compute_dimer_dg(fwd_seq, rev_seq)
-                if dimer_dg > min_dg:
-                    valid_pairs.append((pname_f, pname_r, dimer_dg))
-            except Exception as e:
-                print(f"Warning: Failed to compute dimer for {pname_f}/{pname_r}: {e}")
-                continue
+        # Single batch RNAduplex call for all pairs
+        print(f"Computing primer dimer ΔG for {len(pairs_to_check)} pairs in batch...")
+        try:
+            dg_values = compute_batch_dimer_dg(pairs_to_check)
+        except Exception as e:
+            print(f"Warning: Batch dimer computation failed: {e}")
+            dg_values = [None] * len(pairs_to_check)
 
-        print(f"Found {len(valid_pairs)} of top {len(top_candidates)} pairs with primer_dimer_dg > {min_dg}")
+        valid_pairs = []
+        for (pname_f, pname_r), dg in zip(pair_info, dg_values):
+            if dg is not None and dg > min_dg:
+                valid_pairs.append((pname_f, pname_r, dg))
+
+        print(f"Found {len(valid_pairs)} of {len(pairs_to_check)} pairs with primer_dimer_dg > {min_dg}")
 
         # Filter to only pairs with valid primer dimer
         if valid_pairs:
