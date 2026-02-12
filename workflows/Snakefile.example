@@ -166,10 +166,12 @@ elif MULTIPLEX:
             csvs=expand("final/{on}.csv", on=PANEL)
         output:
             f"final/{MULTIPLEX_STEM}.csv"
+        params:
+            params_arg=f"--params {PARAMS}" if PROBE_MODE else ""
         shell:
             "qprimer select-multiplex "
             "{input.csvs} "
-            "--out {output}"
+            "--out {output} {params.params_arg}"
 
     rule build_final_output:
         wildcard_constraints:
@@ -178,6 +180,7 @@ elif MULTIPLEX:
             eval_on="outputs/{on}.{on}.eval",
             eval_off=lambda wc: [f"outputs/{wc.on}.{t}.eval" for t in off_targets(wc.on)],
             fa="primer_seqs/{on}_filt.fa",
+            ref="target_seqs/original/{on}.fa",
             probe_mapping_on=lambda wc: (
                 f"alignments/{wc.on}.{wc.on}.probe.csv" if PROBE_MODE else []
             ),
@@ -202,7 +205,7 @@ elif MULTIPLEX:
             "qprimer build-output "
             "--on {input.eval_on} {params.off_arg} "
             "--fa {input.fa} --out {output} --name {wildcards.on} "
-            "--params {PARAMS} {params.probe_args}"
+            "--params {PARAMS} --ref {input.ref} {params.probe_args}"
 
 
 else:
@@ -217,6 +220,7 @@ else:
             eval_on="outputs/{virus}.{virus}.eval",
             eval_off=lambda wc: [f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS],
             fa="primer_seqs/{virus}_filt.fa",
+            ref="target_seqs/original/{virus}.fa",
             probe_mapping_on=lambda wc: (
                 f"alignments/{wc.virus}.{wc.virus}.probe.csv" if PROBE_MODE else []
             ),
@@ -241,7 +245,7 @@ else:
             "qprimer build-output "
             "--on {input.eval_on} {params.off_arg} "
             "--fa {input.fa} --out {output} --name {wildcards.virus} "
-            "--params {PARAMS} {params.probe_args}"
+            "--params {PARAMS} --ref {input.ref} {params.probe_args}"
 
 
 ############################################

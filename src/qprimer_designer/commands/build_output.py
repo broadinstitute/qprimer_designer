@@ -129,6 +129,62 @@ def find_valid_probes_offtarget(
     return valid_probes
 
 
+def extract_amplicon_sequences(final, eval_full_path, ref_path):
+    """Extract representative amplicon sequences for each primer pair.
+
+    For each primer pair, find the first reference hit with classifier >= 0.5
+    in the .eval.full file and extract the amplicon from the reference FASTA.
+
+    Args:
+        final: DataFrame with primer pair index (pname_f, pname_r)
+        eval_full_path: Path to the .eval.full CSV file
+        ref_path: Path to the ON-target reference FASTA
+
+    Returns:
+        Series of amplicon sequences indexed like final
+    """
+    ref_seqs = {rec.id: str(rec.seq) for rec in SeqIO.parse(ref_path, "fasta")}
+
+    if not os.path.exists(eval_full_path) or os.path.getsize(eval_full_path) == 0:
+        print(f"Warning: {eval_full_path} not found or empty, skipping amplicon extraction")
+        return pd.Series("", index=final.index)
+
+    full_df = pd.read_csv(eval_full_path)
+    # Filter to high-confidence predictions
+    if 'classifier' in full_df.columns:
+        full_df = full_df[full_df['classifier'] >= 0.5]
+
+    amplicon_seqs = {}
+    for pair_key in final.index:
+        pname_f, pname_r = pair_key
+        # Find rows matching this primer pair
+        pair_rows = full_df[
+            (full_df['pname_f'] == pname_f) & (full_df['pname_r'] == pname_r)
+        ]
+
+        if pair_rows.empty:
+            amplicon_seqs[pair_key] = ""
+            continue
+
+        # Use the first valid hit
+        row = pair_rows.iloc[0]
+        targets = ast.literal_eval(row['targets'])
+        starts = ast.literal_eval(row['starts'])
+        prod_len = int(row['prod_len'])
+
+        # Find first target with a valid reference sequence
+        amplicon = ""
+        for target_id, start in zip(targets, starts):
+            if target_id in ref_seqs:
+                # starts are 1-based
+                amplicon = ref_seqs[target_id][start - 1: start - 1 + prod_len]
+                break
+
+        amplicon_seqs[pair_key] = amplicon
+
+    return pd.Series(amplicon_seqs)
+
+
 def register(subparsers):
     """Register the build-output subcommand."""
     parser = subparsers.add_parser(
@@ -149,6 +205,7 @@ primer-primer dimerization (ΔG).
     parser.add_argument("--probe-mapping-on", help="ON-target probe mapping CSV (for probe mode)")
     parser.add_argument("--probe-mapping-off", nargs="*", help="OFF-target probe mapping CSVs (for probe mode)")
     parser.add_argument("--probe-seqs", help="Probe FASTA (for probe mode)")
+    parser.add_argument("--ref", help="ON-target reference FASTA (for amplicon extraction)")
     parser.set_defaults(func=run)
 
 
@@ -281,6 +338,13 @@ def run(args):
         )
 
         print(f"Probe filtering complete. Pairs with valid probes: {(final['valid_probe_sequences'].str.len() > 0).sum()}")
+
+    # Extract amplicon sequences if reference provided
+    if args.ref:
+        eval_full_path = f"{args.eval_on}.full"
+        final['amplicon_seq'] = extract_amplicon_sequences(final, eval_full_path, args.ref)
+        n_with_amplicon = (final['amplicon_seq'].str.len() > 0).sum()
+        print(f"Extracted amplicon sequences for {n_with_amplicon}/{len(final)} pairs")
 
     # Sort by sum of off-target scores (ascending - lower is better)
     offtarget_score_cols = [col for col in final.columns if col.startswith('sco_') and col != 'sco_target']
