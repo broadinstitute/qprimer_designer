@@ -5,7 +5,7 @@
 ############################################
 
 # SINGLEPLEX REQUIRED: user must fill these for singleplex, ignored if not multiplex
-TARGETS = ['H1']
+TARGETS = ['HIV']
 CROSS   = []
 
 # shared option for multiplex and singleplex
