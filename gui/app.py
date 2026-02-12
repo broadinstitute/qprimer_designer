@@ -24,6 +24,7 @@ FASTA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Add src/ to path so we can import qprimer_designer utilities
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from gui.snakefile_builder import build_params_txt, build_snakefile
 from qprimer_designer.utils.params import parse_params

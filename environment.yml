@@ -13,7 +13,7 @@ dependencies:
   # Workflow
   - snakemake>=9.0
   # ML dependencies (moved from pip for better Docker layer caching)
-  - pytorch>=2.0
+  - pytorch>=2.4
   - biopython>=1.84
   - pandas>=2.0
   - numpy>=1.24
