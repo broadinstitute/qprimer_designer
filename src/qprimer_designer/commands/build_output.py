@@ -64,6 +64,9 @@ def find_valid_probes_offtarget(
         probe_invalid = False
 
         for offtarget_full, offtarget_mapping in zip(offtarget_full_data_list, offtarget_probe_mappings):
+            if offtarget_full.empty:
+                continue
+
             # Get rows for this primer pair (either primer can be f or r)
             pair_rows = offtarget_full[
                 (offtarget_full["pname_f"].isin(pair_key)) &
@@ -126,6 +129,62 @@ def find_valid_probes_offtarget(
     return valid_probes
 
 
+def extract_amplicon_sequences(final, eval_full_path, ref_path):
+    """Extract representative amplicon sequences for each primer pair.
+
+    For each primer pair, find the first reference hit with classifier >= 0.5
+    in the .eval.full file and extract the amplicon from the reference FASTA.
+
+    Args:
+        final: DataFrame with primer pair index (pname_f, pname_r)
+        eval_full_path: Path to the .eval.full CSV file
+        ref_path: Path to the ON-target reference FASTA
+
+    Returns:
+        Series of amplicon sequences indexed like final
+    """
+    ref_seqs = {rec.id: str(rec.seq) for rec in SeqIO.parse(ref_path, "fasta")}
+
+    if not os.path.exists(eval_full_path) or os.path.getsize(eval_full_path) == 0:
+        print(f"Warning: {eval_full_path} not found or empty, skipping amplicon extraction")
+        return pd.Series("", index=final.index)
+
+    full_df = pd.read_csv(eval_full_path)
+    # Filter to high-confidence predictions
+    if 'classifier' in full_df.columns:
+        full_df = full_df[full_df['classifier'] >= 0.5]
+
+    amplicon_seqs = {}
+    for pair_key in final.index:
+        pname_f, pname_r = pair_key
+        # Find rows matching this primer pair
+        pair_rows = full_df[
+            (full_df['pname_f'] == pname_f) & (full_df['pname_r'] == pname_r)
+        ]
+
+        if pair_rows.empty:
+            amplicon_seqs[pair_key] = ""
+            continue
+
+        # Use the first valid hit
+        row = pair_rows.iloc[0]
+        targets = ast.literal_eval(row['targets'])
+        starts = ast.literal_eval(row['starts'])
+        prod_len = int(row['prod_len'])
+
+        # Find first target with a valid reference sequence
+        amplicon = ""
+        for target_id, start in zip(targets, starts):
+            if target_id in ref_seqs:
+                # starts are 1-based
+                amplicon = ref_seqs[target_id][start - 1: start - 1 + prod_len]
+                break
+
+        amplicon_seqs[pair_key] = amplicon
+
+    return pd.Series(amplicon_seqs)
+
+
 def register(subparsers):
     """Register the build-output subcommand."""
     parser = subparsers.add_parser(
@@ -146,6 +205,7 @@ primer-primer dimerization (ΔG).
     parser.add_argument("--probe-mapping-on", help="ON-target probe mapping CSV (for probe mode)")
     parser.add_argument("--probe-mapping-off", nargs="*", help="OFF-target probe mapping CSVs (for probe mode)")
     parser.add_argument("--probe-seqs", help="Probe FASTA (for probe mode)")
+    parser.add_argument("--ref", help="ON-target reference FASTA (for amplicon extraction)")
     parser.set_defaults(func=run)
 
 
@@ -174,7 +234,10 @@ def run(args):
     # Merge OFF-target evaluations
     for off_path in args.eval_off:
         oname = os.path.basename(off_path).split(".")[1]
-        oeval = pd.read_csv(off_path)
+        if os.path.getsize(off_path) == 0:
+            oeval = pd.DataFrame(columns=["pname_f", "pname_r", "coverage", "activity", "score"])
+        else:
+            oeval = pd.read_csv(off_path)
 
         tmp = pd.DataFrame(
             index=teval.index,
@@ -202,60 +265,71 @@ def run(args):
 
     final = merged.copy()
 
-    # PROBE MODE: Filter probes by off-target amplicon overlap
-    if args.probe_mapping_on and args.probe_mapping_off and args.probe_seqs:
-        print("Probe mode enabled - filtering probes by off-target amplicons...")
+    # PROBE MODE: Add probe information and optionally filter by off-target amplicon overlap
+    if args.probe_mapping_on and args.probe_seqs:
+        print("Probe mode enabled...")
 
         # Load probe data
         probe_seqs_dict = {rec.id: str(rec.seq) for rec in SeqIO.parse(args.probe_seqs, "fasta")}
 
-        # Get probe names from filtered primer pairs CSV (top 5 probes per pair)
+        # Get probe names from filtered primer pairs CSV
         pair_to_probes = {}
         for _, row in filt_pairs.iterrows():
             pair_key = (row['pname_f'], row['pname_r'])
             if 'probe_names' in row and pd.notna(row['probe_names']) and row['probe_names']:
-                # Split comma-separated probe names
                 probe_names = [p.strip() for p in row['probe_names'].split(',') if p.strip()]
                 pair_to_probes[pair_key] = probe_names
             else:
                 pair_to_probes[pair_key] = []
 
-        # Load off-target probe mappings
-        offtarget_probe_mappings = [pd.read_csv(path) for path in args.probe_mapping_off]
+        # If off-target data is available, filter probes by off-target amplicon overlap
+        if args.probe_mapping_off and args.eval_off:
+            print("Filtering probes by off-target amplicons...")
 
-        # Load off-target .full files and filter by classifier >= 0.5
-        buffer = 1
-        offtarget_full_data_list = []
-        for off_path in args.eval_off:
-            full_path = f"{off_path}.full"
-            if os.path.exists(full_path):
-                df = pd.read_csv(full_path)
-                # Filter to high-confidence predictions only
-                df = df[df.get('classifier', pd.Series([1.0] * len(df))) >= 0.5]
-                offtarget_full_data_list.append(df)
-            else:
-                print(f"Warning: .full file not found: {full_path}")
-                offtarget_full_data_list.append(pd.DataFrame())
+            offtarget_probe_mappings = []
+            for path in args.probe_mapping_off:
+                if os.path.getsize(path) <= 1:
+                    offtarget_probe_mappings.append(pd.DataFrame(columns=["probe_name", "probe_seq", "target_id", "start_pos", "orientation"]))
+                else:
+                    offtarget_probe_mappings.append(pd.read_csv(path))
 
-        # Find valid probes for each primer pair
-        valid_probes_dict = {}
-        for pair_key in final.index:
-            if pair_key not in pair_to_probes:
-                valid_probes_dict[pair_key] = []
-                continue
+            buffer = 1
+            offtarget_full_data_list = []
+            for off_path in args.eval_off:
+                full_path = f"{off_path}.full"
+                if os.path.exists(full_path) and os.path.getsize(full_path) > 0:
+                    df = pd.read_csv(full_path)
+                    # Filter to high-confidence predictions only
+                    df = df[df.get('classifier', pd.Series([1.0] * len(df))) >= 0.5]
+                    offtarget_full_data_list.append(df)
+                else:
+                    offtarget_full_data_list.append(pd.DataFrame())
 
-            primer_pair_probes = pair_to_probes[pair_key]
+            valid_probes_dict = {}
+            for pair_key in final.index:
+                if pair_key not in pair_to_probes:
+                    valid_probes_dict[pair_key] = []
+                    continue
 
-            valid_probes = find_valid_probes_offtarget(
-                pair_key,
-                primer_pair_probes,
-                offtarget_full_data_list,
-                offtarget_probe_mappings,
-                probe_seqs_dict,
-                buffer
-            )
+                primer_pair_probes = pair_to_probes[pair_key]
 
-            valid_probes_dict[pair_key] = valid_probes
+                valid_probes = find_valid_probes_offtarget(
+                    pair_key,
+                    primer_pair_probes,
+                    offtarget_full_data_list,
+                    offtarget_probe_mappings,
+                    probe_seqs_dict,
+                    buffer
+                )
+
+                valid_probes_dict[pair_key] = valid_probes
+        else:
+            # No off-targets: all probes from the filter step are valid
+            print("No off-targets - using all probes from filter step...")
+            valid_probes_dict = {
+                pair_key: pair_to_probes.get(pair_key, [])
+                for pair_key in final.index
+            }
 
         # Add probe information to final DataFrame
         final['valid_probes'] = final.index.map(lambda p: ','.join(valid_probes_dict.get(p, [])))
@@ -264,6 +338,13 @@ def run(args):
         )
 
         print(f"Probe filtering complete. Pairs with valid probes: {(final['valid_probe_sequences'].str.len() > 0).sum()}")
+
+    # Extract amplicon sequences if reference provided
+    if args.ref:
+        eval_full_path = f"{args.eval_on}.full"
+        final['amplicon_seq'] = extract_amplicon_sequences(final, eval_full_path, args.ref)
+        n_with_amplicon = (final['amplicon_seq'].str.len() > 0).sum()
+        print(f"Extracted amplicon sequences for {n_with_amplicon}/{len(final)} pairs")
 
     # Sort by sum of off-target scores (ascending - lower is better)
     offtarget_score_cols = [col for col in final.columns if col.startswith('sco_') and col != 'sco_target']

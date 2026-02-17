@@ -26,7 +26,7 @@ Creates one Excel file per primer set with:
 """,
     )
     parser.add_argument("--on", required=True, help="On-target evaluation file (without .full extension)")
-    parser.add_argument("--off", nargs="+", required=True, help="Off-target evaluation files")
+    parser.add_argument("--off", nargs="*", default=[], help="Off-target evaluation files")
     parser.add_argument("--out", required=True, help="Output directory for Excel reports")
     parser.add_argument("--names", nargs="+", required=True, help="Primer set IDs to process")
     parser.set_defaults(func=run)

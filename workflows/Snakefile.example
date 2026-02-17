@@ -5,14 +5,14 @@
 ############################################
 
 # SINGLEPLEX REQUIRED: user must fill these for singleplex, ignored if not multiplex
-TARGETS = ['TEST']
+TARGETS = ['H1']
 CROSS   = []
 
 # shared option for multiplex and singleplex
 HOST    = []
 
 # MULTIPLEX REQUIRED: Multiplex targets, will be ignored if not multiplex
-PANEL = ['H1', 'H3']
+PANEL = ['H1', 'H3', 'H5']
 
 # Derived sets
 OFF_TARGETS = CROSS + HOST
@@ -47,8 +47,8 @@ import sys
 from pathlib import Path
 import shutil
 
-# Probe mode (singleplex only)
-PROBE_MODE = bool(int(config.get("probe", 0))) and not MULTIPLEX
+# Probe mode
+PROBE_MODE = bool(int(config.get("probe", 0)))
 
 # Create wildcard pattern for targets
 if MULTIPLEX:
@@ -155,19 +155,23 @@ if EVALUATE:
             f"evaluate/{PSET_NAME}"
 
 elif MULTIPLEX:
+    MULTIPLEX_STEM = "_".join(sorted(PANEL))
+
     rule all:
         input:
-            "final/multiplex_output.csv"
+            f"final/{MULTIPLEX_STEM}.csv"
 
     rule select_best_multiplex:
         input:
             csvs=expand("final/{on}.csv", on=PANEL)
         output:
-            "final/multiplex_output.csv"
+            f"final/{MULTIPLEX_STEM}.csv"
+        params:
+            params_arg=f"--params {PARAMS}" if PROBE_MODE else ""
         shell:
             "qprimer select-multiplex "
             "{input.csvs} "
-            "--out {output}"
+            "--out {output} {params.params_arg}"
 
     rule build_final_output:
         wildcard_constraints:
@@ -176,6 +180,7 @@ elif MULTIPLEX:
             eval_on="outputs/{on}.{on}.eval",
             eval_off=lambda wc: [f"outputs/{wc.on}.{t}.eval" for t in off_targets(wc.on)],
             fa="primer_seqs/{on}_filt.fa",
+            ref="target_seqs/original/{on}.fa",
             probe_mapping_on=lambda wc: (
                 f"alignments/{wc.on}.{wc.on}.probe.csv" if PROBE_MODE else []
             ),
@@ -189,6 +194,7 @@ elif MULTIPLEX:
         output:
             "final/{on}.csv"
         params:
+            off_arg=lambda wc, input: f"--off {input.eval_off}" if input.eval_off else "",
             probe_args=lambda wc, input: (
                 f"--probe-mapping-on {input.probe_mapping_on} "
                 f"--probe-mapping-off {' '.join(input.probe_mapping_off)} "
@@ -197,9 +203,9 @@ elif MULTIPLEX:
             )
         shell:
             "qprimer build-output "
-            "--on {input.eval_on} --off {input.eval_off} "
+            "--on {input.eval_on} {params.off_arg} "
             "--fa {input.fa} --out {output} --name {wildcards.on} "
-            "--params {PARAMS} {params.probe_args}"
+            "--params {PARAMS} --ref {input.ref} {params.probe_args}"
 
 
 else:
@@ -214,6 +220,7 @@ else:
             eval_on="outputs/{virus}.{virus}.eval",
             eval_off=lambda wc: [f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS],
             fa="primer_seqs/{virus}_filt.fa",
+            ref="target_seqs/original/{virus}.fa",
             probe_mapping_on=lambda wc: (
                 f"alignments/{wc.virus}.{wc.virus}.probe.csv" if PROBE_MODE else []
             ),
@@ -227,6 +234,7 @@ else:
         output:
             "final/{virus}.csv"
         params:
+            off_arg=lambda wc, input: f"--off {input.eval_off}" if input.eval_off else "",
             probe_args=lambda wc, input: (
                 f"--probe-mapping-on {input.probe_mapping_on} "
                 f"--probe-mapping-off {' '.join(input.probe_mapping_off)} "
@@ -235,9 +243,9 @@ else:
             )
         shell:
             "qprimer build-output "
-            "--on {input.eval_on} --off {input.eval_off} "
+            "--on {input.eval_on} {params.off_arg} "
             "--fa {input.fa} --out {output} --name {wildcards.virus} "
-            "--params {PARAMS} {params.probe_args}"
+            "--params {PARAMS} --ref {input.ref} {params.probe_args}"
 
 
 ############################################
@@ -393,11 +401,12 @@ rule evaluate_pset:
     output:
         directory("evaluate/{filename}")
     params:
-        ids=lambda wc: " ".join(check_ids(f"evaluate/{wc.filename}.fa"))
+        ids=lambda wc: " ".join(check_ids(f"evaluate/{wc.filename}.fa")),
+        off_arg=lambda wc, input: f"--off {input.eval_off}" if input.eval_off else ""
     shell:
         "qprimer export-report "
         "--on {input.eval_on} "
-        "--off {input.eval_off} "
+        "{params.off_arg} "
         "--out evaluate/{wildcards.filename} "
         "--names {params.ids}"
 
@@ -408,15 +417,15 @@ rule evaluate_pset:
 
 rule build_index:
     wildcard_constraints:
-        virus=TARGETS_PATTERN
+        target=ALL_TARGETS_PATTERN
     input:
-        "target_seqs/original/{virus}.fa"
+        "target_seqs/original/{target}.fa"
     output:
-        "bt2_index/{virus}.1.bt2"
+        "bt2_index/{target}.1.bt2"
     threads:
-        lambda wc: min(4, MAX_CORES) if count_seqs(wc.virus) > 1000 else 1
+        lambda wc: min(4, MAX_CORES) if count_seqs(wc.target) > 1000 else 1
     shell:
-        "bowtie2-build --threads {threads} {input} bt2_index/{wildcards.virus}"
+        "bowtie2-build --threads {threads} {input} bt2_index/{wildcards.target}"
 
 
 rule align:

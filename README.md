@@ -76,12 +76,12 @@ Output will be in the `final/` directory as a CSV file with the following column
 - `cov_offtarget`, `act_offtarget`, `sco_offtarget`: Coverage, activity, and combined scores for each off-target (can have multiple off-targets)
 - `pseq_f/r`: Forward/reverse primer sequences
 
-#### Probe Mode (Singleplex only)
+#### Probe Mode
 
 For TaqMan-style qPCR assays, you can enable probe mode to generate and filter probes alongside primers:
 
 ```bash
-snakemake -s./workflows/Snakefile.example --config probe=1 --cores all
+snakemake -s ./workflows/Snakefile.example --config probe=1 --cores all
 ```
 
 ### Multiplex qPCR
@@ -96,7 +96,7 @@ HOST  = ['offtarget']
 Run with multiplex enabled:
 
 ```bash
-snakemake -s /workflows/Snakefile.example --config multiplex=1 probe=1 --cores all
+snakemake -s ./workflows/Snakefile.example --config multiplex=1 probe=1 --cores all
 ```
 
 Output will be `final/multiplex_output.csv` containing top candidates for each target.

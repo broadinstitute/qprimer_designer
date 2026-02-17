@@ -11,7 +11,7 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.SeqUtils import gc_fraction
 
-from qprimer_designer.utils import reverse_complement_dna, get_tm, parse_params, get_primer_params
+from qprimer_designer.utils import reverse_complement_dna, get_tm, parse_params, get_primer_params, sanitize_iupac
 from qprimer_designer.external import compute_self_dimer_dg
 
 
@@ -134,7 +134,7 @@ def run(args):
     max_gc = primer_params["max_gc"]
     min_dg = primer_params["min_dg"]
 
-    target_seqs = [str(s.seq) for s in SeqIO.parse(args.target_seqs, "fasta")]
+    target_seqs = [sanitize_iupac(str(s.seq)) for s in SeqIO.parse(args.target_seqs, "fasta")]
 
     print(f"Generating primers from {args.target_seqs}...")
     print(f"Primer lengths: {min_pri_len}-{max_pri_len}")
