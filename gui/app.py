@@ -24,6 +24,8 @@ FASTA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Add src/ to path so we can import qprimer_designer utilities
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+# Add project root so `gui` is importable as a package
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from gui.snakefile_builder import build_params_txt, build_snakefile
 from qprimer_designer.utils.params import parse_params
@@ -561,10 +563,11 @@ def _tab_run():
     st.header("Run Pipeline")
 
     # Controls
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     max_cpu = os.cpu_count() or 1
     c1.slider("CPU cores", min_value=1, max_value=max_cpu, value=min(4, max_cpu), key="cores")
     c2.checkbox("Dry run (plan only, no execution)", key="dry_run")
+    c3.checkbox("Show live output", value=True, key="show_live_output")
 
     # Command preview
     cmd = _build_command()
@@ -621,6 +624,7 @@ def _tab_run():
     # Log output area
     st.subheader("Pipeline output")
     log_area = st.empty()
+    show_live = st.session_state.get("show_live_output", True)
 
     if running and hasattr(st.session_state, "_pipeline_proc"):
         proc = st.session_state._pipeline_proc
@@ -645,8 +649,12 @@ def _tab_run():
                 st.session_state.pipeline_log = log
             st.session_state.pipeline_running = False
             st.session_state.pipeline_return_code = rc
+            st.rerun()
 
-        log_area.code(log if log else "(waiting for output...)", language="text")
+        if show_live:
+            log_area.code(log if log else "(waiting for output...)", language="text")
+        else:
+            log_area.info("Pipeline is running. Enable **Show live output** to see logs.")
 
         # Auto-refresh while running
         if st.session_state.get("pipeline_running"):
@@ -658,6 +666,29 @@ def _tab_run():
             log_area.code(log, language="text")
         else:
             log_area.info("Click Run to start the pipeline.")
+
+    # Show inline results after successful completion
+    rc = st.session_state.get("pipeline_return_code")
+    if rc is not None and not st.session_state.get("pipeline_running"):
+        st.divider()
+        if rc == 0:
+            st.success("Pipeline finished successfully!")
+            if FINAL_DIR.exists():
+                csvs = sorted(FINAL_DIR.glob("*.csv"))
+                if csvs:
+                    import pandas as pd
+
+                    st.subheader("Results preview")
+                    for csv_path in csvs:
+                        try:
+                            df = pd.read_csv(csv_path)
+                            st.write(f"**{csv_path.name}** — {len(df)} primer pairs")
+                            st.dataframe(df.head(10), use_container_width=True)
+                        except Exception as exc:
+                            st.warning(f"Could not read {csv_path.name}: {exc}")
+                    st.caption("See the **Results** tab for full details and downloads.")
+        else:
+            st.error(f"Pipeline failed with exit code {rc}. Check the log above.")
 
 
 # ---------------------------------------------------------------------------
