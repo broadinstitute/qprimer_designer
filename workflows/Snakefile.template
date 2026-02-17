@@ -18,6 +18,9 @@ PANEL = []
 OFF_TARGETS = CROSS + HOST
 ALL_TARGETS = list(set(TARGETS + OFF_TARGETS))
 
+# Safe first-target reference for evaluate rules (avoids IndexError when TARGETS is empty)
+PRIMARY_TARGET = TARGETS[0] if TARGETS else ""
+
 # Directories
 TARGET_DIR = "target_seqs/original"
 
@@ -395,7 +398,7 @@ rule evaluate_pset:
     wildcard_constraints:
         filename="[^./]+"
     input:
-        eval_on=f"outputs/{{filename}}.{TARGETS[0]}.eval",
+        eval_on=f"outputs/{{filename}}.{PRIMARY_TARGET}.eval",
         eval_off=lambda wc: [f"outputs/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
         fasta="evaluate/{filename}.fa"
     output:
