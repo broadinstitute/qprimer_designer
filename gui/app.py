@@ -673,7 +673,22 @@ def _tab_run():
         st.divider()
         if rc == 0:
             st.success("Pipeline finished successfully!")
-            if FINAL_DIR.exists():
+            mode = st.session_state.get("mode", "Singleplex")
+            if mode == "Evaluate":
+                xlsx_files = sorted(EVALUATE_DIR.glob("**/*.xlsx")) if EVALUATE_DIR.exists() else []
+                if xlsx_files:
+                    import pandas as pd
+
+                    st.subheader("Evaluation results preview")
+                    for xf in xlsx_files:
+                        try:
+                            summary_df = pd.read_excel(xf, sheet_name=0)
+                            st.write(f"**{xf.name}**")
+                            st.dataframe(summary_df, use_container_width=True)
+                        except Exception as exc:
+                            st.warning(f"Could not read {xf.name}: {exc}")
+                    st.caption("See the **Results** tab for full details and downloads.")
+            elif FINAL_DIR.exists():
                 csvs = sorted(FINAL_DIR.glob("*.csv"))
                 if csvs:
                     import pandas as pd
@@ -748,28 +763,39 @@ def _tab_results():
     st.subheader("Evaluation reports")
 
     if EVALUATE_DIR.exists():
-        reports = sorted(
-            p for p in EVALUATE_DIR.iterdir()
-            if p.is_dir()
-        )
         xlsx_files = sorted(EVALUATE_DIR.glob("**/*.xlsx"))
     else:
-        reports = []
         xlsx_files = []
 
-    if reports:
-        st.write("Report directories: " + ", ".join(f"`{r.name}`" for r in reports))
-
     if xlsx_files:
-        for xf in xlsx_files:
-            st.download_button(
-                f"Download {xf.name}",
-                data=xf.read_bytes(),
-                file_name=xf.name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"dl_{xf.name}",
-            )
-    elif not reports:
+        import pandas as pd
+
+        selected_xlsx = st.selectbox(
+            "Select report to view",
+            options=[xf.name for xf in xlsx_files],
+            key="result_xlsx",
+        )
+        if selected_xlsx:
+            # Find full path (name may not be unique across subdirs)
+            xlsx_path = next(xf for xf in xlsx_files if xf.name == selected_xlsx)
+            try:
+                sheet_names = pd.ExcelFile(xlsx_path).sheet_names
+
+                for sheet in sheet_names:
+                    df = pd.read_excel(xlsx_path, sheet_name=sheet)
+                    st.write(f"**{sheet}** ({len(df)} rows)")
+                    st.dataframe(df, use_container_width=True)
+
+                st.download_button(
+                    "Download XLSX",
+                    data=xlsx_path.read_bytes(),
+                    file_name=selected_xlsx,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_{selected_xlsx}",
+                )
+            except Exception as exc:
+                st.error(f"Error reading {selected_xlsx}: {exc}")
+    else:
         st.info("No evaluation reports found.")
 
     st.divider()
