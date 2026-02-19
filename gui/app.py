@@ -172,9 +172,10 @@ def _tab_files():
     )
     if uploaded:
         for f in uploaded:
-            dest = FASTA_DIR / f.name
+            # Normalize extension to .fa so the Snakefile can find it
+            dest = FASTA_DIR / (Path(f.name).stem + ".fa")
             dest.write_bytes(f.getvalue())
-            st.success(f"Saved {f.name}")
+            st.success(f"Saved {dest.name}")
 
     st.divider()
 
