@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.egg-info
+.eggs
+dist
+build
+*.egg
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+
+# Development
+*.log
+.DS_Store
+
+# Training data (not needed for runtime)
+training/
+
+# Large files
+*.tar.bz2
+*.tar.gz
+*.zip
+
+# Analysis artifacts
+CODEBASE_ANALYSIS.md
