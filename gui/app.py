@@ -1,4 +1,4 @@
-"""Streamlit GUI for the qPrimer Designer pipeline."""
+"""Streamlit GUI for the RAPID qPrimer Designer pipeline."""
 
 import os
 import select
@@ -33,7 +33,7 @@ from qprimer_designer.utils.params import parse_params
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="qPrimer Designer",
+    page_title="RAPID qPrimer Designer",
     layout="wide",
 )
 
@@ -121,7 +121,7 @@ def _check_tool(name: str) -> bool:
 
 def _render_sidebar():
     with st.sidebar:
-        st.title("qPrimer Designer")
+        st.title("RAPID qPrimer Designer")
         st.caption(f"Working directory: `{PROJECT_ROOT}`")
 
         st.divider()
@@ -712,6 +712,11 @@ def _tab_run():
 
 def _tab_results():
     st.header("Results")
+
+    st.markdown(
+        "Need help interpreting the output? "
+        "[View the interpretation guide](https://github.com/broadinstitute/qprimer_designer/blob/hf_deploy_clean/docs/output_interpretation_guide.md)."
+    )
 
     # --- Final CSV files ---
     st.subheader("Final output files")
