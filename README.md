@@ -146,6 +146,30 @@ Results will be in `evaluate/{pset_name}/` containing Excel reports with:
 
 Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
 
+## Web GUI
+
+A Streamlit-based GUI is available as an alternative to the CLI workflow. It lets you upload FASTA files, configure all parameters, and run the pipeline from a browser.
+
+### Install
+
+```bash
+pip install -e ".[gui]"
+```
+
+### Launch
+
+```bash
+streamlit run gui/app.py
+```
+
+The GUI provides five tabs:
+
+- **Files** - Upload, view, and delete FASTA files
+- **Configuration** - Select design mode (Singleplex/Multiplex/Evaluate), enable probe mode, and choose targets
+- **Parameters** - Adjust all `params.txt` values with validation, or load from an existing file
+- **Run** - Set CPU cores, preview the snakemake command, and execute with real-time log output
+- **Results** - View and download output CSVs and evaluation reports
+
 ## CLI Commands
 
 The `qprimer` CLI provides the following subcommands:
