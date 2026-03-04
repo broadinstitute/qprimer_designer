@@ -373,12 +373,16 @@ rule prepare_pset_fasta:
             shutil.copyfile(src, out)
 
         # case 2: direct for / rev → generate
+        # The reverse primer must be stored as RC to match the convention
+        # used by the 'generate' command (tiled from the RC of the target).
         else:
             for_seq = config["for"]
             rev_seq = config["rev"]
+            comp = str.maketrans("ACGTacgt", "TGCAtgca")
+            rev_seq_rc = rev_seq.translate(comp)[::-1]
 
             with open(out, "w") as f:
-                f.write(f">1_for\n{for_seq}\n>1_rev\n{rev_seq}\n")
+                f.write(f">1_for\n{for_seq}\n>1_rev\n{rev_seq_rc}\n")
 
         ids = check_ids(out)
 
