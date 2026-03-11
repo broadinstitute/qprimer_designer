@@ -734,6 +734,12 @@ def _tab_run():
 def _tab_results():
     st.header("Results")
 
+    st.markdown(
+        "For help interpreting output columns, see the "
+        "[Output Interpretation Guide]"
+        "(https://github.com/broadinstitute/qprimer_designer/blob/main/docs/output_interpretation_guide.md)."
+    )
+
     # --- Final CSV files ---
     st.subheader("Final output files")
 
