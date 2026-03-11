@@ -140,6 +140,10 @@ def run(args):
     except pd.errors.EmptyDataError:
         print(f"Warning: Scores file {args.scores} is empty, writing empty output")
         open(args.out, "w").close()
+        csv_out = args.out.replace(".fa", ".csv")
+        open(csv_out, "w").close()
+        if args.probe_out:
+            open(args.probe_out, "w").close()
         return
     if res.empty:
         print(f"Warning: Scores file {args.scores} has no data rows, writing empty output")

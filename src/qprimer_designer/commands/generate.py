@@ -120,6 +120,8 @@ def generate_primers_multi(
 
 def run(args):
     """Run the generate command."""
+    # Sanitize name for use in FASTA headers (spaces break SAM format)
+    args.name = args.name.replace(" ", "_")
     params = parse_params(args.param_file)
     primer_params = get_primer_params(params)
 

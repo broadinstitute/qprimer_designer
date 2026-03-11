@@ -5,7 +5,7 @@
 ############################################
 
 # SINGLEPLEX REQUIRED: user must fill these for singleplex, ignored if not multiplex
-TARGETS = ['H3']
+TARGETS = ['test space file']
 CROSS   = []
 
 # shared option for multiplex and singleplex
@@ -48,6 +48,7 @@ MAX_CORES = workflow.cores or 1
 import os
 import sys
 from pathlib import Path
+import shlex
 import shutil
 
 # Probe mode
@@ -173,11 +174,11 @@ elif MULTIPLEX:
         output:
             f"final/{MULTIPLEX_STEM}.csv"
         params:
-            params_arg=f"--params {PARAMS}" if PROBE_MODE else ""
+            params_arg=f"--params '{PARAMS}'" if PROBE_MODE else ""
         shell:
             "qprimer select-multiplex "
             "{input.csvs} "
-            "--out {output} {params.params_arg}"
+            "--out '{output}' {params.params_arg}"
 
     rule build_final_output:
         wildcard_constraints:
@@ -200,18 +201,18 @@ elif MULTIPLEX:
         output:
             "final/{on}.csv"
         params:
-            off_arg=lambda wc, input: f"--off {input.eval_off}" if input.eval_off else "",
+            off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
             probe_args=lambda wc, input: (
-                f"--probe-mapping-on {input.probe_mapping_on} "
-                f"--probe-mapping-off {' '.join(input.probe_mapping_off)} "
-                f"--probe-seqs {input.probe_seqs}"
+                f"--probe-mapping-on {shlex.quote(str(input.probe_mapping_on))} "
+                f"--probe-mapping-off {' '.join(shlex.quote(str(f)) for f in input.probe_mapping_off)} "
+                f"--probe-seqs {shlex.quote(str(input.probe_seqs))}"
                 if PROBE_MODE else ""
             )
         shell:
             "qprimer build-output "
-            "--on {input.eval_on} {params.off_arg} "
-            "--fa {input.fa} --out {output} --name {wildcards.on} "
-            "--params {PARAMS} --ref {input.ref} {params.probe_args}"
+            "--on '{input.eval_on}' {params.off_arg} "
+            "--fa '{input.fa}' --out '{output}' --name '{wildcards.on}' "
+            "--params '{PARAMS}' --ref '{input.ref}' {params.probe_args}"
 
 
 else:
@@ -240,18 +241,18 @@ else:
         output:
             "final/{virus}.csv"
         params:
-            off_arg=lambda wc, input: f"--off {input.eval_off}" if input.eval_off else "",
+            off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
             probe_args=lambda wc, input: (
-                f"--probe-mapping-on {input.probe_mapping_on} "
-                f"--probe-mapping-off {' '.join(input.probe_mapping_off)} "
-                f"--probe-seqs {input.probe_seqs}"
+                f"--probe-mapping-on {shlex.quote(str(input.probe_mapping_on))} "
+                f"--probe-mapping-off {' '.join(shlex.quote(str(f)) for f in input.probe_mapping_off)} "
+                f"--probe-seqs {shlex.quote(str(input.probe_seqs))}"
                 if PROBE_MODE else ""
             )
         shell:
             "qprimer build-output "
-            "--on {input.eval_on} {params.off_arg} "
-            "--fa {input.fa} --out {output} --name {wildcards.virus} "
-            "--params {PARAMS} --ref {input.ref} {params.probe_args}"
+            "--on '{input.eval_on}' {params.off_arg} "
+            "--fa '{input.fa}' --out '{output}' --name '{wildcards.virus}' "
+            "--params '{PARAMS}' --ref '{input.ref}' {params.probe_args}"
 
 
 ############################################
@@ -288,7 +289,7 @@ rule make_MSA:
     threads:
         min(2, MAX_CORES)
     shell:
-        "mafft --auto --quiet --thread {threads} {input} > {output}"
+        "mafft --auto --quiet --thread {threads} '{input}' > '{output}'"
 
 
 rule pick_representative_seqs:
@@ -300,8 +301,8 @@ rule pick_representative_seqs:
         "target_seqs/representative/{virus}.fa"
     shell:
         "qprimer pick-representatives "
-        "--in {input} --out {output} "
-        "--params {PARAMS} --name {wildcards.virus}"
+        "--in '{input}' --out '{output}' "
+        "--params '{PARAMS}' --name '{wildcards.virus}'"
 
 def selected_source_fa(wc):
     # Ensure the checkpoint has run and we can read its output
@@ -322,7 +323,7 @@ rule resolve_target_seq:
         "target_seqs/selected/{virus}.fa"
     run:
         os.makedirs(os.path.dirname(output[0]), exist_ok=True)
-        shell("cp {input.src} {output}")
+        shell("cp '{input.src}' '{output}'")
 
 ############################################
 # Primer generation
@@ -338,8 +339,8 @@ rule generate_primers:
         features="primer_seqs/{virus}_init.feat"
     shell:
         "qprimer generate "
-        "--in {input} --out {output.fasta} "
-        "--params {PARAMS} --name {wildcards.virus}"
+        "--in '{input}' --out '{output.fasta}' "
+        "--params '{PARAMS}' --name '{wildcards.virus}'"
 
 
 rule generate_probes:
@@ -353,8 +354,8 @@ rule generate_probes:
         features="primer_seqs/{virus}_probe.feat"
     shell:
         "qprimer generate-probe "
-        "--in {input} --out {output.fasta} "
-        "--params {PARAMS} --name {wildcards.virus}"
+        "--in '{input}' --out '{output.fasta}' "
+        "--params '{PARAMS}' --name '{wildcards.virus}'"
 
 
 ############################################
@@ -403,8 +404,8 @@ rule prepare_features:
         feat="evaluate/{filename}.feat"
     shell:
         "qprimer prepare-features "
-        "--fa {input.fa} "
-        "--out {output.feat}"
+        "--fa '{input.fa}' "
+        "--out '{output.feat}'"
 
 rule evaluate_pset:
     wildcard_constraints:
@@ -416,13 +417,13 @@ rule evaluate_pset:
     output:
         directory("evaluate/{filename}")
     params:
-        ids=lambda wc: " ".join(check_ids(f"evaluate/{wc.filename}.fa")),
-        off_arg=lambda wc, input: f"--off {input.eval_off}" if input.eval_off else ""
+        ids=lambda wc: " ".join(shlex.quote(i) for i in check_ids(f"evaluate/{wc.filename}.fa")),
+        off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else ""
     shell:
         "qprimer export-report "
-        "--on {input.eval_on} "
+        "--on '{input.eval_on}' "
         "{params.off_arg} "
-        "--out evaluate/{wildcards.filename} "
+        "--out 'evaluate/{wildcards.filename}' "
         "--names {params.ids}"
 
 
@@ -440,7 +441,7 @@ rule build_index:
     threads:
         lambda wc: min(4, MAX_CORES) if count_seqs(wc.target) > 1000 else 1
     shell:
-        "bowtie2-build --threads {threads} {input} bt2_index/{wildcards.target}"
+        "bowtie2-build --threads {threads} '{input}' 'bt2_index/{wildcards.target}'"
 
 
 rule align:
@@ -464,9 +465,9 @@ rule align:
         multiMap=lambda wc: min(count_seqs(wc.target) * 5, 50000),
         mapOption="--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
     shell:
-        "bowtie2 -x {params.reference} -U {input.fasta} -f "
+        "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
-        "--no-hd --no-unal > {output}"
+        "--no-hd --no-unal > '{output}'"
 
 
 rule align_probes:
@@ -495,9 +496,9 @@ rule align_probes:
             else "--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
         )
     shell:
-        "bowtie2 -x {params.reference} -U {input.fasta} -f "
+        "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
-        "--no-hd --no-unal > {output}"
+        "--no-hd --no-unal > '{output}'"
 
 
 rule parse_probe_mapping:
@@ -511,7 +512,7 @@ rule parse_probe_mapping:
         "alignments/{virus}.{target}.probe.csv"
     shell:
         "qprimer parse-probe-mapping "
-        "--sam {input.sam} --out {output}"
+        "--sam '{input.sam}' --out '{output}'"
 
 
 ############################################
@@ -524,7 +525,7 @@ rule parse_map:
     output:
         temp("alignments/{filename}.parsed")
     shell:
-        "sam2pairwise < {input} > {output}"
+        "sam2pairwise < '{input}' > '{output}'"
 
 
 rule process_map:
@@ -538,15 +539,15 @@ rule process_map:
         tseqs = input.parsed + ".tseq"
         matches = input.parsed + ".match"
 
-        shell(f'awk "NR % 4 == 2" {input.parsed} > {pseqs}')
-        shell(f'awk "NR % 4 == 3" {input.parsed} > {matches}')
-        shell(f'awk "NR % 4 == 0" {input.parsed} > {tseqs}')
+        shell(f'awk "NR % 4 == 2" {shlex.quote(input.parsed)} > {shlex.quote(pseqs)}')
+        shell(f'awk "NR % 4 == 3" {shlex.quote(input.parsed)} > {shlex.quote(matches)}')
+        shell(f'awk "NR % 4 == 0" {shlex.quote(input.parsed)} > {shlex.quote(tseqs)}')
         shell(
-            "cut -f1-4 {input.sam} | "
-            "paste - {pseqs} | paste - {tseqs} | paste - {matches} "
-            "> {output}"
+            f"cut -f1-4 {shlex.quote(str(input.sam))} | "
+            f"paste - {shlex.quote(pseqs)} | paste - {shlex.quote(tseqs)} | paste - {shlex.quote(matches)} "
+            f"> {shlex.quote(str(output[0]))}"
         )
-        shell("rm -f {pseqs} {tseqs} {matches}")
+        shell(f"rm -f {shlex.quote(pseqs)} {shlex.quote(tseqs)} {shlex.quote(matches)}")
 
 
 rule check_coverage:
@@ -561,22 +562,24 @@ rule check_coverage:
         min_cov=lambda wc: int(count_seqs(wc.target) * 0.95)
     run:
         if wildcards.virus != wildcards.target:
-            shell("mv {input.mapped} {output}")
+            shell("mv '{input.mapped}' '{output}'")
         else:
+            cov_file = str(input.mapped) + ".cov"
+            key_file = str(input.mapped) + ".key"
             shell(
-                "awk '{{print $1, $3}}' {input.mapped} | sort -u | "
-                "awk '{{count[$1]++}} END {{for (i in count) print i, count[i]}}' "
-                "> {input.mapped}.cov"
+                f"awk '{{{{print $1, $3}}}}' {shlex.quote(str(input.mapped))} | sort -u | "
+                f"awk '{{{{count[$1]++}}}} END {{{{for (i in count) print i, count[i]}}}}' "
+                f"> {shlex.quote(cov_file)}"
             )
             shell(
-                "awk '$2 >= {params.min_cov} {{print $1}}' "
-                "{input.mapped}.cov > {input.mapped}.key"
+                f"awk '$2 >= {params.min_cov} {{{{print $1}}}}' "
+                f"{shlex.quote(cov_file)} > {shlex.quote(key_file)}"
             )
             shell(
-                "awk 'NR==FNR {{keys[$1]; next}} ($1 in keys)' "
-                "{input.mapped}.key {input.mapped} > {output}"
+                f"awk 'NR==FNR {{{{keys[$1]; next}}}} ($1 in keys)' "
+                f"{shlex.quote(key_file)} {shlex.quote(str(input.mapped))} > {shlex.quote(str(output[0]))}"
             )
-            shell("rm -f {input.mapped}.cov {input.mapped}.key")
+            shell(f"rm -f {shlex.quote(cov_file)} {shlex.quote(key_file)}")
 
 
 ############################################
@@ -603,15 +606,15 @@ rule prepare_input:
     params:
         ref_type=lambda wc: "on" if (wc.virus == wc.target or EVALUATE) else "off",
         prev_arg=lambda wc: (
-            f"--prev outputs/{wc.virus}.{wc.virus}.eval"
+            f"--prev 'outputs/{wc.virus}.{wc.virus}.eval'"
             if wc.virus != wc.target and not EVALUATE else ""
         ),
         skip_len=lambda wc: "--skip-length-filter" if EVALUATE else ""
     shell:
         "qprimer prepare-input "
-        "--in {input.mapped} {params.prev_arg} --out {output} "
-        "--ref {input.ref} --reftype {params.ref_type} "
-        "--features {input.features} --params {PARAMS} {params.skip_len}"
+        "--in '{input.mapped}' {params.prev_arg} --out '{output}' "
+        "--ref '{input.ref}' --reftype {params.ref_type} "
+        "--features '{input.features}' --params '{PARAMS}' {params.skip_len}"
 
 
 rule evaluate:
@@ -631,8 +634,8 @@ rule evaluate:
         ref_type=lambda wc: "on" if (wc.virus == wc.target or EVALUATE) else "off"
     shell:
         "qprimer evaluate "
-        "--in {input.inp} --out {output} "
-        "--ref {input.ref} --reftype {params.ref_type} "
+        "--in '{input.inp}' --out '{output}' "
+        "--ref '{input.ref}' --reftype {params.ref_type} "
         "--threads {threads}"
 
 
@@ -655,13 +658,13 @@ rule filter_primer_list:
         probe_fasta="primer_seqs/{virus}_filt_probes.fa"
     params:
         probe_args=lambda wc: (
-            f"--probe-mapping alignments/{wc.virus}.{wc.virus}.probe.csv "
-            f"--probe-seqs primer_seqs/{wc.virus}_probe.fa "
-            f"--probe-out primer_seqs/{wc.virus}_filt_probes.csv"
+            f"--probe-mapping 'alignments/{wc.virus}.{wc.virus}.probe.csv' "
+            f"--probe-seqs 'primer_seqs/{wc.virus}_probe.fa' "
+            f"--probe-out 'primer_seqs/{wc.virus}_filt_probes.csv'"
             if PROBE_MODE else ""
         )
     shell:
         """
-        qprimer filter --init {input.init} --scores {input.res} --out {output.fasta} --params {PARAMS} {params.probe_args}
-        touch {output.probe_csv} {output.probe_fasta}
+        qprimer filter --init '{input.init}' --scores '{input.res}' --out '{output.fasta}' --params '{PARAMS}' {params.probe_args}
+        touch '{output.probe_csv}' '{output.probe_fasta}'
         """
