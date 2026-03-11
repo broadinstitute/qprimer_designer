@@ -27,6 +27,9 @@ TARGET_DIR = "target_seqs/original"
 # Parameter file
 PARAMS = "params.txt"
 
+# Run ID for unique output directories (set automatically or override)
+RUN_ID = ""
+
 # Pipeline Design Options
 MULTIPLEX = bool(int(config.get("multiplex", 0)))
 
@@ -47,9 +50,17 @@ MAX_CORES = workflow.cores or 1
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 import shlex
 import shutil
+
+# Generate RUN_ID if not set
+if not RUN_ID:
+    RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+FINAL_DIR = f"final/{RUN_ID}"
+EVAL_DIR = f"evaluate/{RUN_ID}"
 
 # Probe mode
 PROBE_MODE = bool(int(config.get("probe", 0)))
@@ -159,20 +170,20 @@ if EVALUATE:
 if EVALUATE:
     rule all:
         input:
-            f"evaluate/{PSET_NAME}"
+            f"{EVAL_DIR}/{PSET_NAME}"
 
 elif MULTIPLEX:
     MULTIPLEX_STEM = "_".join(sorted(PANEL))
 
     rule all:
         input:
-            f"final/{MULTIPLEX_STEM}.csv"
+            f"{FINAL_DIR}/{MULTIPLEX_STEM}.csv"
 
     rule select_best_multiplex:
         input:
-            csvs=expand("final/{on}.csv", on=PANEL)
+            csvs=expand(f"{FINAL_DIR}/{{on}}.csv", on=PANEL)
         output:
-            f"final/{MULTIPLEX_STEM}.csv"
+            f"{FINAL_DIR}/{MULTIPLEX_STEM}.csv"
         params:
             params_arg=f"--params '{PARAMS}'" if PROBE_MODE else ""
         shell:
@@ -199,7 +210,7 @@ elif MULTIPLEX:
                 f"primer_seqs/{wc.on}_filt_probes.fa" if PROBE_MODE else []
             )
         output:
-            "final/{on}.csv"
+            f"{FINAL_DIR}/{{on}}.csv"
         params:
             off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
             probe_args=lambda wc, input: (
@@ -218,7 +229,7 @@ elif MULTIPLEX:
 else:
     rule all:
         input:
-            expand("final/{virus}.csv", virus=TARGETS)
+            expand(f"{FINAL_DIR}/{{virus}}.csv", virus=TARGETS)
 
     rule build_final_output:
         wildcard_constraints:
@@ -239,7 +250,7 @@ else:
                 f"primer_seqs/{wc.virus}_filt_probes.fa" if PROBE_MODE else []
             )
         output:
-            "final/{virus}.csv"
+            f"{FINAL_DIR}/{{virus}}.csv"
         params:
             off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
             probe_args=lambda wc, input: (
@@ -415,7 +426,7 @@ rule evaluate_pset:
         eval_off=lambda wc: [f"outputs/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
         fasta="evaluate/{filename}.fa"
     output:
-        directory("evaluate/{filename}")
+        directory(f"{EVAL_DIR}/{{filename}}")
     params:
         ids=lambda wc: " ".join(shlex.quote(i) for i in check_ids(f"evaluate/{wc.filename}.fa")),
         off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else ""
@@ -423,7 +434,7 @@ rule evaluate_pset:
         "qprimer export-report "
         "--on '{input.eval_on}' "
         "{params.off_arg} "
-        "--out 'evaluate/{wildcards.filename}' "
+        "--out '{EVAL_DIR}/{wildcards.filename}' "
         "--names {params.ids}"
 
 

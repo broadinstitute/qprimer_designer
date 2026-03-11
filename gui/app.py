@@ -526,6 +526,8 @@ def _preflight_checks() -> list[str]:
 
 def _write_pipeline_files():
     """Write Snakefile and params.txt to project root."""
+    from datetime import datetime
+
     mode = st.session_state.get("mode", "Singleplex")
     probe = st.session_state.get("probe_enabled", False)
 
@@ -545,11 +547,15 @@ def _write_pipeline_files():
         if eval_target and eval_target != "(no files available)":
             targets = [eval_target]
 
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.run_id = run_id
+
     snakefile_content = build_snakefile(
         targets=targets,
         cross=cross,
         host=host,
         panel=panel,
+        run_id=run_id,
     )
     (PROJECT_ROOT / "Snakefile").write_text(snakefile_content)
 
@@ -673,8 +679,11 @@ def _tab_run():
         if rc == 0:
             st.success("Pipeline finished successfully!")
             mode = st.session_state.get("mode", "Singleplex")
-            if mode == "Evaluate" and EVALUATE_DIR.exists():
-                xlsx_files = sorted(EVALUATE_DIR.glob("**/*.xlsx"))
+            run_id = st.session_state.get("run_id", "")
+            run_eval_dir = EVALUATE_DIR / run_id if run_id else EVALUATE_DIR
+            run_final_dir = FINAL_DIR / run_id if run_id else FINAL_DIR
+            if mode == "Evaluate" and run_eval_dir.exists():
+                xlsx_files = sorted(run_eval_dir.glob("**/*.xlsx"))
                 if xlsx_files:
                     import pandas as pd
 
@@ -690,8 +699,8 @@ def _tab_run():
                 else:
                     st.warning("Pipeline completed but no evaluation reports were generated. "
                                "Check the log for warnings.")
-            elif FINAL_DIR.exists():
-                csvs = sorted(FINAL_DIR.glob("*.csv"))
+            elif run_final_dir.exists():
+                csvs = sorted(run_final_dir.glob("*.csv"))
                 if csvs:
                     import pandas as pd
 
@@ -719,20 +728,26 @@ def _tab_results():
     st.subheader("Final output files")
 
     if FINAL_DIR.exists():
-        csvs = sorted(FINAL_DIR.glob("*.csv"))
+        csvs = sorted(FINAL_DIR.glob("**/*.csv"), reverse=True)
     else:
         csvs = []
 
     if csvs:
-        selected_csv = st.selectbox(
+        # Show run timestamp and filename for each CSV
+        csv_labels = []
+        for c in csvs:
+            run_id = c.parent.name
+            csv_labels.append(f"{run_id}/{c.name}")
+
+        selected_csv_label = st.selectbox(
             "Select CSV to view",
-            options=[c.name for c in csvs],
+            options=csv_labels,
             key="result_csv",
         )
-        if selected_csv:
+        if selected_csv_label:
             import pandas as pd
 
-            csv_path = FINAL_DIR / selected_csv
+            csv_path = FINAL_DIR / selected_csv_label
             try:
                 df = pd.read_csv(csv_path)
                 st.write(f"**{len(df)} primer pairs**")
@@ -751,11 +766,11 @@ def _tab_results():
                 st.download_button(
                     "Download CSV",
                     data=csv_path.read_bytes(),
-                    file_name=selected_csv,
+                    file_name=csv_path.name,
                     mime="text/csv",
                 )
             except Exception as exc:
-                st.error(f"Error reading {selected_csv}: {exc}")
+                st.error(f"Error reading {selected_csv_label}: {exc}")
     else:
         st.info("No CSV results in `final/` yet. Run the pipeline first.")
 
@@ -765,20 +780,27 @@ def _tab_results():
     st.subheader("Evaluation reports")
 
     if EVALUATE_DIR.exists():
-        xlsx_files = sorted(EVALUATE_DIR.glob("**/*.xlsx"))
+        xlsx_files = sorted(EVALUATE_DIR.glob("**/*.xlsx"), reverse=True)
     else:
         xlsx_files = []
 
     if xlsx_files:
         import pandas as pd
 
-        selected_xlsx = st.selectbox(
+        # Show run timestamp and filename
+        xlsx_labels = []
+        for xf in xlsx_files:
+            # Path is evaluate/{run_id}/{pset_name}/{file}.xlsx
+            rel = xf.relative_to(EVALUATE_DIR)
+            xlsx_labels.append(str(rel))
+
+        selected_xlsx_label = st.selectbox(
             "Select report to view",
-            options=[xf.name for xf in xlsx_files],
+            options=xlsx_labels,
             key="result_xlsx",
         )
-        if selected_xlsx:
-            xf = next(x for x in xlsx_files if x.name == selected_xlsx)
+        if selected_xlsx_label:
+            xf = EVALUATE_DIR / selected_xlsx_label
             try:
                 # Show summary sheet
                 df_summary = pd.read_excel(xf, sheet_name="summary", header=None)
@@ -790,14 +812,14 @@ def _tab_results():
                 st.write(f"**Detail** — {len(df_detail)} target alignments")
                 st.dataframe(df_detail, use_container_width=True)
             except Exception as exc:
-                st.error(f"Error reading {selected_xlsx}: {exc}")
+                st.error(f"Error reading {selected_xlsx_label}: {exc}")
 
             st.download_button(
-                f"Download {selected_xlsx}",
+                f"Download {xf.name}",
                 data=xf.read_bytes(),
-                file_name=selected_xlsx,
+                file_name=xf.name,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"dl_{selected_xlsx}",
+                key=f"dl_{selected_xlsx_label}",
             )
     else:
         st.info("No evaluation reports found.")

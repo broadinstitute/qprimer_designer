@@ -1,6 +1,7 @@
 """Generate Snakefile and params.txt from GUI configuration."""
 
 import re
+from datetime import datetime
 from pathlib import Path
 
 
@@ -14,13 +15,17 @@ def build_snakefile(
     panel: list[str],
     target_dir: str = "target_seqs/original",
     params_file: str = "params.txt",
+    run_id: str | None = None,
 ) -> str:
     """Read Snakefile.template and substitute header variable assignments.
 
-    Only the 6 variable assignments in the header block (TARGETS, CROSS,
-    HOST, PANEL, TARGET_DIR, PARAMS) are replaced. Everything else passes
-    through unchanged.
+    Only the variable assignments in the header block (TARGETS, CROSS,
+    HOST, PANEL, TARGET_DIR, PARAMS, RUN_ID) are replaced. Everything
+    else passes through unchanged.
     """
+    if run_id is None:
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     template = TEMPLATE_PATH.read_text()
 
     def _list_literal(items: list[str]) -> str:
@@ -33,6 +38,7 @@ def build_snakefile(
         r"^PANEL\s*=\s*\[.*?\]": f"PANEL = {_list_literal(panel)}",
         r'^TARGET_DIR\s*=\s*".*?"': f'TARGET_DIR = "{target_dir}"',
         r'^PARAMS\s*=\s*".*?"': f'PARAMS = "{params_file}"',
+        r'^RUN_ID\s*=\s*".*?"': f'RUN_ID = "{run_id}"',
     }
 
     result = template
