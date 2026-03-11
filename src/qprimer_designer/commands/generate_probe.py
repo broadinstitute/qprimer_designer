@@ -116,6 +116,8 @@ def generate_probes(
 
 def run(args):
     """Run the generate-probe command."""
+    # Sanitize name for use in FASTA headers (spaces break SAM format)
+    args.name = args.name.replace(" ", "_")
     params = parse_params(args.param_file)
     probe_params = get_probe_params(params)
 

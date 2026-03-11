@@ -20,10 +20,10 @@ PROBE_HOMOPOLYMER_MAX = 3
 PROBE_AVOID_5PRIME_G = True
 
 ## Probe mode configuration (singleplex only)
-PROBE_MAX_MISMATCHES = 2  # Maximum mismatches for probe-to-target alignment
-PROBE_AMPLICON_BUFFER = 20  # Minimum distance (nt) from primer ends
-MIN_PROBES_PER_PAIR = 1  # Minimum valid probes required per primer pair
-MAX_PROBES_PER_PAIR = 5  # Maximum number of probes to output per primer pair
+PROBE_MAX_MISMATCHES = 2
+PROBE_AMPLICON_BUFFER = 20
+MIN_PROBES_PER_PAIR = 1
+MAX_PROBES_PER_PAIR = 5
 
 ## Parameters in input preparation
 AMPLEN_MIN = 60
@@ -33,3 +33,4 @@ OFFLEN_MAX = 5000
 
 ## Parameters in evaluation
 NUM_TOP_SENSITIVITY = 200
+
