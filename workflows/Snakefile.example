@@ -5,7 +5,7 @@
 ############################################
 
 # SINGLEPLEX REQUIRED: user must fill these for singleplex, ignored if not multiplex
-TARGETS = ['TEST']
+TARGETS = ['H3']
 CROSS   = []
 
 # shared option for multiplex and singleplex
@@ -146,7 +146,10 @@ if EVALUATE:
 
         PSET_NAME = PSET_PATH.stem
     else:
-        PSET_NAME = "ps2eval"
+        # Build a readable name from primer sequences
+        f_tag = (FOR[:5] + FOR[-5:]).upper() if len(FOR) >= 10 else FOR.upper()
+        r_tag = (REV[:5] + REV[-5:]).upper() if len(REV) >= 10 else REV.upper()
+        PSET_NAME = f"eval_f_{f_tag}_r_{r_tag}"
 
 ############################################
 # Final targets
@@ -381,8 +384,13 @@ rule prepare_pset_fasta:
             comp = str.maketrans("ACGTacgt", "TGCAtgca")
             rev_seq_rc = rev_seq.translate(comp)[::-1]
 
+            # Use a readable primer pair ID from the sequences
+            f_tag = (for_seq[:5] + for_seq[-5:]).upper() if len(for_seq) >= 10 else for_seq.upper()
+            r_tag = (rev_seq[:5] + rev_seq[-5:]).upper() if len(rev_seq) >= 10 else rev_seq.upper()
+            pair_id = f"f_{f_tag}_r_{r_tag}"
+
             with open(out, "w") as f:
-                f.write(f">1_for\n{for_seq}\n>1_rev\n{rev_seq_rc}\n")
+                f.write(f">{pair_id}_for\n{for_seq}\n>{pair_id}_rev\n{rev_seq_rc}\n")
 
         ids = check_ids(out)
 
@@ -593,16 +601,17 @@ rule prepare_input:
     output:
         "inputs/{virus}.{target}.input"
     params:
-        ref_type=lambda wc: "on" if wc.virus == wc.target else "off",
+        ref_type=lambda wc: "on" if (wc.virus == wc.target or EVALUATE) else "off",
         prev_arg=lambda wc: (
             f"--prev outputs/{wc.virus}.{wc.virus}.eval"
             if wc.virus != wc.target and not EVALUATE else ""
-        )
+        ),
+        skip_len=lambda wc: "--skip-length-filter" if EVALUATE else ""
     shell:
         "qprimer prepare-input "
         "--in {input.mapped} {params.prev_arg} --out {output} "
         "--ref {input.ref} --reftype {params.ref_type} "
-        "--features {input.features} --params {PARAMS}"
+        "--features {input.features} --params {PARAMS} {params.skip_len}"
 
 
 rule evaluate:
@@ -619,7 +628,7 @@ rule evaluate:
     resources:
         gpu=1
     params:
-        ref_type=lambda wc: "on" if wc.virus == wc.target else "off"
+        ref_type=lambda wc: "on" if (wc.virus == wc.target or EVALUATE) else "off"
     shell:
         "qprimer evaluate "
         "--in {input.inp} --out {output} "

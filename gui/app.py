@@ -672,7 +672,25 @@ def _tab_run():
         st.divider()
         if rc == 0:
             st.success("Pipeline finished successfully!")
-            if FINAL_DIR.exists():
+            mode = st.session_state.get("mode", "Singleplex")
+            if mode == "Evaluate" and EVALUATE_DIR.exists():
+                xlsx_files = sorted(EVALUATE_DIR.glob("**/*.xlsx"))
+                if xlsx_files:
+                    import pandas as pd
+
+                    st.subheader("Evaluation results preview")
+                    for xf in xlsx_files:
+                        try:
+                            df = pd.read_excel(xf, sheet_name="detail")
+                            st.write(f"**{xf.name}** — {len(df)} target alignments")
+                            st.dataframe(df.head(10), use_container_width=True)
+                        except Exception as exc:
+                            st.warning(f"Could not read {xf.name}: {exc}")
+                    st.caption("See the **Results** tab for full details and downloads.")
+                else:
+                    st.warning("Pipeline completed but no evaluation reports were generated. "
+                               "Check the log for warnings.")
+            elif FINAL_DIR.exists():
                 csvs = sorted(FINAL_DIR.glob("*.csv"))
                 if csvs:
                     import pandas as pd
@@ -747,28 +765,41 @@ def _tab_results():
     st.subheader("Evaluation reports")
 
     if EVALUATE_DIR.exists():
-        reports = sorted(
-            p for p in EVALUATE_DIR.iterdir()
-            if p.is_dir()
-        )
         xlsx_files = sorted(EVALUATE_DIR.glob("**/*.xlsx"))
     else:
-        reports = []
         xlsx_files = []
 
-    if reports:
-        st.write("Report directories: " + ", ".join(f"`{r.name}`" for r in reports))
-
     if xlsx_files:
-        for xf in xlsx_files:
+        import pandas as pd
+
+        selected_xlsx = st.selectbox(
+            "Select report to view",
+            options=[xf.name for xf in xlsx_files],
+            key="result_xlsx",
+        )
+        if selected_xlsx:
+            xf = next(x for x in xlsx_files if x.name == selected_xlsx)
+            try:
+                # Show summary sheet
+                df_summary = pd.read_excel(xf, sheet_name="summary", header=None)
+                st.write("**Summary**")
+                st.dataframe(df_summary, use_container_width=True, hide_index=True)
+
+                # Show detail sheet
+                df_detail = pd.read_excel(xf, sheet_name="detail")
+                st.write(f"**Detail** — {len(df_detail)} target alignments")
+                st.dataframe(df_detail, use_container_width=True)
+            except Exception as exc:
+                st.error(f"Error reading {selected_xlsx}: {exc}")
+
             st.download_button(
-                f"Download {xf.name}",
+                f"Download {selected_xlsx}",
                 data=xf.read_bytes(),
-                file_name=xf.name,
+                file_name=selected_xlsx,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"dl_{xf.name}",
+                key=f"dl_{selected_xlsx}",
             )
-    elif not reports:
+    else:
         st.info("No evaluation reports found.")
 
     st.divider()
