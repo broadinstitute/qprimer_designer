@@ -55,6 +55,28 @@ from pathlib import Path
 import shlex
 import shutil
 
+############################################
+# Normalize FASTA file extensions
+############################################
+
+# Accept .fa, .fasta, .fna — rename non-.fa to .fa
+ALLOWED_FASTA_EXT = {'.fa', '.fasta', '.fna'}
+
+if os.path.isdir(TARGET_DIR):
+    for _fname in os.listdir(TARGET_DIR):
+        _fpath = os.path.join(TARGET_DIR, _fname)
+        if not os.path.isfile(_fpath):
+            continue
+        _base, _ext = os.path.splitext(_fname)
+        if _ext.lower() in ('.fasta', '.fna'):
+            _new_path = os.path.join(TARGET_DIR, _base + '.fa')
+            if os.path.exists(_new_path):
+                raise ValueError(
+                    f"Cannot rename '{_fpath}' to '{_new_path}': "
+                    f"a .fa file with that name already exists"
+                )
+            os.rename(_fpath, _new_path)
+
 # Generate RUN_ID if not set
 if not RUN_ID:
     RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
