@@ -434,7 +434,7 @@ rule evaluate_pset:
         "qprimer export-report "
         "--on '{input.eval_on}' "
         "{params.off_arg} "
-        "--out '{EVAL_DIR}/{wildcards.filename}' "
+        "--out '{output}' "
         "--names {params.ids}"
 
 

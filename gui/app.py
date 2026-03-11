@@ -733,11 +733,8 @@ def _tab_results():
         csvs = []
 
     if csvs:
-        # Show run timestamp and filename for each CSV
-        csv_labels = []
-        for c in csvs:
-            run_id = c.parent.name
-            csv_labels.append(f"{run_id}/{c.name}")
+        # Show relative path from FINAL_DIR for each CSV
+        csv_labels = [str(c.relative_to(FINAL_DIR)) for c in csvs]
 
         selected_csv_label = st.selectbox(
             "Select CSV to view",
@@ -803,7 +800,7 @@ def _tab_results():
             xf = EVALUATE_DIR / selected_xlsx_label
             try:
                 # Show summary sheet
-                df_summary = pd.read_excel(xf, sheet_name="summary", header=None)
+                df_summary = pd.read_excel(xf, sheet_name="summary", header=None).astype(str)
                 st.write("**Summary**")
                 st.dataframe(df_summary, use_container_width=True, hide_index=True)
 
