@@ -45,10 +45,10 @@ def _available_fasta() -> list[str]:
     """Return sorted list of FASTA stem names in target_seqs/original/."""
     if not FASTA_DIR.exists():
         return []
-    return sorted(
+    return sorted({
         p.stem for p in FASTA_DIR.iterdir()
         if p.suffix in (".fa", ".fasta", ".fna") and p.is_file()
-    )
+    })
 
 
 def _fasta_info(stem: str) -> dict:
@@ -172,9 +172,19 @@ def _tab_files():
     )
     if uploaded:
         for f in uploaded:
-            dest = FASTA_DIR / f.name
+            p = Path(f.name)
+            if p.suffix.lower() not in (".fa", ".fasta", ".fna"):
+                st.error(f"Unsupported extension: {p.suffix}")
+                continue
+            # Normalize to .fa extension
+            dest = FASTA_DIR / (p.stem + ".fa")
             dest.write_bytes(f.getvalue())
-            st.success(f"Saved {f.name}")
+            # Remove any leftover files with other FASTA extensions
+            for ext in (".fasta", ".fna"):
+                old = FASTA_DIR / (p.stem + ext)
+                if old.exists():
+                    old.unlink()
+            st.success(f"Saved {dest.name}")
 
     st.divider()
 
