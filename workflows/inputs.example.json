@@ -1,0 +1,16 @@
+{
+    "qprimer_pipeline.multiplex": false,
+    "qprimer_pipeline.evaluate": false,
+    "qprimer_pipeline.probe_mode": false,
+
+    "qprimer_pipeline.targets": ["target1"],
+    "qprimer_pipeline.cross": [],
+    "qprimer_pipeline.host": [],
+
+    "qprimer_pipeline.target_dir": "target_seqs/original",
+
+    "qprimer_pipeline.params_file": "params.txt",
+
+    "qprimer_pipeline.threads": 2,
+    "qprimer_pipeline.probe_mismatch_penalty": 10
+}
