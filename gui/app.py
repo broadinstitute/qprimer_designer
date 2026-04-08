@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlencode
 
 import streamlit as st
 
@@ -774,6 +775,45 @@ def _tab_results():
                     mc3.metric("Best score", f"{df['score'].max():.4f}")
 
                 st.dataframe(df, use_container_width=True)
+
+                # --- NCBI Primer-BLAST lookup ---
+                if "pseq_f" in df.columns and "pseq_r" in df.columns:
+                    st.markdown("**Check off-target binding via NCBI Primer-BLAST**")
+
+                    # Build row labels from primer name columns if available
+                    if "pname_f" in df.columns and "pname_r" in df.columns:
+                        row_labels = [
+                            f"{i}: {row['pname_f']} / {row['pname_r']}"
+                            for i, row in df.iterrows()
+                        ]
+                    else:
+                        row_labels = [
+                            f"{i}: {row['pseq_f'][:20]}… / {row['pseq_r'][:20]}…"
+                            for i, row in df.iterrows()
+                        ]
+
+                    selected_row_label = st.selectbox(
+                        "Select a primer pair",
+                        options=row_labels,
+                        key=f"blast_row_{selected_csv_label}",
+                    )
+                    if selected_row_label is not None:
+                        row_idx = int(selected_row_label.split(":")[0])
+                        fwd = df.at[row_idx, "pseq_f"]
+                        rev = df.at[row_idx, "pseq_r"]
+
+                        params = urlencode({
+                            "PRIMER_LEFT_INPUT": fwd,
+                            "PRIMER_RIGHT_INPUT": rev,
+                            "SEARCH_DB": "core_nt",
+                            "ORGANISM": "",
+                        })
+                        blast_url = f"https://www.ncbi.nlm.nih.gov/tools/primer-blast/?{params}"
+
+                        st.link_button(
+                            "Open in NCBI Primer-BLAST",
+                            url=blast_url,
+                        )
 
                 # Download button
                 st.download_button(
