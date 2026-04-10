@@ -141,8 +141,10 @@ def check_ids(fasta):
                 seen.setdefault(name[:-4], set()).add("for")
             elif name.endswith("_rev"):
                 seen.setdefault(name[:-4], set()).add("rev")
+            elif name.endswith("_pro"):
+                seen.setdefault(name[:-4], set()).add("pro")
 
-    ids = sorted(pid for pid, tags in seen.items() if tags == {"for", "rev"})
+    ids = sorted(pid for pid, tags in seen.items() if {"for", "rev"} <= tags)
 
     if not ids:
         raise ValueError(
@@ -154,6 +156,15 @@ def check_ids(fasta):
 
     return ids
 
+
+def has_probe(fasta):
+    """Check if FASTA file contains probe entries (*_pro)."""
+    with open(fasta) as f:
+        for line in f:
+            if line.startswith(">") and line.strip().endswith("_pro"):
+                return True
+    return False
+
 ############################################
 # Evaluate mode configuration
 ############################################
@@ -161,6 +172,7 @@ def check_ids(fasta):
 EVALUATE = bool(int(config.get("evaluate", 0)))
 FOR  = config.get("for")
 REV  = config.get("rev")
+PRO  = config.get("pro")
 PSET = config.get("pset")
 
 if EVALUATE:
@@ -425,6 +437,10 @@ rule prepare_pset_fasta:
 
             with open(out, "w") as f:
                 f.write(f">{pair_id}_for\n{for_seq}\n>{pair_id}_rev\n{rev_seq_rc}\n")
+                # Optionally add probe sequence
+                pro_seq = config.get("pro")
+                if pro_seq:
+                    f.write(f">{pair_id}_pro\n{pro_seq}\n")
 
         ids = check_ids(out)
 
@@ -440,24 +456,111 @@ rule prepare_features:
         "--fa '{input.fa}' "
         "--out '{output.feat}'"
 
+# In evaluate mode, prefer eval-specific probe rules over design-mode ones
+if EVALUATE:
+    ruleorder: align_probe_eval > align_probes
+    ruleorder: parse_probe_mapping_eval > parse_probe_mapping
+
+rule extract_probe_from_pset:
+    """Extract probe entries (*_pro) from evaluate FASTA into separate file."""
+    wildcard_constraints:
+        filename="[^./]+"
+    input:
+        fasta="evaluate/{filename}.fa"
+    output:
+        probe_fa="evaluate/probes/{filename}.fa"
+    run:
+        from Bio import SeqIO
+        probes = [r for r in SeqIO.parse(input.fasta, "fasta") if r.id.endswith("_pro")]
+        with open(output.probe_fa, "w") as f:
+            SeqIO.write(probes, f, "fasta")
+        print(f"Extracted {len(probes)} probe(s) to {output.probe_fa}")
+
+rule align_probe_eval:
+    """Align evaluate-mode probes to on/off targets."""
+    wildcard_constraints:
+        filename="[^./]+",
+        target=ALL_TARGETS_PATTERN
+    input:
+        fasta="evaluate/probes/{filename}.fa",
+        index="bt2_index/{target}.1.bt2"
+    output:
+        temp("alignments/{filename}.{target}.probe.sam")
+    threads:
+        min(2, MAX_CORES)
+    params:
+        reference=lambda wc: f"bt2_index/{wc.target}",
+        multiMap=lambda wc: min(count_seqs(wc.target) * 5, 50000),
+        # Strict for on-target, less strict for off-target
+        mapOption=lambda wc: (
+            f"--end-to-end --mp {PROBE_MISMATCH_PENALTY},{PROBE_MISMATCH_PENALTY} --rdg 20,20 --rfg 20,20 -N 1 --score-min L,-0.8,-0.8"
+            if wc.target == PRIMARY_TARGET
+            else "--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
+        )
+    shell:
+        "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
+        "-p {threads} -k {params.multiMap} {params.mapOption} "
+        "--no-hd --no-unal > '{output}'"
+
+rule parse_probe_mapping_eval:
+    """Parse evaluate-mode probe SAM into mapping CSV."""
+    wildcard_constraints:
+        filename="[^./]+",
+        target=ALL_TARGETS_PATTERN
+    input:
+        sam="alignments/{filename}.{target}.probe.sam"
+    output:
+        "alignments/{filename}.{target}.probe.csv"
+    shell:
+        "qprimer parse-probe-mapping "
+        "--sam '{input.sam}' --out '{output}'"
+
+# Determine if probe evaluation is needed at DAG time:
+# - Direct input (--for/--rev/--pro): check PRO config
+# - PSET file: check the file for _pro entries (file exists at DAG time)
+if EVALUATE:
+    EVAL_HAS_PROBE = PRO is not None if not PSET else has_probe(str(PSET_PATH))
+else:
+    EVAL_HAS_PROBE = False
+
 rule evaluate_pset:
     wildcard_constraints:
         filename="[^./]+"
     input:
         eval_on=f"outputs/{{filename}}.{PRIMARY_TARGET}.eval",
         eval_off=lambda wc: [f"outputs/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
-        fasta="evaluate/{filename}.fa"
+        fasta="evaluate/{filename}.fa",
+        probe_mapping_on=lambda wc: (
+            f"alignments/{wc.filename}.{PRIMARY_TARGET}.probe.csv"
+            if EVAL_HAS_PROBE else []
+        ),
+        probe_mapping_off=lambda wc: (
+            [f"alignments/{wc.filename}.{t}.probe.csv" for t in OFF_TARGETS]
+            if EVAL_HAS_PROBE else []
+        ),
+        probe_fa=lambda wc: (
+            f"evaluate/probes/{wc.filename}.fa"
+            if EVAL_HAS_PROBE else []
+        )
     output:
         directory(f"{EVAL_DIR}/{{filename}}")
     params:
         ids=lambda wc: " ".join(shlex.quote(i) for i in check_ids(f"evaluate/{wc.filename}.fa")),
-        off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else ""
+        off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
+        probe_args=lambda wc, input: (
+            f"--probe-mapping-on {shlex.quote(str(input.probe_mapping_on))} "
+            f"--probe-mapping-off {' '.join(shlex.quote(str(f)) for f in input.probe_mapping_off)} "
+            f"--probe-seqs {shlex.quote(str(input.probe_fa))}"
+            if EVAL_HAS_PROBE else ""
+        )
     shell:
         "qprimer export-report "
         "--on '{input.eval_on}' "
         "{params.off_arg} "
         "--out '{output}' "
-        "--names {params.ids}"
+        "--names {params.ids} "
+        "{params.probe_args} "
+        f"--ref 'target_seqs/original/{PRIMARY_TARGET}.fa'"
 
 
 ############################################

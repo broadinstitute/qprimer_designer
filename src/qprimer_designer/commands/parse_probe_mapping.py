@@ -37,12 +37,20 @@ def run(args):
             probe_seq = fields[9]
             orientation = '-' if (flag & 16) else '+'
 
+            # Extract edit distance from NM tag
+            mismatches = 0
+            for tag in fields[11:]:
+                if tag.startswith('NM:i:'):
+                    mismatches = int(tag[5:])
+                    break
+
             mappings.append({
                 'probe_name': probe_name,
                 'probe_seq': probe_seq,
                 'target_id': target_id,
                 'start_pos': start_pos,
-                'orientation': orientation
+                'orientation': orientation,
+                'mismatches': mismatches,
             })
 
     df = pd.DataFrame(mappings)

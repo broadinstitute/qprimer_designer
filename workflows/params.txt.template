@@ -1,3 +1,15 @@
+## Sequence fetch configuration
+# Google Sheets URL containing virus query configurations
+SPREADSHEET_URL =
+# Comma-separated query IDs to fetch (leave empty to fetch all)
+QUERY_IDS =
+
+## Target sequences (comma-separated, e.g. TARGETS = Ebola,Marburg)
+TARGETS =
+CROSS =
+HOST =
+PANEL =
+
 ## Parameters in picking representative sequences
 DESIGN_WINDOW = 500
 
@@ -33,3 +45,10 @@ OFFLEN_MAX = 5000
 
 ## Parameters in evaluation
 NUM_TOP_SENSITIVITY = 200
+
+## Email configuration (for adapt monitor)
+# Gmail address and app password for sending alerts
+EMAIL_SENDER =
+EMAIL_PASSWORD =
+# Comma-separated recipient addresses
+EMAIL_RECIPIENTS =

@@ -4,7 +4,9 @@ import argparse
 import ast
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+from Bio import SeqIO
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
@@ -29,6 +31,10 @@ Creates one Excel file per primer set with:
     parser.add_argument("--off", nargs="*", default=[], help="Off-target evaluation files")
     parser.add_argument("--out", required=True, help="Output directory for Excel reports")
     parser.add_argument("--names", nargs="+", required=True, help="Primer set IDs to process")
+    parser.add_argument("--probe-mapping-on", default=None, help="Probe mapping CSV for on-target")
+    parser.add_argument("--probe-mapping-off", nargs="*", default=[], help="Probe mapping CSVs for off-targets")
+    parser.add_argument("--probe-seqs", default=None, help="Probe FASTA file")
+    parser.add_argument("--ref", default=None, help="On-target reference FASTA (for counting total sequences)")
     parser.set_defaults(func=run)
 
 
@@ -119,9 +125,58 @@ def eval_to_target_df(eval_path, pid, eval_type="on"):
     return df
 
 
-def build_dimerization_table(df):
+def annotate_probe(df, probe_mapping_path, pid):
     """
-    Build 2x2 dimerization table (forward/reverse × forward/reverse).
+    Add probe and mm_p columns to detail dataframe.
+
+    probe = 1 if a probe aligns within the amplicon for that sequence, 0 otherwise.
+    mm_p = mismatch count from probe alignment; NaN when probe = 0.
+    """
+    df["probe"] = 0
+    df["mm_p"] = np.nan
+
+    if probe_mapping_path is None:
+        return df
+
+    probe_df = pd.read_csv(probe_mapping_path)
+    if probe_df.empty:
+        return df
+
+    # Filter to probes matching this primer set
+    probe_name = f"{pid}_pro"
+    probe_df = probe_df[probe_df["probe_name"] == probe_name]
+    if probe_df.empty:
+        return df
+
+    # Reset index to avoid duplicate index issues, then restore
+    df = df.reset_index()
+
+    for i, row in df.iterrows():
+        seq_id = row["seq_id"]
+        amp_start = row["starts"]
+        amp_end = amp_start + row["prod_len"]
+
+        # Find probe alignments for this target sequence
+        hits = probe_df[probe_df["target_id"] == seq_id]
+        for _, hit in hits.iterrows():
+            probe_start = hit["start_pos"]
+            probe_end = probe_start + len(hit["probe_seq"])
+            # Probe is within amplicon if it's fully contained
+            if probe_start >= amp_start and probe_end <= amp_end:
+                df.at[i, "probe"] = 1
+                df.at[i, "mm_p"] = hit["mismatches"]
+                break
+
+    df["probe"] = df["probe"].astype(int)
+    df = df.set_index("seq_id")
+    return df
+
+
+def build_dimerization_table(df, probe_seq=None):
+    """
+    Build dimerization table.
+
+    2×2 (forward/reverse) when no probe, 3×3 when probe is provided.
 
     Returns:
         DataFrame with ΔG values for all primer-primer combinations
@@ -131,54 +186,105 @@ def build_dimerization_table(df):
     fseq = df_on["pseq_f"].values[0].replace("-", "")
     rseq = df_on["pseq_r"].values[0].replace("-", "")
 
-    return pd.DataFrame(
-        [
-            [compute_dimer_dg(fseq, fseq), compute_dimer_dg(fseq, rseq)],
-            [compute_dimer_dg(rseq, fseq), compute_dimer_dg(rseq, rseq)],
-        ],
-        index=["forward", "reverse"],
-        columns=["forward", "reverse"],
-    ).round(1)
+    if probe_seq:
+        seqs = [fseq, rseq, probe_seq]
+        labels = ["forward", "reverse", "probe"]
+    else:
+        seqs = [fseq, rseq]
+        labels = ["forward", "reverse"]
+
+    data = [[compute_dimer_dg(s1, s2) for s2 in seqs] for s1 in seqs]
+
+    return pd.DataFrame(data, index=labels, columns=labels).round(1)
 
 
-def build_sensitivity_table(df):
+def _get_ref_seq_ids(ref_path):
+    """Get all sequence IDs from a reference FASTA file."""
+    if not ref_path:
+        return None
+    seq_ids = []
+    for rec in SeqIO.parse(ref_path, "fasta"):
+        seq_ids.append(rec.id)
+    return seq_ids
+
+
+def _deduplicate_coverage(df_subset, has_probe=False, ref_total=None):
+    """Compute coverage by unique seq_id.
+
+    For each unique seq_id, the sequence is "covered" if ANY alignment
+    has classifier=1 (and probe=1 if applicable).
+
+    Args:
+        ref_total: Total number of sequences in the reference FASTA.
+                   If provided, used as denominator instead of counting from df.
+
+    Returns (n_covered, n_total, covered_regressor_values).
+    """
+    df_reset = df_subset.reset_index()
+
+    if has_probe:
+        df_reset["_covered"] = (df_reset["classifier"] == 1) & (df_reset["probe"] == 1)
+    else:
+        df_reset["_covered"] = df_reset["classifier"] == 1
+
+    # Per seq_id: covered if any alignment is covered
+    seq_covered = df_reset.groupby("seq_id")["_covered"].any()
+    n_total = ref_total if ref_total is not None else len(seq_covered)
+    n_covered = int(seq_covered.sum())
+
+    # Regressor values for covered sequences (best per seq_id)
+    covered_seqs = seq_covered[seq_covered].index
+    act = df_reset[df_reset["seq_id"].isin(covered_seqs)].groupby("seq_id")["regressor"].max()
+
+    return n_covered, n_total, act
+
+
+def build_sensitivity_table(df, has_probe=False, ref_total=None):
     """Build sensitivity summary for on-target."""
     df_on = df[df["eval_type"] == "on"]
 
     if df_on.empty:
         return pd.DataFrame()
 
-    act = df_on["regressor"]
+    n_covered, n_total, act = _deduplicate_coverage(df_on, has_probe, ref_total)
+    coverage_str = f"{n_covered} / {n_total}"
 
     return pd.DataFrame(
         {
-            "Coverage": [df_on["classifier"].sum()],
-            "Act_mean": [act.mean()],
-            "Act_median": [act.median()],
-            "Act_min": [act.min()],
-            "Act_max": [act.max()],
+            "Coverage": [coverage_str],
+            "Act_mean": [round(act.mean(), 3) if len(act) > 0 else np.nan],
+            "Act_median": [round(act.median(), 3) if len(act) > 0 else np.nan],
+            "Act_min": [round(act.min(), 3) if len(act) > 0 else np.nan],
+            "Act_max": [round(act.max(), 3) if len(act) > 0 else np.nan],
         },
         index=[df["target"].values[0]],
     )
 
 
-def build_specificity_table(df):
+def build_specificity_table(df, has_probe=False):
     """Build specificity summary for off-target."""
     df_off = df[df["eval_type"] == "off"]
 
     if df_off.empty:
         return pd.DataFrame()
 
-    return df_off.groupby("target").agg(
-        Coverage=("classifier", "sum"),
-        Act_mean=("regressor", "mean"),
-        Act_median=("regressor", "median"),
-        Act_min=("regressor", "min"),
-        Act_max=("regressor", "max"),
-    )
+    results = []
+    for target, group in df_off.groupby("target"):
+        n_covered, n_total, act = _deduplicate_coverage(group, has_probe)
+
+        results.append({
+            "target": target,
+            "Coverage": f"{n_covered} / {n_total}",
+            "Act_mean": round(act.mean(), 3) if len(act) > 0 else np.nan,
+            "Act_median": round(act.median(), 3) if len(act) > 0 else np.nan,
+            "Act_min": round(act.min(), 3) if len(act) > 0 else np.nan,
+            "Act_max": round(act.max(), 3) if len(act) > 0 else np.nan,
+        })
+
+    return pd.DataFrame(results).set_index("target")
 
 
-def save_eval_excel(df, outdir, filename):
+def save_eval_excel(df, outdir, filename, probe_seq=None, ref_total=None):
     """
     Save evaluation results to Excel with formatted alignment columns.
 
@@ -191,8 +297,11 @@ def save_eval_excel(df, outdir, filename):
 
     xlsx_path = outdir / filename
 
-    # Write detail sheet
-    df.drop(columns=["pseq_f", "pseq_r"]).to_excel(xlsx_path, sheet_name="detail")
+    has_probe = probe_seq is not None
+
+    # Drop internal columns from detail sheet
+    drop_cols = ["pseq_f", "pseq_r"]
+    df.drop(columns=drop_cols).to_excel(xlsx_path, sheet_name="detail")
 
     wb = load_workbook(xlsx_path)
 
@@ -220,9 +329,9 @@ def save_eval_excel(df, outdir, filename):
     ws_sum = wb.create_sheet("summary")
     wb._sheets.insert(0, wb._sheets.pop(wb._sheets.index(ws_sum)))
 
-    dimer_df = build_dimerization_table(df)
-    sens_df = build_sensitivity_table(df)
-    spec_df = build_specificity_table(df)
+    dimer_df = build_dimerization_table(df, probe_seq=probe_seq)
+    sens_df = build_sensitivity_table(df, has_probe=has_probe, ref_total=ref_total)
+    spec_df = build_specificity_table(df, has_probe=has_probe)
 
     current_row = 1
 
@@ -261,6 +370,45 @@ def get_target_name(path):
     return Path(path).name.split(".")[1]
 
 
+def add_unmapped_rows(df, ref_seq_ids):
+    """Add rows for sequences in reference that have no alignment.
+
+    Unmapped sequences get classifier=0, regressor='unmapped'.
+    """
+    if ref_seq_ids is None:
+        return df
+
+    mapped_ids = set(df.index)
+    unmapped_ids = [sid for sid in ref_seq_ids if sid not in mapped_ids]
+
+    if not unmapped_ids:
+        return df
+
+    # Build unmapped rows with same columns
+    unmapped_rows = []
+    for sid in unmapped_ids:
+        row = {col: np.nan for col in df.columns}
+        row["classifier"] = 0
+        row["regressor"] = "unmapped"
+        row["eval_type"] = df["eval_type"].iloc[0] if not df.empty else "on"
+        row["target"] = df["target"].iloc[0] if not df.empty else ""
+        unmapped_rows.append(row)
+
+    unmapped_df = pd.DataFrame(unmapped_rows, index=pd.Index(unmapped_ids, name="seq_id"))
+    return pd.concat([df, unmapped_df], axis=0)
+
+
+def load_probe_seq(probe_seqs_path, pid):
+    """Load probe sequence for a given primer set ID from FASTA."""
+    if not probe_seqs_path:
+        return None
+    probe_name = f"{pid}_pro"
+    for rec in SeqIO.parse(probe_seqs_path, "fasta"):
+        if rec.id == probe_name:
+            return str(rec.seq)
+    return None
+
+
 def run(args):
     """Run the export-report command."""
     outdir = Path(args.out)
@@ -268,6 +416,16 @@ def run(args):
 
     print(f"Output directory: {outdir}")
     print(f"Primer sets to evaluate: {', '.join(args.names)}")
+
+    has_probe = args.probe_mapping_on is not None
+    probe_mapping_on = args.probe_mapping_on
+    probe_mapping_off = {
+        get_target_name(p): p for p in args.probe_mapping_off
+    } if args.probe_mapping_off else {}
+
+    # Load reference seq_ids for unmapped row detection
+    ref_seq_ids = _get_ref_seq_ids(args.ref) if args.ref else None
+    ref_total = len(ref_seq_ids) if ref_seq_ids else None
 
     cols = [
         "target", "eval_type", "classifier", "regressor",
@@ -278,8 +436,12 @@ def run(args):
         "mm_r", "indel_r", "len_r", "Tm_r", "GC_r"
     ]
 
+    if has_probe:
+        cols += ["probe", "mm_p"]
+
     for pid in args.names:
         dfs = []
+        probe_seq = load_probe_seq(args.probe_seqs, pid) if has_probe else None
 
         # Process on-target evaluation
         try:
@@ -290,7 +452,14 @@ def run(args):
             )
             df_on["eval_type"] = "on"
             df_on["target"] = get_target_name(args.on)
-            dfs.append(df_on[cols].sort_values("regressor", ascending=False))
+            if has_probe:
+                df_on = annotate_probe(df_on, probe_mapping_on, pid)
+            # Add unmapped sequences from reference
+            df_on = add_unmapped_rows(df_on, ref_seq_ids)
+            dfs.append(df_on[cols].sort_values(
+                "regressor", ascending=False,
+                key=lambda s: pd.to_numeric(s, errors="coerce"),
+            ))
         except Exception as e:
             print(f"[WARNING] on-target eval failed for {pid}: {e}")
 
@@ -305,7 +474,11 @@ def run(args):
 
                 if not df_off.empty:
                     df_off["eval_type"] = "off"
-                    df_off["target"] = get_target_name(off_path)
+                    target_name = get_target_name(off_path)
+                    df_off["target"] = target_name
+                    if has_probe:
+                        off_probe_path = probe_mapping_off.get(target_name)
+                        df_off = annotate_probe(df_off, off_probe_path, pid)
                     dfs.append(df_off[cols].sort_values("regressor", ascending=False))
 
             except Exception as e:
@@ -317,7 +490,8 @@ def run(args):
             continue
 
         df_all = pd.concat(dfs, axis=0)
-        save_eval_excel(df_all, outdir=outdir, filename=f"{pid}.xlsx")
+        save_eval_excel(df_all, outdir=outdir, filename=f"{pid}.xlsx",
+                        probe_seq=probe_seq, ref_total=ref_total)
         print(f"Created {outdir / f'{pid}.xlsx'}")
 
     print("All primer sets processed")
