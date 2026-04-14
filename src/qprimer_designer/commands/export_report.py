@@ -35,6 +35,8 @@ Creates one Excel file per primer set with:
     parser.add_argument("--probe-mapping-off", nargs="*", default=[], help="Probe mapping CSVs for off-targets")
     parser.add_argument("--probe-seqs", default=None, help="Probe FASTA file")
     parser.add_argument("--ref", default=None, help="On-target reference FASTA (for counting total sequences)")
+    parser.add_argument("--probe-max-mismatches", type=int, default=2,
+                        help="Maximum mismatches for probe to count as matched (default: 2)")
     parser.set_defaults(func=run)
 
 
@@ -122,18 +124,29 @@ def eval_to_target_df(eval_path, pid, eval_type="on"):
     # Drop raw alignment columns
     df = df.drop(columns=["match_f", "tseq_f", "match_r", "tseq_r"])
 
+    # Keep only the best alignment per sequence (highest regressor score)
+    if eval_type == "on":
+        df = df.reset_index()
+        df["_reg_numeric"] = pd.to_numeric(df["regressor"], errors="coerce")
+        df = df.sort_values("_reg_numeric", ascending=False).drop_duplicates(
+            subset="seq_id", keep="first"
+        )
+        df = df.drop(columns=["_reg_numeric"]).set_index("seq_id")
+
     return df
 
 
-def annotate_probe(df, probe_mapping_path, pid):
+def annotate_probe(df, probe_mapping_path, pid, max_mismatches=2):
     """
-    Add probe and mm_p columns to detail dataframe.
+    Add probe, mm_p, and indel_p columns to detail dataframe.
 
-    probe = 1 if a probe aligns within the amplicon for that sequence, 0 otherwise.
-    mm_p = mismatch count from probe alignment; NaN when probe = 0.
+    probe = 1 if probe aligns within amplicon AND mismatches <= max_mismatches AND indels == 0.
+    mm_p = mismatch count (substitutions only, recorded whenever probe is within amplicon).
+    indel_p = indel count (recorded whenever probe is within amplicon).
     """
     df["probe"] = 0
     df["mm_p"] = np.nan
+    df["indel_p"] = np.nan
 
     if probe_mapping_path is None:
         return df
@@ -147,6 +160,10 @@ def annotate_probe(df, probe_mapping_path, pid):
     probe_df = probe_df[probe_df["probe_name"] == probe_name]
     if probe_df.empty:
         return df
+
+    # Ensure indels column exists (backward compatibility)
+    if "indels" not in probe_df.columns:
+        probe_df["indels"] = 0
 
     # Reset index to avoid duplicate index issues, then restore
     df = df.reset_index()
@@ -163,12 +180,58 @@ def annotate_probe(df, probe_mapping_path, pid):
             probe_end = probe_start + len(hit["probe_seq"])
             # Probe is within amplicon if it's fully contained
             if probe_start >= amp_start and probe_end <= amp_end:
-                df.at[i, "probe"] = 1
-                df.at[i, "mm_p"] = hit["mismatches"]
+                mm = hit["mismatches"]
+                indel = hit["indels"]
+                df.at[i, "mm_p"] = mm
+                df.at[i, "indel_p"] = indel
+                if mm <= max_mismatches and indel == 0:
+                    df.at[i, "probe"] = 1
                 break
 
     df["probe"] = df["probe"].astype(int)
     df = df.set_index("seq_id")
+    return df
+
+
+def add_decision_columns(df, has_probe=False):
+    """Add decision and reason columns based on classifier and probe status.
+
+    decision = 1 if classifier=1 (and probe=1 when probe mode is enabled).
+    reason = explanation when decision=0.
+    """
+    df["decision"] = 0
+    df["reason"] = ""
+
+    if has_probe:
+        mask_pass = (df["classifier"] == 1) & (df["probe"] == 1)
+        df.loc[mask_pass, "decision"] = 1
+
+        mask_unmapped = df["regressor"] == "unmapped"
+        mask_amp_fail = (df["classifier"] == 0) & ~mask_unmapped
+        mask_probe_fail = (df["classifier"] == 1) & (df["probe"] == 0)
+
+        df.loc[mask_unmapped, "reason"] = "unmapped"
+        df.loc[mask_amp_fail, "reason"] = "amplification fails"
+        # Distinguish probe failure reasons
+        if "indel_p" in df.columns:
+            mask_indel = mask_probe_fail & (df["indel_p"] > 0)
+            mask_mm = mask_probe_fail & (df["indel_p"] == 0) & (df["mm_p"].notna())
+            mask_no_map = mask_probe_fail & (df["mm_p"].isna())
+            df.loc[mask_indel, "reason"] = "probe indel"
+            df.loc[mask_mm, "reason"] = "probe mismatch"
+            df.loc[mask_no_map, "reason"] = "probe unmapped"
+        else:
+            df.loc[mask_probe_fail, "reason"] = "probe fails"
+    else:
+        mask_pass = df["classifier"] == 1
+        df.loc[mask_pass, "decision"] = 1
+
+        mask_unmapped = df["regressor"] == "unmapped"
+        mask_amp_fail = (df["classifier"] == 0) & ~mask_unmapped
+
+        df.loc[mask_unmapped, "reason"] = "unmapped"
+        df.loc[mask_amp_fail, "reason"] = "amplification fails"
+
     return df
 
 
@@ -335,6 +398,23 @@ def save_eval_excel(df, outdir, filename, probe_seq=None, ref_total=None):
 
     current_row = 1
 
+    # Write primer/probe sequences at top of summary
+    df_on = df[df["eval_type"] == "on"]
+    fseq = df_on["pseq_f"].values[0].replace("-", "")
+    rseq = df_on["pseq_r"].values[0].replace("-", "")
+    if probe_seq:
+        seq_headers = ["Forward", "Reverse", "Probe"]
+        seq_values = [fseq, rseq, probe_seq]
+    else:
+        seq_headers = ["Forward", "Reverse"]
+        seq_values = [fseq, rseq]
+    for col_idx, h in enumerate(seq_headers, start=1):
+        ws_sum.cell(row=current_row, column=col_idx, value=h).font = Font(bold=True)
+    current_row += 1
+    for col_idx, v in enumerate(seq_values, start=1):
+        ws_sum.cell(row=current_row, column=col_idx, value=v)
+    current_row += 2
+
     def write_table(title, table):
         nonlocal current_row
 
@@ -419,6 +499,7 @@ def run(args):
 
     has_probe = args.probe_mapping_on is not None
     probe_mapping_on = args.probe_mapping_on
+    probe_max_mm = args.probe_max_mismatches
     probe_mapping_off = {
         get_target_name(p): p for p in args.probe_mapping_off
     } if args.probe_mapping_off else {}
@@ -428,7 +509,8 @@ def run(args):
     ref_total = len(ref_seq_ids) if ref_seq_ids else None
 
     cols = [
-        "target", "eval_type", "classifier", "regressor",
+        "target", "eval_type", "decision", "reason",
+        "classifier", "regressor",
         "pname_f", "pname_r", "pseq_f", "pseq_r",
         "align_f", "align_r",
         "prod_len", "prod_Tm",
@@ -437,7 +519,7 @@ def run(args):
     ]
 
     if has_probe:
-        cols += ["probe", "mm_p"]
+        cols += ["probe", "mm_p", "indel_p"]
 
     for pid in args.names:
         dfs = []
@@ -453,9 +535,10 @@ def run(args):
             df_on["eval_type"] = "on"
             df_on["target"] = get_target_name(args.on)
             if has_probe:
-                df_on = annotate_probe(df_on, probe_mapping_on, pid)
+                df_on = annotate_probe(df_on, probe_mapping_on, pid, probe_max_mm)
             # Add unmapped sequences from reference
             df_on = add_unmapped_rows(df_on, ref_seq_ids)
+            df_on = add_decision_columns(df_on, has_probe)
             dfs.append(df_on[cols].sort_values(
                 "regressor", ascending=False,
                 key=lambda s: pd.to_numeric(s, errors="coerce"),
@@ -478,7 +561,8 @@ def run(args):
                     df_off["target"] = target_name
                     if has_probe:
                         off_probe_path = probe_mapping_off.get(target_name)
-                        df_off = annotate_probe(df_off, off_probe_path, pid)
+                        df_off = annotate_probe(df_off, off_probe_path, pid, probe_max_mm)
+                    df_off = add_decision_columns(df_off, has_probe)
                     dfs.append(df_off[cols].sort_values("regressor", ascending=False))
 
             except Exception as e:

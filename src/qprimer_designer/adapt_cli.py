@@ -10,7 +10,7 @@ import smtplib
 import subprocess
 import sys
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -228,9 +228,12 @@ _TRUE_FALSE_FLAGS = {
 }
 
 # Columns that are metadata only (not passed to gget)
-_METADATA_COLUMNS = {"Pathogen", "Pathogen_abb", "Gene Segment", "query_id",
-                      "expected_count", "latest_count", "diff",
-                      "Forward", "Reverse", "Probe"}
+_METADATA_COLUMNS = {"Pathogen", "Pathogen_abb", "Gene Segment", "Target name",
+                      "Primer name", "query_id", "expected_count", "latest_count",
+                      "diff", "Forward", "Reverse", "Probe"}
+
+# Max-date columns to strip when monitoring (monitor always fetches up to the latest)
+_MAX_DATE_COLUMNS = {"max_collection_date", "max_release_date"}
 
 
 def _extract_spreadsheet_id(url: str) -> str:
@@ -373,7 +376,11 @@ def _build_gget_command(row: dict, output_dir: str) -> list[str] | None:
 
 
 def _make_target_name(row: dict) -> str:
-    """Build target FASTA filename from Pathogen_abb and Gene Segment."""
+    """Get target name from the 'Target name' column, falling back to Pathogen_abb."""
+    target_name = str(row.get("Target name", "")).strip()
+    if target_name:
+        return target_name
+
     abb = str(row.get("Pathogen_abb", "")).strip()
     if not abb:
         abb = str(row.get("Pathogen", "unknown")).strip().replace(" ", "_")
@@ -528,10 +535,14 @@ def cmd_fetch(args):
             if fasta_files:
                 dest = out_dir / f"{target_name}.fa"
                 shutil.move(str(fasta_files[0]), str(dest))
+                # Remove duplicate sequences
+                n_deduped = _deduplicate_fasta(dest)
+                if n_deduped > 0:
+                    print(f"  Removed {n_deduped} duplicate sequence(s)")
                 # Count sequences
                 with open(dest) as f:
                     n_seqs = sum(1 for line in f if line.startswith(">"))
-                print(f"  → {dest} ({n_seqs} sequences)")
+                print(f"  → {dest} ({n_seqs} unique sequences)")
                 results.append({"name": target_name, "status": "success", "count": n_seqs, "path": dest})
             else:
                 print(f"  Warning: no FASTA output found in {gget_out}")
@@ -619,6 +630,51 @@ def _filter_fasta_by_accessions(
     return count
 
 
+def _deduplicate_fasta(fasta_path: Path) -> int:
+    """Remove duplicate sequences (same content, different accessions) in place.
+
+    Keeps the first accession encountered for each unique sequence.
+    Returns the number of duplicates removed.
+    """
+    seen_seqs: dict[str, str] = {}  # sequence -> first header
+    current_header = None
+    current_seq_parts: list[str] = []
+    entries: list[tuple[str, str]] = []  # (header_line, sequence)
+
+    with open(fasta_path) as f:
+        for line in f:
+            if line.startswith(">"):
+                if current_header is not None:
+                    seq = "".join(current_seq_parts).upper()
+                    entries.append((current_header, seq))
+                current_header = line
+                current_seq_parts = []
+            else:
+                current_seq_parts.append(line.strip())
+        if current_header is not None:
+            seq = "".join(current_seq_parts).upper()
+            entries.append((current_header, seq))
+
+    n_before = len(entries)
+    unique_entries: list[tuple[str, str]] = []
+    for header, seq in entries:
+        if seq not in seen_seqs:
+            seen_seqs[seq] = header
+            unique_entries.append((header, seq))
+
+    n_removed = n_before - len(unique_entries)
+    if n_removed > 0:
+        with open(fasta_path, "w") as f:
+            for header, seq in unique_entries:
+                f.write(header)
+                # Write sequence in 80-char lines
+                for i in range(0, len(seq), 80):
+                    f.write(seq[i:i+80] + "\n")
+
+    return n_removed
+
+
+
 def _monitor_fetch(
     data_rows: list[dict],
     work_dir: Path,
@@ -642,18 +698,48 @@ def _monitor_fetch(
 
     results = {}
 
+    _OVERLAP_DAYS = 7  # Fetch overlap to avoid missing late-indexed sequences
+
     for target_name, rows in target_groups.items():
         target_dir = data_dir / target_name
         target_dir.mkdir(parents=True, exist_ok=True)
 
         # Use the first row to build gget command (same TaxID for same pathogen)
-        row = rows[0]
+        # Strip max-date columns so monitor always fetches up to the latest
+        row = {k: v for k, v in rows[0].items() if k not in _MAX_DATE_COLUMNS}
         pathogen = str(row.get("Pathogen", "")).strip()
         print(f"\n{'='*50}")
         print(f"Fetching: {pathogen} ({target_name})")
 
         dated_fasta = target_dir / f"{target_name}_{date_str}.fa"
         dated_meta = target_dir / f"{target_name}_{date_str}_metadata.csv"
+
+        # Find previous fetch to narrow date range
+        prev_fastas = sorted(
+            [f for f in target_dir.glob(f"{target_name}_*.fa")
+             if f != dated_fasta and not f.name.endswith("_new.fa")],
+            reverse=True,
+        )
+
+        is_first = len(prev_fastas) == 0
+
+        # For subsequent fetches, override min_release_date and
+        # min_collection_date to (prev_fetch_date - overlap) so we only
+        # download recent sequences instead of the entire history.
+        if not is_first:
+            # Extract date from previous filename: {target}_{YYYYMMDD}.fa
+            prev_date_str = prev_fastas[0].stem.rsplit("_", 1)[-1]
+            try:
+                prev_date = datetime.strptime(prev_date_str, "%Y%m%d")
+                cutoff = (prev_date - timedelta(days=_OVERLAP_DAYS)).strftime("%Y-%m-%d")
+                for date_col in ("min_release_date", "min_collection_date"):
+                    orig = str(row.get(date_col, "")).strip()
+                    # Use whichever is later: spreadsheet value or cutoff
+                    if not orig or orig < cutoff:
+                        row[date_col] = cutoff
+                print(f"  Narrowing fetch window: min dates → {cutoff} (prev fetch: {prev_date_str})")
+            except ValueError:
+                pass  # Could not parse date from filename; use original dates
 
         if dry_run:
             cmd = _build_gget_command(row, str(target_dir / ".gget_tmp"))
@@ -697,27 +783,23 @@ def _monitor_fetch(
             shutil.move(str(meta_files[0]), str(dated_meta))
         shutil.rmtree(gget_tmp, ignore_errors=True)
 
-        # Count total sequences
+        # Remove duplicate sequences (same content, different accessions)
+        n_deduped = _deduplicate_fasta(dated_fasta)
+        if n_deduped > 0:
+            print(f"  Removed {n_deduped} duplicate sequence(s)")
+
+        # Count fetched sequences and diff against previous
         current_acc = _extract_accessions(dated_fasta)
         total_count = len(current_acc)
-        print(f"  Fetched {total_count} sequences → {dated_fasta.name}")
+        print(f"  Fetched {total_count} unique sequences → {dated_fasta.name}")
 
-        # Find previous fetch for accession diffing
-        prev_fastas = sorted(
-            [f for f in target_dir.glob(f"{target_name}_*.fa")
-             if f != dated_fasta and not f.name.endswith("_new.fa")],
-            reverse=True,
-        )
-
-        if prev_fastas:
+        if not is_first:
             prev_acc = _extract_accessions(prev_fastas[0])
             new_acc = current_acc - prev_acc
-            is_first = False
             print(f"  Previous: {prev_fastas[0].name} ({len(prev_acc)} sequences)")
             print(f"  New sequences: {len(new_acc)}")
         else:
             new_acc = current_acc
-            is_first = True
             print(f"  First fetch — all {total_count} sequences are new")
 
         # Write new-only FASTA
@@ -758,7 +840,8 @@ def _build_pset_fa(rows: list[dict], output_path: Path) -> list[str]:
             if not fwd or not rev:
                 continue
 
-            pair_id = f"query{qid}" if qid else f"pair_{len(pair_ids)+1}"
+            primer_name = str(row.get("Primer name", "")).strip()
+            pair_id = primer_name or (f"query{qid}" if qid else f"pair_{len(pair_ids)+1}")
 
             # Store reverse as reverse complement (convention used by generate)
             comp = str.maketrans("ACGTacgt", "TGCAtgca")

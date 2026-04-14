@@ -1,7 +1,17 @@
 """Parse probe SAM alignments into mapping table."""
 
 import argparse
+import re
+
 import pandas as pd
+
+
+def _count_indels(cigar):
+    """Count total indel bases from a CIGAR string.
+
+    I = insertion to reference, D = deletion from reference.
+    """
+    return sum(int(n) for n, op in re.findall(r'(\d+)([ID])', cigar))
 
 
 def register(subparsers):
@@ -19,8 +29,8 @@ def register(subparsers):
 def run(args):
     """Parse SAM file and create probe mapping CSV.
 
-    Note: Mismatch filtering is handled by bowtie2's --score-min parameter,
-    so we simply extract all reported alignments without additional filtering.
+    Extracts mismatches (substitutions only) and indels separately.
+    Mismatch/indel filtering is done post-alignment by downstream tools.
     """
     mappings = []
 
@@ -34,15 +44,19 @@ def run(args):
             flag = int(fields[1])
             target_id = fields[2]
             start_pos = int(fields[3]) - 1  # Convert to 0-based
+            cigar = fields[5]
             probe_seq = fields[9]
             orientation = '-' if (flag & 16) else '+'
 
-            # Extract edit distance from NM tag
-            mismatches = 0
+            # Extract edit distance (NM = mismatches + indels)
+            nm = 0
             for tag in fields[11:]:
                 if tag.startswith('NM:i:'):
-                    mismatches = int(tag[5:])
+                    nm = int(tag[5:])
                     break
+
+            indels = _count_indels(cigar)
+            mismatches = nm - indels  # substitutions only
 
             mappings.append({
                 'probe_name': probe_name,
@@ -51,6 +65,7 @@ def run(args):
                 'start_pos': start_pos,
                 'orientation': orientation,
                 'mismatches': mismatches,
+                'indels': indels,
             })
 
     df = pd.DataFrame(mappings)
