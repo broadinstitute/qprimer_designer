@@ -678,18 +678,20 @@ def _deduplicate_fasta(fasta_path: Path) -> int:
 def _monitor_fetch(
     data_rows: list[dict],
     work_dir: Path,
+    date_dir: Path,
     date_str: str,
     dry_run: bool = False,
 ) -> dict[str, dict]:
     """Fetch sequences for monitoring. Returns per-target results.
 
+    Fetched FASTA files are stored in date_dir/{target_name}.fa.
+    Previous fetches are found by scanning sibling date directories
+    under work_dir.
+
     Result dict per target:
         target_name, fasta_path, metadata_path, new_accessions,
         total_count, new_count, is_first_fetch
     """
-    data_dir = work_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-
     # Group rows by target name
     target_groups: dict[str, list[dict]] = {}
     for row in data_rows:
@@ -701,9 +703,6 @@ def _monitor_fetch(
     _OVERLAP_DAYS = 7  # Fetch overlap to avoid missing late-indexed sequences
 
     for target_name, rows in target_groups.items():
-        target_dir = data_dir / target_name
-        target_dir.mkdir(parents=True, exist_ok=True)
-
         # Use the first row to build gget command (same TaxID for same pathogen)
         # Strip max-date columns so monitor always fetches up to the latest
         row = {k: v for k, v in rows[0].items() if k not in _MAX_DATE_COLUMNS}
@@ -711,24 +710,26 @@ def _monitor_fetch(
         print(f"\n{'='*50}")
         print(f"Fetching: {pathogen} ({target_name})")
 
-        dated_fasta = target_dir / f"{target_name}_{date_str}.fa"
-        dated_meta = target_dir / f"{target_name}_{date_str}_metadata.csv"
+        dated_fasta = date_dir / f"{target_name}.fa"
+        dated_meta = date_dir / f"{target_name}_metadata.csv"
 
-        # Find previous fetch to narrow date range
-        prev_fastas = sorted(
-            [f for f in target_dir.glob(f"{target_name}_*.fa")
-             if f != dated_fasta and not f.name.endswith("_new.fa")],
+        # Find previous fetch by scanning sibling date directories for accession lists
+        prev_acc_files = sorted(
+            [d / f"{target_name}_accessions.txt"
+             for d in work_dir.iterdir()
+             if d.is_dir() and d.name != date_str
+             and (d / f"{target_name}_accessions.txt").exists()],
+            key=lambda p: p.parent.name,
             reverse=True,
         )
 
-        is_first = len(prev_fastas) == 0
+        is_first = len(prev_acc_files) == 0
 
         # For subsequent fetches, override min_release_date and
         # min_collection_date to (prev_fetch_date - overlap) so we only
         # download recent sequences instead of the entire history.
         if not is_first:
-            # Extract date from previous filename: {target}_{YYYYMMDD}.fa
-            prev_date_str = prev_fastas[0].stem.rsplit("_", 1)[-1]
+            prev_date_str = prev_acc_files[0].parent.name  # directory name is YYYYMMDD
             try:
                 prev_date = datetime.strptime(prev_date_str, "%Y%m%d")
                 cutoff = (prev_date - timedelta(days=_OVERLAP_DAYS)).strftime("%Y-%m-%d")
@@ -739,10 +740,10 @@ def _monitor_fetch(
                         row[date_col] = cutoff
                 print(f"  Narrowing fetch window: min dates → {cutoff} (prev fetch: {prev_date_str})")
             except ValueError:
-                pass  # Could not parse date from filename; use original dates
+                pass  # Could not parse date from directory name; use original dates
 
         if dry_run:
-            cmd = _build_gget_command(row, str(target_dir / ".gget_tmp"))
+            cmd = _build_gget_command(row, str(date_dir / ".gget_tmp"))
             print(f"  Command: {' '.join(cmd)}")
             print(f"  Output: {dated_fasta}")
             results[target_name] = {
@@ -752,7 +753,7 @@ def _monitor_fetch(
             continue
 
         # Run gget
-        gget_tmp = target_dir / ".gget_tmp"
+        gget_tmp = date_dir / ".gget_tmp"
         gget_tmp.mkdir(parents=True, exist_ok=True)
 
         cmd = _build_gget_command(row, str(gget_tmp))
@@ -794,9 +795,9 @@ def _monitor_fetch(
         print(f"  Fetched {total_count} unique sequences → {dated_fasta.name}")
 
         if not is_first:
-            prev_acc = _extract_accessions(prev_fastas[0])
+            prev_acc = set(prev_acc_files[0].read_text().strip().split("\n"))
             new_acc = current_acc - prev_acc
-            print(f"  Previous: {prev_fastas[0].name} ({len(prev_acc)} sequences)")
+            print(f"  Previous: {prev_acc_files[0].parent.name} ({len(prev_acc)} accessions)")
             print(f"  New sequences: {len(new_acc)}")
         else:
             new_acc = current_acc
@@ -805,14 +806,20 @@ def _monitor_fetch(
         # Write new-only FASTA
         new_fasta = None
         if new_acc:
-            new_fasta = target_dir / f"{target_name}_{date_str}_new.fa"
+            new_fasta = date_dir / f"{target_name}_new.fa"
             n_written = _filter_fasta_by_accessions(dated_fasta, new_acc, new_fasta)
             print(f"  New sequences FASTA: {new_fasta.name} ({n_written} seqs)")
+
+        # Save accession list for future comparison, then delete full FASTA
+        acc_file = date_dir / f"{target_name}_accessions.txt"
+        acc_file.write_text("\n".join(sorted(current_acc)) + "\n")
+        dated_fasta.unlink()
+        print(f"  Saved {len(current_acc)} accessions to {acc_file.name} (full FASTA removed)")
 
         results[target_name] = {
             "target_name": target_name,
             "status": "success",
-            "fasta_path": dated_fasta,
+            "fasta_path": new_fasta,
             "new_fasta_path": new_fasta,
             "metadata_path": dated_meta if dated_meta.exists() else None,
             "new_accessions": new_acc,
@@ -919,12 +926,11 @@ def _monitor_evaluate(
     target_fasta: Path,
     pset_fa: Path,
     params_file: Path,
-    work_dir: Path,
-    date_str: str,
+    date_dir: Path,
     cores: int,
 ) -> Path | None:
     """Run evaluate for a target with a pset. Returns output dir or None."""
-    eval_dir = work_dir / "evaluate" / date_str / target_name
+    eval_dir = date_dir / target_name
     if eval_dir.exists():
         shutil.rmtree(eval_dir)
     eval_dir.mkdir(parents=True)
@@ -1105,8 +1111,7 @@ def cmd_monitor(args):
         sys.exit(1)
 
     params = parse_params(params_file)
-    work_dir = Path(args.workdir)
-    work_dir.mkdir(parents=True, exist_ok=True)
+    base_dir = Path(args.workdir)
     date_str = datetime.now().strftime("%Y%m%d")
     cores = args.cores
 
@@ -1140,8 +1145,18 @@ def cmd_monitor(args):
         print("No rows to process.")
         return
 
+    # Resolve run ID: explicit > derived from spreadsheet name
+    runid = args.runid or spreadsheet_id[:8]
+    work_dir = base_dir / runid
+    work_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Run ID: {runid}")
+
+    # Create date directory for this run's outputs
+    date_dir = work_dir / date_str
+    date_dir.mkdir(parents=True, exist_ok=True)
+
     # Save spreadsheet snapshot
-    csv_path = work_dir / f"mastersheet_{date_str}.csv"
+    csv_path = date_dir / "mastersheet.csv"
     csv_path.write_text(csv_text, encoding="utf-8")
 
     # Group rows by target name
@@ -1157,7 +1172,7 @@ def cmd_monitor(args):
         print("Error: 'gget' not installed.", file=sys.stderr)
         sys.exit(1)
 
-    fetch_results = _monitor_fetch(data_rows, work_dir, date_str, args.dry_run)
+    fetch_results = _monitor_fetch(data_rows, work_dir, date_dir, date_str, args.dry_run)
 
     if args.dry_run:
         print("\nDry-run complete.")
@@ -1201,10 +1216,8 @@ def cmd_monitor(args):
         if not target_fasta:
             continue
 
-        # Build pset.fa from spreadsheet primer info
-        pset_dir = work_dir / "psets"
-        pset_dir.mkdir(parents=True, exist_ok=True)
-        pset_fa = pset_dir / f"{target_name}_pset.fa"
+        # Build pset.fa in date directory (flat)
+        pset_fa = date_dir / f"{target_name}_pset.fa"
 
         # Only rows with Forward/Reverse filled
         primer_rows = [
@@ -1225,18 +1238,23 @@ def cmd_monitor(args):
             target_fasta=target_fasta,
             pset_fa=pset_fa,
             params_file=params_file,
-            work_dir=work_dir,
-            date_str=date_str,
+            date_dir=date_dir,
             cores=cores,
         )
 
         if eval_dir:
-            # Collect Excel files and add summaries to email
+            # Move Excel files to date_dir with {target}_{primer} naming
             xlsx_files = sorted(eval_dir.rglob("*.xlsx"))
-            all_xlsx.extend(xlsx_files)
+            for xlsx in xlsx_files:
+                dest = date_dir / f"{target_name}_{xlsx.name}"
+                shutil.move(str(xlsx), str(dest))
+                all_xlsx.append(dest)
+
+            # Remove snakemake workdir (inputs are preserved flat in date_dir)
+            shutil.rmtree(eval_dir, ignore_errors=True)
 
             email_body_parts.append("Evaluation results:")
-            for xlsx in xlsx_files:
+            for xlsx in all_xlsx[-len(xlsx_files):]:
                 email_body_parts.append(f"\n  --- {xlsx.stem} ---")
                 summary_text = _read_excel_summary(xlsx)
                 email_body_parts.append(summary_text)
@@ -1386,6 +1404,7 @@ Examples:
                            help="Query IDs to monitor (default: all)")
     p_monitor.add_argument("--workdir", default="monitor",
                            help="Working directory for monitor data (default: monitor/)")
+    p_monitor.add_argument("--runid", help="Run ID to group results (default: derived from spreadsheet name)")
     p_monitor.add_argument("--email", help="Recipient email (overrides EMAIL_RECIPIENTS in params.txt)")
     p_monitor.add_argument("--cores", type=int, default=os.cpu_count() or 1,
                            help="Number of cores (default: all)")

@@ -455,11 +455,6 @@ rule prepare_features:
         "--fa '{input.fa}' "
         "--out '{output.feat}'"
 
-# In evaluate mode, prefer eval-specific probe rules over design-mode ones
-if EVALUATE:
-    ruleorder: align_probe_eval > align_probes
-    ruleorder: parse_probe_mapping_eval > parse_probe_mapping
-
 rule extract_probe_from_pset:
     """Extract probe entries (*_pro) from evaluate FASTA into separate file."""
     wildcard_constraints:
@@ -475,40 +470,6 @@ rule extract_probe_from_pset:
             SeqIO.write(probes, f, "fasta")
         print(f"Extracted {len(probes)} probe(s) to {output.probe_fa}")
 
-rule align_probe_eval:
-    """Align evaluate-mode probes to on/off targets."""
-    wildcard_constraints:
-        filename="[^./]+",
-        target=ALL_TARGETS_PATTERN
-    input:
-        fasta="evaluate/probes/{filename}.fa",
-        index="bt2_index/{target}.1.bt2"
-    output:
-        temp("alignments/{filename}.{target}.probe.sam")
-    threads:
-        min(2, MAX_CORES)
-    params:
-        reference=lambda wc: f"bt2_index/{wc.target}",
-        multiMap=lambda wc: count_seqs(wc.target) * 5 if wc.target == PRIMARY_TARGET else min(count_seqs(wc.target) * 5, 50000),
-        # Permissive alignment (6mm/20mer); mismatch filtering done post-alignment
-        mapOption="--end-to-end --mp 3,3 --rdg 6,4 --rfg 6,4 -L 8 -N 1 --score-min L,0,-1.0"
-    shell:
-        "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
-        "-p {threads} -k {params.multiMap} {params.mapOption} "
-        "--no-hd --no-unal > '{output}'"
-
-rule parse_probe_mapping_eval:
-    """Parse evaluate-mode probe SAM into mapping CSV."""
-    wildcard_constraints:
-        filename="[^./]+",
-        target=ALL_TARGETS_PATTERN
-    input:
-        sam="alignments/{filename}.{target}.probe.sam"
-    output:
-        "alignments/{filename}.{target}.probe.csv"
-    shell:
-        "qprimer parse-probe-mapping "
-        "--sam '{input.sam}' --out '{output}'"
 
 # Determine if probe evaluation is needed at DAG time:
 # - Direct input (--for/--rev/--pro): check PRO config
@@ -594,7 +555,7 @@ rule align:
         min(2, MAX_CORES)
     params:
         reference=lambda wc: f"bt2_index/{wc.target}",
-        multiMap=lambda wc: count_seqs(wc.target) * 5 if wc.virus == wc.target else min(count_seqs(wc.target) * 5, 50000),
+        multiMap=lambda wc: count_seqs(wc.target) * 4 if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else min(count_seqs(wc.target) * 4, 50000),
         mapOption="--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
     shell:
         "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
@@ -603,15 +564,16 @@ rule align:
 
 
 rule align_probes:
-    """Align probes to ON-targets (strict) or OFF-targets (less strict)."""
+    """Align probes to on/off targets (design and evaluate modes)."""
     wildcard_constraints:
-        virus=TARGETS_PATTERN,
+        virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
         fasta=lambda wc: (
-            f"primer_seqs/{wc.virus}_probe.fa"
-            if wc.virus == wc.target
-            else f"primer_seqs/{wc.virus}_filt_probes.fa"
+            f"evaluate/probes/{wc.virus}.fa" if EVALUATE
+            else (f"primer_seqs/{wc.virus}_probe.fa"
+                    if wc.virus == wc.target
+                    else f"primer_seqs/{wc.virus}_filt_probes.fa")
         ),
         index="bt2_index/{target}.1.bt2"
     output:
@@ -620,7 +582,7 @@ rule align_probes:
         min(2, MAX_CORES)
     params:
         reference=lambda wc: f"bt2_index/{wc.target}",
-        multiMap=lambda wc: count_seqs(wc.target) * 5 if wc.virus == wc.target else min(count_seqs(wc.target) * 5, 50000),
+        multiMap=lambda wc: count_seqs(wc.target) * 4 if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else min(count_seqs(wc.target) * 4, 50000),
         # Permissive alignment (6mm/20mer); mismatch filtering done post-alignment
         mapOption="--end-to-end --mp 3,3 --rdg 6,4 --rfg 6,4 -L 8 -N 1 --score-min L,0,-1.0"
     shell:
@@ -632,7 +594,7 @@ rule align_probes:
 rule parse_probe_mapping:
     """Parse probe SAM file into mapping table."""
     wildcard_constraints:
-        virus=TARGETS_PATTERN,
+        virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
         sam="alignments/{virus}.{target}.probe.sam"

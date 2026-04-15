@@ -129,9 +129,9 @@ Each primer set must have both a forward (`*_for`) and reverse (`*_rev`) entry. 
 
 #### Output
 
-Results will be in `evaluate/{pset_name}/` containing Excel reports with:
-- **Summary sheet**: Dimerization table (2x2 or 3x3 with probe), sensitivity (coverage as `covered / total`), and specificity metrics
-- **Detail sheet**: Per-target alignments with classifier/regressor scores, probe match status, and mismatch counts. Unmapped sequences are included with `classifier=0, regressor=unmapped`.
+Results will be in `evaluate/{run_id}/{pset_name}/` containing Excel reports with:
+- **Summary sheet**: Primer/probe sequences, dimerization table (2x2 or 3x3 with probe), sensitivity (coverage as `covered / total`), and specificity metrics
+- **Detail sheet**: Per-target alignments with classifier/regressor scores, decision/reason columns, probe match status, and mismatch counts. Unmapped sequences are included with `classifier=0, regressor=unmapped`.
 
 Each primer set gets its own Excel file (e.g., `primer1.xlsx`, `primer2.xlsx`).
 
@@ -160,6 +160,9 @@ Automatically fetch new sequences, evaluate primers, and send email alerts with 
 # Run monitor once
 adapt monitor --params params.txt --cores all
 
+# With explicit run ID (groups results from the same spreadsheet)
+adapt monitor --params params.txt --runid my_panel --cores all
+
 # Dry run
 adapt monitor --params params.txt --dry-run
 
@@ -173,7 +176,7 @@ adapt monitor --unschedule
 #### How it works
 
 1. **Fetch** — Downloads latest sequences from NCBI via the configured Google Sheets spreadsheet
-2. **Diff** — Compares accession IDs against previous fetch to identify new sequences
+2. **Diff** — Compares accession IDs against the most recent previous fetch to identify new sequences
 3. **Evaluate** — Runs the ML evaluation pipeline on new sequences using primer/probe sets from the spreadsheet (`Forward`, `Reverse`, `Probe` columns)
 4. **Email** — Sends an alert with:
    - Number of new sequences detected (with length, geographic region, release date)
@@ -194,16 +197,21 @@ The sender must be a Gmail account with [App Passwords](https://support.google.c
 
 #### Monitor data structure
 
+Results are organized by run ID and date. The `--runid` flag (default: derived from spreadsheet ID) groups results from the same monitoring configuration. Each run date gets a flat directory with all inputs and outputs:
+
 ```
 monitor/
-├── data/{target}/          # Fetched FASTA files by date
-│   ├── {target}_YYYYMMDD.fa
-│   ├── {target}_YYYYMMDD_metadata.csv
-│   └── {target}_YYYYMMDD_new.fa
-├── evaluate/YYYYMMDD/{target}/  # Evaluation runs
-├── psets/                  # Generated primer set FASTAs
-└── mastersheet_YYYYMMDD.csv    # Spreadsheet snapshot
+└── {runid}/
+    └── YYYYMMDD/
+        ├── mastersheet.csv                # Spreadsheet snapshot
+        ├── {target}_pset.fa               # Primer set FASTA
+        ├── {target}_new.fa                # New sequences (evaluate input)
+        ├── {target}_accessions.txt        # Accession list (for next diff)
+        ├── {target}_metadata.csv          # Sequence metadata
+        └── {target}_{primer}.xlsx         # Evaluation reports
 ```
+
+The full fetched FASTA is removed after extracting the new-only subset and saving the accession list, to conserve disk space. Previous accession lists are used to diff against future fetches.
 
 ## Web GUI
 
