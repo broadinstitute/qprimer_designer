@@ -25,4 +25,4 @@ dependencies:
   - pip
   - pip:
     - streamlit>=1.30
-    - gget
+    - gget>=0.30.2
