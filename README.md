@@ -77,13 +77,13 @@ Key sections in `params.txt`:
 
 ```bash
 # Singleplex
-adapt design --params params.txt --cores all
+adapt design --params params.txt
 
 # With probe design
-adapt design --params params.txt --probe --cores all
+adapt design --params params.txt --probe
 
 # Multiplex
-adapt design --params params.txt --multiplex --probe --cores all
+adapt design --params params.txt --multiplex --probe
 
 # Dry run (preview without executing)
 adapt design --params params.txt --dry-run
@@ -99,13 +99,13 @@ Evaluate existing primers against target sequences using the ML model.
 
 ```bash
 # Option 1: Evaluate direct sequences
-adapt evaluate --for ATCGATCGATCG --rev GCTAGCTAGCTA --cores all
+adapt evaluate --for ATCGATCGATCG --rev GCTAGCTAGCTA
 
 # Option 2: With probe
-adapt evaluate --for ATCGATCGATCG --rev GCTAGCTAGCTA --pro AACCGGTTAACCGG --cores all
+adapt evaluate --for ATCGATCGATCG --rev GCTAGCTAGCTA --pro AACCGGTTAACCGG
 
 # Option 3: Evaluate from FASTA file (multiple primer sets)
-adapt evaluate --pset my_primers.fa --cores all
+adapt evaluate --pset my_primers.fa
 ```
 
 #### Primer FASTA file format
@@ -158,10 +158,10 @@ Automatically fetch new sequences, evaluate primers, and send email alerts with 
 
 ```bash
 # Run monitor once
-adapt monitor --params params.txt --cores all
+adapt monitor --params params.txt
 
 # With explicit run ID (groups results from the same spreadsheet)
-adapt monitor --params params.txt --runid my_panel --cores all
+adapt monitor --params params.txt --runid my_panel
 
 # Dry run
 adapt monitor --params params.txt --dry-run
@@ -271,7 +271,7 @@ Low-level subcommands used by the Snakemake workflow:
 If GPU is available, add the resource flag:
 
 ```bash
-adapt design --params params.txt --cores all  # auto-detects GPU
+adapt design --params params.txt  # auto-detects GPU
 ```
 
 Or with raw Snakemake:
