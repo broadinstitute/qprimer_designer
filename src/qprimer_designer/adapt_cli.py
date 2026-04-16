@@ -1167,12 +1167,40 @@ def cmd_monitor(args):
 
     print(f"Monitoring {len(target_groups)} target(s): {', '.join(target_groups.keys())}")
 
-    # Step 1: Fetch
-    if not args.dry_run and not shutil.which("gget"):
-        print("Error: 'gget' not installed.", file=sys.stderr)
-        sys.exit(1)
+    # Step 1: Fetch (unless --skip-fetch)
+    if args.skip_fetch:
+        print("Skipping fetch (--skip-fetch). Using existing files in date directory.")
+        fetch_results = {}
+        for target_name in target_groups:
+            new_fa = date_dir / f"{target_name}_new.fa"
+            meta = date_dir / f"{target_name}_metadata.csv"
+            if new_fa.exists():
+                new_acc = set()
+                with open(new_fa) as f:
+                    new_acc = {l[1:].strip().split()[0] for l in f if l.startswith(">")}
+                fetch_results[target_name] = {
+                    "target_name": target_name,
+                    "status": "success",
+                    "fasta_path": new_fa,
+                    "new_fasta_path": new_fa,
+                    "metadata_path": meta if meta.exists() else None,
+                    "new_accessions": new_acc,
+                    "total_count": len(new_acc),
+                    "new_count": len(new_acc),
+                }
+                print(f"  {target_name}: found {new_fa.name} ({len(new_acc)} seqs)")
+            else:
+                fetch_results[target_name] = {
+                    "target_name": target_name,
+                    "status": "no_existing_file",
+                }
+                print(f"  {target_name}: no existing {new_fa.name} — skipped")
+    else:
+        if not args.dry_run and not shutil.which("gget"):
+            print("Error: 'gget' not installed.", file=sys.stderr)
+            sys.exit(1)
 
-    fetch_results = _monitor_fetch(data_rows, work_dir, date_dir, date_str, args.dry_run)
+        fetch_results = _monitor_fetch(data_rows, work_dir, date_dir, date_str, args.dry_run)
 
     if args.dry_run:
         print("\nDry-run complete.")
@@ -1408,6 +1436,8 @@ Examples:
     p_monitor.add_argument("--email", help="Recipient email (overrides EMAIL_RECIPIENTS in params.txt)")
     p_monitor.add_argument("--cores", type=int, default=os.cpu_count() or 1,
                            help="Number of cores (default: all)")
+    p_monitor.add_argument("--skip-fetch", action="store_true",
+                           help="Skip fetch step and use existing files in date directory")
     p_monitor.add_argument("--dry-run", action="store_true", help="Show what would be done")
     p_monitor.add_argument("--schedule", action="store_true",
                            help="Install monthly cron job")
