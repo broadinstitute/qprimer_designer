@@ -928,12 +928,13 @@ def _monitor_evaluate(
     params_file: Path,
     date_dir: Path,
     cores: int,
+    reuse: bool = False,
 ) -> Path | None:
     """Run evaluate for a target with a pset. Returns output dir or None."""
     eval_dir = date_dir / target_name
-    if eval_dir.exists():
+    if not reuse and eval_dir.exists():
         shutil.rmtree(eval_dir)
-    eval_dir.mkdir(parents=True)
+    eval_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy inputs into eval dir
     shutil.copy2(params_file, eval_dir / "params.txt")
@@ -941,7 +942,7 @@ def _monitor_evaluate(
 
     # Create target_seqs/original with the target FASTA
     target_seq_dir = eval_dir / "target_seqs" / "original"
-    target_seq_dir.mkdir(parents=True)
+    target_seq_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(target_fasta, target_seq_dir / f"{target_name}.fa")
 
     # Write params.txt with TARGETS
@@ -1125,86 +1126,96 @@ def cmd_monitor(args):
     if args.email:
         email_recipients = [args.email]
 
-    # Download and parse spreadsheet
-    spreadsheet_url = args.url or str(params.get("SPREADSHEET_URL", "")).strip()
-    if not spreadsheet_url:
-        print("Error: no spreadsheet URL.", file=sys.stderr)
-        sys.exit(1)
-
-    spreadsheet_id = _extract_spreadsheet_id(spreadsheet_url)
-    print(f"Downloading spreadsheet...")
-    csv_text = _download_spreadsheet_csv(spreadsheet_id)
-    _, data_rows = _load_spreadsheet(csv_text)
-
-    # Filter by query IDs if specified
-    if args.query_ids:
-        query_ids = {q.strip() for q in args.query_ids}
-        data_rows = [r for r in data_rows if str(r.get("query_id", "")).strip() in query_ids]
-
-    if not data_rows:
-        print("No rows to process.")
-        return
-
-    # Resolve run ID: explicit > derived from spreadsheet name
-    runid = args.runid or spreadsheet_id[:8]
-    work_dir = base_dir / runid
-    work_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Run ID: {runid}")
-
-    # Create date directory for this run's outputs
-    date_dir = work_dir / date_str
-    date_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save spreadsheet snapshot
-    csv_path = date_dir / "mastersheet.csv"
-    csv_path.write_text(csv_text, encoding="utf-8")
-
-    # Group rows by target name
-    target_groups: dict[str, list[dict]] = {}
-    for row in data_rows:
-        name = _make_target_name(row)
-        target_groups.setdefault(name, []).append(row)
-
-    print(f"Monitoring {len(target_groups)} target(s): {', '.join(target_groups.keys())}")
-
-    # Step 1: Fetch (unless --skip-fetch)
     if args.skip_fetch:
-        print("Skipping fetch (--skip-fetch). Using existing files in date directory.")
+        # --skip-fetch: reuse existing date directory, skip spreadsheet/fetch entirely
+        runid = args.runid
+        if not runid:
+            print("Error: --runid is required with --skip-fetch.", file=sys.stderr)
+            sys.exit(1)
+        work_dir = base_dir / runid
+        date_dir = work_dir / date_str
+        if not date_dir.exists():
+            print(f"Error: date directory '{date_dir}' not found.", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Run ID: {runid}")
+        print(f"Skipping fetch (--skip-fetch). Using existing files in {date_dir}")
+
+        # Discover targets from existing _new.fa files
         fetch_results = {}
-        for target_name in target_groups:
-            new_fa = date_dir / f"{target_name}_new.fa"
+        for new_fa in sorted(date_dir.glob("*_new.fa")):
+            target_name = new_fa.name.removesuffix("_new.fa")
             meta = date_dir / f"{target_name}_metadata.csv"
-            if new_fa.exists():
-                new_acc = set()
-                with open(new_fa) as f:
-                    new_acc = {l[1:].strip().split()[0] for l in f if l.startswith(">")}
-                fetch_results[target_name] = {
-                    "target_name": target_name,
-                    "status": "success",
-                    "fasta_path": new_fa,
-                    "new_fasta_path": new_fa,
-                    "metadata_path": meta if meta.exists() else None,
-                    "new_accessions": new_acc,
-                    "total_count": len(new_acc),
-                    "new_count": len(new_acc),
-                }
-                print(f"  {target_name}: found {new_fa.name} ({len(new_acc)} seqs)")
-            else:
-                fetch_results[target_name] = {
-                    "target_name": target_name,
-                    "status": "no_existing_file",
-                }
-                print(f"  {target_name}: no existing {new_fa.name} — skipped")
+            with open(new_fa) as f:
+                new_acc = {l[1:].strip().split()[0] for l in f if l.startswith(">")}
+            fetch_results[target_name] = {
+                "target_name": target_name,
+                "status": "success",
+                "new_fasta_path": new_fa,
+                "metadata_path": meta if meta.exists() else None,
+                "new_accessions": new_acc,
+                "total_count": len(new_acc),
+                "new_count": len(new_acc),
+            }
+            print(f"  {target_name}: {new_fa.name} ({len(new_acc)} seqs)")
+
+        if not fetch_results:
+            print("No *_new.fa files found in date directory.")
+            return
+
+        target_groups = {t: [] for t in fetch_results}
     else:
+        # Normal flow: download spreadsheet and fetch
+        spreadsheet_url = args.url or str(params.get("SPREADSHEET_URL", "")).strip()
+        if not spreadsheet_url:
+            print("Error: no spreadsheet URL.", file=sys.stderr)
+            sys.exit(1)
+
+        spreadsheet_id = _extract_spreadsheet_id(spreadsheet_url)
+        print(f"Downloading spreadsheet...")
+        csv_text = _download_spreadsheet_csv(spreadsheet_id)
+        _, data_rows = _load_spreadsheet(csv_text)
+
+        # Filter by query IDs if specified
+        if args.query_ids:
+            query_ids = {q.strip() for q in args.query_ids}
+            data_rows = [r for r in data_rows if str(r.get("query_id", "")).strip() in query_ids]
+
+        if not data_rows:
+            print("No rows to process.")
+            return
+
+        # Resolve run ID: explicit > derived from spreadsheet name
+        runid = args.runid or spreadsheet_id[:8]
+        work_dir = base_dir / runid
+        work_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Run ID: {runid}")
+
+        # Create date directory for this run's outputs
+        date_dir = work_dir / date_str
+        date_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save spreadsheet snapshot
+        csv_path = date_dir / "mastersheet.csv"
+        csv_path.write_text(csv_text, encoding="utf-8")
+
+        # Group rows by target name
+        target_groups: dict[str, list[dict]] = {}
+        for row in data_rows:
+            name = _make_target_name(row)
+            target_groups.setdefault(name, []).append(row)
+
+        print(f"Monitoring {len(target_groups)} target(s): {', '.join(target_groups.keys())}")
+
         if not args.dry_run and not shutil.which("gget"):
             print("Error: 'gget' not installed.", file=sys.stderr)
             sys.exit(1)
 
         fetch_results = _monitor_fetch(data_rows, work_dir, date_dir, date_str, args.dry_run)
 
-    if args.dry_run:
-        print("\nDry-run complete.")
-        return
+        if args.dry_run:
+            print("\nDry-run complete.")
+            return
 
     # Step 2: Build pset.fa and evaluate for each target with new sequences
     email_body_parts = []
@@ -1239,26 +1250,27 @@ def cmd_monitor(args):
             continue
 
         # Determine target FASTA for evaluate
-        # First fetch → all sequences; otherwise → new only
-        target_fasta = result.get("new_fasta_path") or result.get("fasta_path")
+        target_fasta = result.get("new_fasta_path")
         if not target_fasta:
             continue
 
-        # Build pset.fa in date directory (flat)
+        # Use existing pset.fa or build from spreadsheet rows
         pset_fa = date_dir / f"{target_name}_pset.fa"
 
-        # Only rows with Forward/Reverse filled
-        primer_rows = [
-            r for r in rows
-            if not _is_empty(r.get("Forward")) and not _is_empty(r.get("Reverse"))
-        ]
+        if not pset_fa.exists():
+            primer_rows = [
+                r for r in rows
+                if not _is_empty(r.get("Forward")) and not _is_empty(r.get("Reverse"))
+            ]
 
-        if not primer_rows:
-            email_body_parts.append("No primer sequences in spreadsheet — skipping evaluate.\n")
-            continue
+            if not primer_rows:
+                email_body_parts.append("No primer sequences — skipping evaluate.\n")
+                continue
 
-        pair_ids = _build_pset_fa(primer_rows, pset_fa)
-        print(f"\n  Built pset.fa with {len(pair_ids)} primer set(s): {', '.join(pair_ids)}")
+            pair_ids = _build_pset_fa(primer_rows, pset_fa)
+            print(f"\n  Built pset.fa with {len(pair_ids)} primer set(s): {', '.join(pair_ids)}")
+        else:
+            print(f"\n  Using existing {pset_fa.name}")
 
         # Run evaluate
         eval_dir = _monitor_evaluate(
@@ -1268,6 +1280,7 @@ def cmd_monitor(args):
             params_file=params_file,
             date_dir=date_dir,
             cores=cores,
+            reuse=args.skip_fetch,
         )
 
         if eval_dir:
