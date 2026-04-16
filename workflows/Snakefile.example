@@ -556,7 +556,7 @@ rule align:
     params:
         reference=lambda wc: f"bt2_index/{wc.target}",
         multiMap=lambda wc: count_seqs(wc.target) * 4 if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else min(count_seqs(wc.target) * 4, 50000),
-        mapOption="--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
+        mapOption="--mp 2,2 --np 2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
     shell:
         "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "

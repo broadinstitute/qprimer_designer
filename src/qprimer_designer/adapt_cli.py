@@ -1291,8 +1291,8 @@ def cmd_monitor(args):
                 shutil.move(str(xlsx), str(dest))
                 all_xlsx.append(dest)
 
-            # Remove snakemake workdir (inputs are preserved flat in date_dir)
-            shutil.rmtree(eval_dir, ignore_errors=True)
+            # TODO: re-enable cleanup after debugging
+            # shutil.rmtree(eval_dir, ignore_errors=True)
 
             email_body_parts.append("Evaluation results:")
             for xlsx in all_xlsx[-len(xlsx_files):]:
