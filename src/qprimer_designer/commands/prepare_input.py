@@ -115,22 +115,21 @@ def run(args):
 
     drop_cols = ['orientation', 'forrev']
 
-    skip = args.skip_length_filter
-
-    if skip:
-        fors = maptbl[maptbl['forrev'] == 'f'].drop(columns=drop_cols)
-        revs = maptbl[maptbl['forrev'] == 'r'].drop(columns=drop_cols)
-        minl, maxl = 0, float('inf')
-        lfunc = max
-    elif args.reftype == 'on':
+    if args.reftype == 'on':
         fors = maptbl[(maptbl['orientation'] == 0) & (maptbl['forrev'] == 'f')].drop(columns=drop_cols)
         revs = maptbl[(maptbl['orientation'] == 16) & (maptbl['forrev'] == 'r')].drop(columns=drop_cols)
-        minl, maxl = min_amp_len, max_amp_len
+        if args.skip_length_filter:
+            minl, maxl = 0, float('inf')
+        else:
+            minl, maxl = min_amp_len, max_amp_len
         lfunc = max
     else:
         fors = maptbl[maptbl['orientation'] == 0].drop(columns=drop_cols)
         revs = maptbl[maptbl['orientation'] == 16].drop(columns=drop_cols)
-        minl, maxl = min_off_len, max_off_len
+        if args.skip_length_filter:
+            minl, maxl = 0, float('inf')
+        else:
+            minl, maxl = min_off_len, max_off_len
         lfunc = min
 
     revs['pseq'] = revs['pseq'].apply(reverse_complement_dna)
