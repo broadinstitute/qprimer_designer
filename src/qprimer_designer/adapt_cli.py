@@ -1304,9 +1304,6 @@ def cmd_monitor(args):
 
     # Step 3: Send email
     email_body = "\n".join(email_body_parts)
-    print(f"\n{'='*50}")
-    print("Email report:")
-    print(email_body)
 
     if email_sender and email_password and email_recipients:
         subject = f"[ADAPT Monitor] {date_str} — {len(target_groups)} target(s)"
