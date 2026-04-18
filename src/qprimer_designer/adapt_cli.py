@@ -847,7 +847,7 @@ def _build_pset_fa(rows: list[dict], output_path: Path) -> list[str]:
             if not fwd or not rev:
                 continue
 
-            primer_name = str(row.get("Primer name", "")).strip()
+            primer_name = str(row.get("Primer name", "")).replace(" ", "").strip()
             pair_id = primer_name or (f"query{qid}" if qid else f"pair_{len(pair_ids)+1}")
 
             f.write(f">{pair_id}_for\n{fwd}\n")
