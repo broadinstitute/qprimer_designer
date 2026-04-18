@@ -203,7 +203,7 @@ if EVALUATE:
 if EVALUATE:
     rule all:
         input:
-            f"{EVAL_DIR}/{PSET_NAME}"
+            f"outputs/{PSET_NAME}.{PRIMARY_TARGET}.eval.rescue_done"
 
 elif MULTIPLEX:
     MULTIPLEX_STEM = "_".join(sorted(PANEL))
@@ -555,12 +555,12 @@ rule align:
         min(2, MAX_CORES)
     params:
         reference=lambda wc: f"bt2_index/{wc.target}",
-        multiMap=lambda wc: count_seqs(wc.target) * 4 if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else min(count_seqs(wc.target) * 4, 50000),
+        multiMap=lambda wc: min(count_seqs(wc.target) * 2, 50000),
         mapOption="--mp 2,2 --np 2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
     shell:
         "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
-        "--no-hd --no-unal > '{output}'"
+        "--no-hd --no-unal -S '{output}'"
 
 
 rule align_probes:
@@ -582,13 +582,12 @@ rule align_probes:
         min(2, MAX_CORES)
     params:
         reference=lambda wc: f"bt2_index/{wc.target}",
-        multiMap=lambda wc: count_seqs(wc.target) * 4 if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else min(count_seqs(wc.target) * 4, 50000),
-        # Permissive alignment (6mm/20mer); mismatch filtering done post-alignment
-        mapOption="--end-to-end --mp 3,3 --rdg 6,4 --rfg 6,4 -L 8 -N 1 --score-min L,0,-1.0"
+        multiMap=lambda wc: min(count_seqs(wc.target) * 2, 50000),
+        mapOption="--mp 3,3 --np 2 --rdg 6,4 --rfg 6,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
     shell:
         "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
-        "--no-hd --no-unal > '{output}'"
+        "--no-hd --no-unal -S '{output}'"
 
 
 rule parse_probe_mapping:
@@ -694,17 +693,16 @@ rule prepare_input:
     output:
         "inputs/{virus}.{target}.input"
     params:
-        ref_type=lambda wc: "on" if (wc.virus == wc.target or EVALUATE) else "off",
+        ref_type=lambda wc: "on" if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else "off",
         prev_arg=lambda wc: (
             f"--prev 'outputs/{wc.virus}.{wc.virus}.eval'"
             if wc.virus != wc.target and not EVALUATE else ""
-        ),
-        skip_len=lambda wc: "--skip-length-filter" if EVALUATE else ""
+        )
     shell:
         "qprimer prepare-input "
         "--in '{input.mapped}' {params.prev_arg} --out '{output}' "
         "--ref '{input.ref}' --reftype {params.ref_type} "
-        "--features '{input.features}' --params '{PARAMS}' {params.skip_len}"
+        "--features '{input.features}' --params '{PARAMS}'"
 
 
 rule evaluate:
@@ -726,6 +724,44 @@ rule evaluate:
         "qprimer evaluate "
         "--in '{input.inp}' --out '{output}' "
         "--ref '{input.ref}' --reftype {params.ref_type} "
+        "--threads {threads}"
+
+
+rule rescue_evaluate:
+    wildcard_constraints:
+        virus="[^./]+",
+        target=ALL_TARGETS_PATTERN
+    input:
+        eval="outputs/{virus}.{target}.eval",
+        report_dir=lambda wc: (
+            f"{EVAL_DIR}/{wc.virus}" if EVALUATE
+            else []
+        ),
+        fasta=lambda wc: (
+            f"evaluate/{wc.virus}.fa" if EVALUATE
+            else f"primer_seqs/{wc.virus}_init.fa"
+        ),
+        ref="target_seqs/original/{target}.fa",
+        features=lambda wc: (
+            f"evaluate/{wc.virus}.feat" if EVALUATE
+            else f"primer_seqs/{wc.virus}_init.feat"
+        )
+    output:
+        touch("outputs/{virus}.{target}.eval.rescue_done")
+    params:
+        ref_type=lambda wc: "on" if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else "off",
+        report_dir=lambda wc: (
+            f"{EVAL_DIR}/{wc.virus}" if EVALUATE
+            else ""
+        )
+    threads:
+        min(4, MAX_CORES)
+    shell:
+        "qprimer rescue-evaluate "
+        "--eval '{input.eval}' --report-dir '{params.report_dir}' "
+        "--fasta '{input.fasta}' "
+        "--ref '{input.ref}' --features '{input.features}' "
+        "--params '{PARAMS}' --reftype {params.ref_type} "
         "--threads {threads}"
 
 

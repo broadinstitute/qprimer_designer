@@ -850,12 +850,8 @@ def _build_pset_fa(rows: list[dict], output_path: Path) -> list[str]:
             primer_name = str(row.get("Primer name", "")).strip()
             pair_id = primer_name or (f"query{qid}" if qid else f"pair_{len(pair_ids)+1}")
 
-            # Store reverse as reverse complement (convention used by generate)
-            comp = str.maketrans("ACGTacgt", "TGCAtgca")
-            rev_rc = rev.translate(comp)[::-1]
-
             f.write(f">{pair_id}_for\n{fwd}\n")
-            f.write(f">{pair_id}_rev\n{rev_rc}\n")
+            f.write(f">{pair_id}_rev\n{rev}\n")
             if pro:
                 f.write(f">{pair_id}_pro\n{pro}\n")
 
@@ -1404,12 +1400,18 @@ Examples:
     p_eval.add_argument("--cores", type=int, default=os.cpu_count() or 1, help="Number of cores (default: all)")
     p_eval.add_argument("--dry-run", action="store_true", help="Show what would be done without executing")
 
-    # Primer input: either --for/--rev or --pset
-    eval_input = p_eval.add_mutually_exclusive_group(required=True)
-    eval_input.add_argument("--pset", help="FASTA file with primer set (*_for and *_rev entries)")
-    eval_input.add_argument("--for", dest="forward", help="Forward primer sequence")
-    p_eval.add_argument("--rev", dest="reverse", help="Reverse primer sequence")
-    p_eval.add_argument("--pro", dest="probe", help="Probe sequence (optional)")
+    # Primer input: either --pset or --for/--rev/--pro
+    eval_pset = p_eval.add_argument_group(
+        "option 1: primer set file",
+    )
+    eval_pset.add_argument("--pset", help="FASTA file with primer set (*_for and *_rev entries)")
+
+    eval_seq = p_eval.add_argument_group(
+        "option 2: individual primer sequences",
+    )
+    eval_seq.add_argument("--for", dest="forward", help="Forward primer sequence")
+    eval_seq.add_argument("--rev", dest="reverse", help="Reverse primer sequence")
+    eval_seq.add_argument("--pro", dest="probe", help="Probe sequence (optional)")
 
     p_eval.set_defaults(func=cmd_evaluate)
 
@@ -1461,9 +1463,16 @@ Examples:
         parser.print_help()
         sys.exit(1)
 
-    # Validate --for requires --rev
-    if args.command == "evaluate" and args.forward and not args.reverse:
-        parser.error("--for requires --rev")
+    # Validate evaluate primer input: --pset or --for/--rev (not both, not neither)
+    if args.command == "evaluate":
+        has_pset = args.pset is not None
+        has_seq = args.forward is not None
+        if has_pset and has_seq:
+            p_eval.error("use either --pset or --for/--rev, not both")
+        if not has_pset and not has_seq:
+            p_eval.error("provide either --pset or --for/--rev")
+        if has_seq and not args.reverse:
+            p_eval.error("--for requires --rev")
 
     args.func(args)
 
