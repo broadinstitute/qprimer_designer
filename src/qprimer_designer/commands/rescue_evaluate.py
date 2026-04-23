@@ -11,6 +11,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from Bio import SeqIO
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Font
+from openpyxl.utils import get_column_letter
 from sklearn.preprocessing import MultiLabelBinarizer
 
 
@@ -44,6 +47,8 @@ def _find_failed_targets(report_dir):
     failed_ids = set()
 
     for xlsx in report_dir.glob("*.xlsx"):
+        if xlsx.name.startswith("~$"):
+            continue
         df = pd.read_excel(xlsx, sheet_name="detail")
         failed = df[df["decision"] == 0]
         failed_ids.update(failed["seq_id"].tolist())
@@ -232,6 +237,29 @@ def _update_summary_sensitivity(summary_df, detail_df):
             summary_df.iloc[i, 5] = round(regressors.max(), 3)
 
 
+def _apply_detail_formatting(xlsx_path):
+    """Apply Courier New font, column width 40, and wrap text to align columns."""
+    wb = load_workbook(xlsx_path)
+    ws = wb["detail"]
+    courier = Font(name="Courier New")
+    wrap = Alignment(wrap_text=True)
+
+    align_cols = [
+        idx for idx, cell in enumerate(ws[1], start=1)
+        if "align" in str(cell.value)
+    ]
+    for col_idx in align_cols:
+        col_letter = get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = 40
+        for row in ws.iter_rows(min_row=2):
+            cell = row[col_idx - 1]
+            if cell.value:
+                cell.font = courier
+                cell.alignment = wrap
+
+    wb.save(xlsx_path)
+
+
 def _merge_final_xlsx(original_dir, rescue_dir):
     """Merge rescue results into original xlsx, saving as _final.xlsx.
 
@@ -278,6 +306,8 @@ def _merge_final_xlsx(original_dir, rescue_dir):
             orig_summary.to_excel(writer, sheet_name="summary",
                                   index=False, header=False)
             orig_detail.to_excel(writer, sheet_name="detail", index=False)
+
+        _apply_detail_formatting(final_path)
 
         updated_count += n_replaced
         print(f"  {orig_xlsx.name}: {n_replaced} row(s) rescued")
