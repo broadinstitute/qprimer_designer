@@ -18,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FASTA_DIR = PROJECT_ROOT / "target_seqs" / "original"
 FINAL_DIR = PROJECT_ROOT / "final"
 EVALUATE_DIR = PROJECT_ROOT / "evaluate"
+SCHEMATIC_PATH = PROJECT_ROOT / "schematic.png"
 
 # Ensure the upload directory exists
 FASTA_DIR.mkdir(parents=True, exist_ok=True)
@@ -36,6 +37,18 @@ st.set_page_config(
     page_title="qPrimer Designer",
     layout="wide",
 )
+
+# ---------------------------------------------------------------------------
+# Navigation helpers
+# ---------------------------------------------------------------------------
+
+def _navigate(page: str):
+    """Set the current page in session state."""
+    st.session_state.page = page
+
+
+def _current_page() -> str:
+    return st.session_state.get("page", "home")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -126,33 +139,275 @@ def _render_sidebar():
 
         st.divider()
 
-        mode = st.session_state.get("mode", "Singleplex")
-        st.markdown(f"**Mode:** {mode}")
+        page = _current_page()
 
-        probe = st.session_state.get("probe_enabled", False)
-        st.markdown(f"**Probe mode:** {'On' if probe else 'Off'}")
+        if page == "home":
+            st.markdown("**Home**")
+        else:
+            if st.button("< Back to Home", use_container_width=True):
+                _navigate("home")
+                st.rerun()
 
-        fastas = _available_fasta()
-        st.markdown(f"**FASTA files:** {len(fastas)}")
+            st.divider()
 
-        if mode == "Singleplex":
-            targets = st.session_state.get("targets", [])
-            st.markdown(f"**Targets:** {', '.join(targets) if targets else 'none'}")
-        elif mode == "Multiplex":
-            panel = st.session_state.get("panel", [])
-            st.markdown(f"**Panel:** {', '.join(panel) if panel else 'none'}")
+            mode = st.session_state.get("mode", "Singleplex")
+            st.markdown(f"**Mode:** {mode}")
 
-        st.divider()
+            probe = st.session_state.get("probe_enabled", False)
+            st.markdown(f"**Probe mode:** {'On' if probe else 'Off'}")
 
-        # Pipeline status indicator
-        if st.session_state.get("pipeline_running"):
-            st.markdown(":orange[Pipeline running...]")
-        elif st.session_state.get("pipeline_return_code") is not None:
-            rc = st.session_state.pipeline_return_code
-            if rc == 0:
-                st.markdown(":green[Pipeline finished successfully]")
-            else:
-                st.markdown(f":red[Pipeline failed (exit code {rc})]")
+            fastas = _available_fasta()
+            st.markdown(f"**FASTA files:** {len(fastas)}")
+
+            if mode == "Singleplex":
+                targets = st.session_state.get("targets", [])
+                st.markdown(f"**Targets:** {', '.join(targets) if targets else 'none'}")
+            elif mode == "Multiplex":
+                panel = st.session_state.get("panel", [])
+                st.markdown(f"**Panel:** {', '.join(panel) if panel else 'none'}")
+
+            st.divider()
+
+            # Pipeline status indicator
+            if st.session_state.get("pipeline_running"):
+                st.markdown(":orange[Pipeline running...]")
+            elif st.session_state.get("pipeline_return_code") is not None:
+                rc = st.session_state.pipeline_return_code
+                if rc == 0:
+                    st.markdown(":green[Pipeline finished successfully]")
+                else:
+                    st.markdown(f":red[Pipeline failed (exit code {rc})]")
+
+
+# ---------------------------------------------------------------------------
+# Home page
+# ---------------------------------------------------------------------------
+
+def _page_home():
+    st.markdown(
+        "<h1 style='text-align: center;'>qPrimer Designer</h1>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='text-align: center; font-size: 1.2em; color: gray;'>"
+        "ML-guided PCR primer design and evaluation"
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # Schematic
+    if SCHEMATIC_PATH.exists():
+        col_pad_l, col_img, col_pad_r = st.columns([1, 2, 1])
+        with col_img:
+            st.image(str(SCHEMATIC_PATH), use_container_width=True)
+
+    st.markdown("")
+
+    # Description
+    st.markdown(
+        """
+qPrimer Designer is an AI-powered tool for PCR diagnostics primer design and
+evaluation. It enables a **scalable, data-driven approach for adaptive
+diagnostic design** against rapidly evolving pathogens — accessible anywhere
+in the world, without requiring deep specialist expertise.
+
+The tool is built on **machine learning models** that predict PCR activity for
+a given primer pair and target sequence. These models were trained on
+experimental data from over **50,000 unique primer pair–target sequence
+combinations**, and significantly outperform predictions based on mismatch
+counts or free energy alone
+([Baek, Hsu et al., NeurIPS 2025 Workshop on AI for Science](https://openreview.net/forum?id=GJaNhMEZGM#discussion)).
+
+Its core capabilities include **Design** — generating new primer sets for
+given pathogen sequences — and **Evaluate** — assessing the performance of
+existing primer sets. Pathogen sequences can be uploaded directly as FASTA
+files or fetched from NCBI Virus by specifying a taxonomy ID and metadata
+parameters. In addition to the target pathogen, users can specify
+cross-reactivity sequences from other pathogens or host genomes to evaluate
+and minimize non-specific amplification. Finally, the **Monitor** feature
+tracks the validity of existing designs against newly observed pathogen
+sequences by periodically running fetch and evaluate, and delivering results
+via email reports.
+"""
+    )
+
+    st.divider()
+
+    # Action button illustrations (inline SVG)
+    _ICON_DESIGN = """
+    <svg viewBox="0 0 112 80" width="112" height="80" xmlns="http://www.w3.org/2000/svg">
+      <!-- Target sequence -->
+      <line x1="5" y1="20" x2="107" y2="20" stroke="#888" stroke-width="3" stroke-linecap="round"/>
+      <!-- Unselected pair left -->
+      <rect x="4" y="44" width="10" height="3" rx="1" fill="#4CAF50" opacity="0.25"/>
+      <polygon points="15,45.5 13,43.5 13,47.5" fill="#4CAF50" opacity="0.25"/>
+      <polygon points="18,45.5 20,43.5 20,47.5" fill="#E8451E" opacity="0.25"/>
+      <rect x="19" y="44" width="10" height="3" rx="1" fill="#E8451E" opacity="0.25"/>
+      <!-- Selected primer pair -->
+      <rect x="38" y="41" width="14" height="5" rx="2" fill="#4CAF50"/>
+      <polygon points="54,43.5 50,39.5 50,47.5" fill="#4CAF50"/>
+      <polygon points="58,43.5 62,39.5 62,47.5" fill="#E8451E"/>
+      <rect x="60" y="41" width="14" height="5" rx="2" fill="#E8451E"/>
+      <!-- Selection box -->
+      <rect x="33" y="36" width="46" height="16" rx="3" fill="none" stroke="#2E86AB" stroke-width="2"/>
+      <!-- Unselected pair right -->
+      <rect x="84" y="44" width="10" height="3" rx="1" fill="#4CAF50" opacity="0.25"/>
+      <polygon points="95,45.5 93,43.5 93,47.5" fill="#4CAF50" opacity="0.25"/>
+      <polygon points="98,45.5 100,43.5 100,47.5" fill="#E8451E" opacity="0.25"/>
+      <rect x="99" y="44" width="10" height="3" rx="1" fill="#E8451E" opacity="0.25"/>
+      <!-- Unselected pairs below -->
+      <rect x="22" y="62" width="10" height="3" rx="1" fill="#4CAF50" opacity="0.25"/>
+      <polygon points="33,63.5 31,61.5 31,65.5" fill="#4CAF50" opacity="0.25"/>
+      <polygon points="36,63.5 38,61.5 38,65.5" fill="#E8451E" opacity="0.25"/>
+      <rect x="37" y="62" width="10" height="3" rx="1" fill="#E8451E" opacity="0.25"/>
+      <rect x="60" y="62" width="10" height="3" rx="1" fill="#4CAF50" opacity="0.25"/>
+      <polygon points="71,63.5 69,61.5 69,65.5" fill="#4CAF50" opacity="0.25"/>
+      <polygon points="74,63.5 76,61.5 76,65.5" fill="#E8451E" opacity="0.25"/>
+      <rect x="75" y="62" width="10" height="3" rx="1" fill="#E8451E" opacity="0.25"/>
+    </svg>
+    """
+
+    _ICON_EVALUATE = """
+    <svg viewBox="0 0 100 80" width="100" height="80" xmlns="http://www.w3.org/2000/svg">
+      <!-- Target sequence line -->
+      <line x1="6" y1="20" x2="94" y2="20" stroke="#888" stroke-width="3" stroke-linecap="round"/>
+      <!-- Forward primer -->
+      <rect x="10" y="28" width="18" height="4" rx="1.5" fill="#4CAF50"/>
+      <polygon points="30,30 27,27 27,33" fill="#4CAF50"/>
+      <!-- Match/mismatch ticks for forward -->
+      <line x1="13" y1="23" x2="13" y2="27" stroke="#4CAF50" stroke-width="1.5"/>
+      <line x1="17" y1="23" x2="17" y2="27" stroke="#4CAF50" stroke-width="1.5"/>
+      <line x1="21" y1="23" x2="21" y2="27" stroke="#E8451E" stroke-width="1.5"/>
+      <line x1="25" y1="23" x2="25" y2="27" stroke="#4CAF50" stroke-width="1.5"/>
+      <line x1="29" y1="23" x2="29" y2="27" stroke="#4CAF50" stroke-width="1.5"/>
+      <!-- Reverse primer -->
+      <polygon points="58,30 61,27 61,33" fill="#E8451E"/>
+      <rect x="60" y="28" width="18" height="4" rx="1.5" fill="#E8451E"/>
+      <!-- Match/mismatch ticks for reverse -->
+      <line x1="61" y1="23" x2="61" y2="27" stroke="#4CAF50" stroke-width="1.5"/>
+      <line x1="65" y1="23" x2="65" y2="27" stroke="#4CAF50" stroke-width="1.5"/>
+      <line x1="69" y1="23" x2="69" y2="27" stroke="#E8451E" stroke-width="1.5"/>
+      <line x1="73" y1="23" x2="73" y2="27" stroke="#4CAF50" stroke-width="1.5"/>
+      <line x1="77" y1="23" x2="77" y2="27" stroke="#4CAF50" stroke-width="1.5"/>
+      <!-- Magnifying glass -->
+      <circle cx="65" cy="57" r="13" fill="none" stroke="#555" stroke-width="2.5"/>
+      <line x1="74" y1="66" x2="83" y2="75" stroke="#555" stroke-width="3" stroke-linecap="round"/>
+      <!-- Checkmark inside -->
+      <polyline points="59,57 63,62 72,52" fill="none" stroke="#4CAF50" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    """
+
+    _ICON_MONITOR = """
+    <svg viewBox="0 0 120 80" width="120" height="80" xmlns="http://www.w3.org/2000/svg">
+      <!-- Phylogenetic tree -->
+      <line x1="6" y1="40" x2="22" y2="40" stroke="#555" stroke-width="2.5"/>
+      <line x1="22" y1="40" x2="22" y2="18" stroke="#555" stroke-width="2.5"/>
+      <line x1="22" y1="40" x2="22" y2="62" stroke="#555" stroke-width="2.5"/>
+      <!-- Upper branch -->
+      <line x1="22" y1="18" x2="50" y2="18" stroke="#555" stroke-width="2.5"/>
+      <line x1="50" y1="18" x2="50" y2="10" stroke="#555" stroke-width="2.5"/>
+      <line x1="50" y1="18" x2="50" y2="26" stroke="#555" stroke-width="2.5"/>
+      <line x1="50" y1="10" x2="78" y2="10" stroke="#555" stroke-width="2.5"/>
+      <line x1="50" y1="26" x2="78" y2="26" stroke="#555" stroke-width="2.5"/>
+      <!-- Lower branch -->
+      <line x1="22" y1="62" x2="50" y2="62" stroke="#555" stroke-width="2.5"/>
+      <line x1="50" y1="62" x2="50" y2="54" stroke="#555" stroke-width="2.5"/>
+      <line x1="50" y1="62" x2="50" y2="70" stroke="#555" stroke-width="2.5"/>
+      <line x1="50" y1="54" x2="78" y2="54" stroke="#555" stroke-width="2.5"/>
+      <line x1="50" y1="70" x2="78" y2="70" stroke="#555" stroke-width="2.5"/>
+      <!-- Leaf dots -->
+      <circle cx="81" cy="10" r="3" fill="#2E86AB"/>
+      <circle cx="81" cy="26" r="3" fill="#2E86AB"/>
+      <circle cx="81" cy="54" r="3" fill="#2E86AB"/>
+      <circle cx="81" cy="70" r="3" fill="#2E86AB"/>
+      <!-- Time checkpoint lines (vertical dashed) -->
+      <line x1="38" y1="4" x2="38" y2="76" stroke="#4CAF50" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.6"/>
+      <line x1="66" y1="4" x2="66" y2="76" stroke="#4CAF50" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.6"/>
+      <!-- Checkmarks in circles at checkpoint 1 -->
+      <circle cx="38" cy="18" r="5" fill="white" stroke="#4CAF50" stroke-width="1.5"/>
+      <polyline points="35,18 37,20 41,15" fill="none" stroke="#4CAF50" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="38" cy="62" r="5" fill="white" stroke="#4CAF50" stroke-width="1.5"/>
+      <polyline points="35,62 37,64 41,59" fill="none" stroke="#4CAF50" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- Checkmarks in circles at checkpoint 2 -->
+      <circle cx="66" cy="10" r="5" fill="white" stroke="#4CAF50" stroke-width="1.5"/>
+      <polyline points="63,10 65,12 69,7" fill="none" stroke="#4CAF50" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="66" cy="26" r="5" fill="white" stroke="#4CAF50" stroke-width="1.5"/>
+      <polyline points="63,26 65,28 69,23" fill="none" stroke="#4CAF50" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="66" cy="54" r="5" fill="white" stroke="#4CAF50" stroke-width="1.5"/>
+      <polyline points="63,54 65,56 69,51" fill="none" stroke="#4CAF50" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="66" cy="70" r="5" fill="white" stroke="#E8451E" stroke-width="1.5"/>
+      <line x1="63" y1="67" x2="69" y2="73" stroke="#E8451E" stroke-width="1.8" stroke-linecap="round"/>
+      <line x1="69" y1="67" x2="63" y2="73" stroke="#E8451E" stroke-width="1.8" stroke-linecap="round"/>
+    </svg>
+    """
+
+    # Action buttons
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown(
+            f'<div style="text-align: center; padding: 1em 0;">{_ICON_DESIGN}</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "Design new primer sets",
+            use_container_width=True,
+            type="primary",
+        ):
+            _navigate("design")
+            st.rerun()
+        st.caption(
+            "Generate optimized primer sets for your target pathogen sequences. "
+            "Supports singleplex, multiplex, and probe design modes."
+        )
+
+    with col2:
+        st.markdown(
+            f'<div style="text-align: center; padding: 1em 0;">{_ICON_EVALUATE}</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "Evaluate existing primer sets",
+            use_container_width=True,
+            type="primary",
+        ):
+            _navigate("evaluate")
+            st.rerun()
+        st.caption(
+            "Assess the performance of your existing primers against target sequences. "
+            "Upload a primer set or paste individual sequences."
+        )
+
+    with col3:
+        st.markdown(
+            f'<div style="text-align: center; padding: 1em 0;">{_ICON_MONITOR}</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "Monitor primer performance",
+            use_container_width=True,
+            type="primary",
+        ):
+            _navigate("monitor")
+            st.rerun()
+        st.caption(
+            "Track the validity of existing primer designs against newly observed "
+            "pathogen sequences."
+        )
+
+    st.divider()
+
+    # Contact
+    st.markdown(
+        "<div style='text-align: center; color: gray; font-size: 0.9em;'>"
+        "<strong>Contact</strong><br>"
+        "S. Chan Baek (<a href='mailto:baekseun@broadinstitute.org'>baekseun@broadinstitute.org</a>) · "
+        "Kenneth B Hsu (<a href='mailto:khsu@broadinstitute.org'>khsu@broadinstitute.org</a>)"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -858,8 +1113,28 @@ def _tab_results():
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
-    _render_sidebar()
+def _page_design():
+    """Design workflow — wraps the original tabs."""
+    tab_files, tab_config, tab_params, tab_run, tab_results = st.tabs(
+        ["Files", "Configuration", "Parameters", "Run", "Results"]
+    )
+
+    with tab_files:
+        _tab_files()
+    with tab_config:
+        _tab_configuration()
+    with tab_params:
+        _tab_parameters()
+    with tab_run:
+        _tab_run()
+    with tab_results:
+        _tab_results()
+
+
+def _page_evaluate():
+    """Evaluate workflow — wraps the original tabs with evaluate mode pre-selected."""
+    if "mode" not in st.session_state or st.session_state.mode != "Evaluate":
+        st.session_state.mode = "Evaluate"
 
     tab_files, tab_config, tab_params, tab_run, tab_results = st.tabs(
         ["Files", "Configuration", "Parameters", "Run", "Results"]
@@ -875,6 +1150,21 @@ def main():
         _tab_run()
     with tab_results:
         _tab_results()
+
+
+def main():
+    _render_sidebar()
+
+    page = _current_page()
+
+    if page == "home":
+        _page_home()
+    elif page == "design":
+        _page_design()
+    elif page == "evaluate":
+        _page_evaluate()
+    else:
+        _page_home()
 
 
 if __name__ == "__main__":
