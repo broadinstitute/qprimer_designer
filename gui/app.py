@@ -1,12 +1,15 @@
 """Streamlit GUI for the qPrimer Designer pipeline."""
 
+import json
 import os
+import re
 import select
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from datetime import date, datetime
 from pathlib import Path
 
 import streamlit as st
@@ -47,12 +50,99 @@ def _navigate(page: str):
     st.session_state.page = page
 
 
+def _clear_pipeline_state():
+    """Clear all pipeline run state for a fresh workflow."""
+    for key in ("pipeline_return_code", "pipeline_log", "pipeline_running",
+                "pipeline_completed_rules", "pipeline_should_start",
+                "_run_page_fresh"):
+        st.session_state.pop(key, None)
+
+
 def _current_page() -> str:
     return st.session_state.get("page", "home")
+
+
+# Workflow step definitions: (page_key, label)
+_WORKFLOW_STEPS = [
+    ("select_target", "Target"),
+    ("select_offtarget", "Off-Target"),
+    ("config", "Configuration"),
+    ("run", "Run"),
+    ("results", "Results"),
+]
+
+
+def _render_workflow_progress(current_step_key: str):
+    """Render a horizontal progress stepper at the top of workflow pages."""
+    parts = []
+    found = False
+    for key, label in _WORKFLOW_STEPS:
+        if key == current_step_key:
+            parts.append(f"<b>{label}</b>")
+            found = True
+        elif not found:
+            parts.append(label)
+        else:
+            parts.append(f"<span style='color: #ccc;'>{label}</span>")
+
+    st.markdown(
+        "<div style='text-align: center; font-size: 1.05em; margin-bottom: 0.5em;'>"
+        + " &nbsp;→&nbsp; ".join(parts)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.divider()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Common virus presets: (display name, TaxID)
+VIRUS_PRESETS: list[tuple[str, int]] = [
+    ("SARS-CoV-2", 2697049),
+    ("SARS-CoV", 694009),
+    ("MERS-CoV", 1335626),
+    ("Influenza A", 11320),
+    ("Influenza B", 11520),
+    ("RSV-A (Respiratory Syncytial Virus A)", 208893),
+    ("RSV-B (Respiratory Syncytial Virus B)", 208895),
+    ("MPOX (Monkeypox virus)", 10244),
+    ("Ebola virus (Zaire)", 186538),
+    ("Marburg virus", 11269),
+    ("Dengue virus 1", 11053),
+    ("Dengue virus 2", 11060),
+    ("Dengue virus 3", 11069),
+    ("Dengue virus 4", 11070),
+    ("Zika virus", 64320),
+    ("Chikungunya virus", 37124),
+    ("HIV-1", 11676),
+    ("HIV-2", 11709),
+    ("Hepatitis B virus", 10407),
+    ("Hepatitis C virus", 11103),
+    ("Human metapneumovirus", 162145),
+    ("Measles virus", 11234),
+    ("Mumps virus", 11161),
+    ("Rubella virus", 11041),
+    ("Norovirus GII", 142786),
+    ("Rotavirus A", 28875),
+    ("Adenovirus (Human mastadenovirus C)", 129951),
+    ("Enterovirus D68", 42789),
+    ("West Nile virus", 11082),
+    ("Yellow Fever virus", 11089),
+    ("Japanese Encephalitis virus", 11072),
+    ("Lassa virus", 11620),
+    ("Crimean-Congo hemorrhagic fever virus", 1980459),
+    ("Nipah virus", 121227),
+    ("Hendra virus", 63330),
+    ("Rabies virus", 11292),
+    ("Variola virus (Smallpox)", 10255),
+    ("Human parainfluenza virus 1", 12730),
+    ("Human parainfluenza virus 3", 11216),
+    ("Human bocavirus 1", 329641),
+    ("Human rhinovirus A", 147711),
+]
+
 
 def _available_fasta() -> list[str]:
     """Return sorted list of FASTA stem names in target_seqs/original/."""
@@ -124,8 +214,19 @@ def _init_params():
         st.session_state.params = dict(DEFAULT_PARAMS)
 
 
+def _find_tool(name: str) -> str | None:
+    """Find a tool in PATH or the current Python environment's bin directory."""
+    found = shutil.which(name)
+    if found:
+        return found
+    candidate = Path(sys.executable).parent / name
+    if candidate.exists():
+        return str(candidate)
+    return None
+
+
 def _check_tool(name: str) -> bool:
-    return shutil.which(name) is not None
+    return _find_tool(name) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -166,17 +267,6 @@ def _render_sidebar():
                 panel = st.session_state.get("panel", [])
                 st.markdown(f"**Panel:** {', '.join(panel) if panel else 'none'}")
 
-            st.divider()
-
-            # Pipeline status indicator
-            if st.session_state.get("pipeline_running"):
-                st.markdown(":orange[Pipeline running...]")
-            elif st.session_state.get("pipeline_return_code") is not None:
-                rc = st.session_state.pipeline_return_code
-                if rc == 0:
-                    st.markdown(":green[Pipeline finished successfully]")
-                else:
-                    st.markdown(f":red[Pipeline failed (exit code {rc})]")
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +446,9 @@ via email reports.
             use_container_width=True,
             type="primary",
         ):
-            _navigate("design")
+            st.session_state.workflow = "design"
+            _clear_pipeline_state()
+            _navigate("select_target")
             st.rerun()
         st.caption(
             "Generate optimized primer sets for your target pathogen sequences. "
@@ -373,7 +465,9 @@ via email reports.
             use_container_width=True,
             type="primary",
         ):
-            _navigate("evaluate")
+            st.session_state.workflow = "evaluate"
+            _clear_pipeline_state()
+            _navigate("select_target")
             st.rerun()
         st.caption(
             "Assess the performance of your existing primers against target sequences. "
@@ -390,7 +484,9 @@ via email reports.
             use_container_width=True,
             type="primary",
         ):
-            _navigate("monitor")
+            st.session_state.workflow = "monitor"
+            _clear_pipeline_state()
+            _navigate("select_target")
             st.rerun()
         st.caption(
             "Track the validity of existing primer designs against newly observed "
@@ -557,39 +653,20 @@ def _tab_configuration():
 # ---------------------------------------------------------------------------
 
 def _tab_parameters():
-    st.header("Pipeline Parameters")
-
     _init_params()
     p = st.session_state.params
 
-    # Load from existing file
-    col_load, col_reset = st.columns(2)
-    with col_load:
-        if st.button("Load from existing params.txt"):
-            params_path = PROJECT_ROOT / "params.txt"
-            if params_path.exists():
-                loaded = parse_params(str(params_path))
-                for k, v in loaded.items():
-                    p[k] = v
-                st.success("Loaded params.txt")
-            else:
-                st.warning("No params.txt found in project root")
-    with col_reset:
-        if st.button("Reset to defaults"):
-            st.session_state.params = dict(DEFAULT_PARAMS)
-            st.rerun()
-
-    st.divider()
-
-    # --- Representative sequence selection ---
-    with st.expander("Representative sequence selection", expanded=False):
-        p["DESIGN_WINDOW"] = st.number_input(
-            "DESIGN_WINDOW", value=int(p["DESIGN_WINDOW"]),
-            min_value=50, step=50, key="p_design_window",
-        )
+    if st.button("Reset to defaults"):
+        st.session_state.params = dict(DEFAULT_PARAMS)
+        st.rerun()
 
     # --- Primer generation ---
     with st.expander("Primer generation", expanded=True):
+        p["DESIGN_WINDOW"] = st.number_input(
+            "Alignment window size (bp)", value=int(p["DESIGN_WINDOW"]),
+            min_value=50, step=50, key="p_design_window",
+            help="Window size for dividing the MSA when selecting representative sequences.",
+        )
         p["MAX_PRIMER_CANDIDATES"] = st.number_input(
             "MAX_PRIMER_CANDIDATES", value=int(p["MAX_PRIMER_CANDIDATES"]),
             min_value=100, step=1000, key="p_max_cand",
@@ -727,7 +804,8 @@ def _build_command() -> list[str]:
     cores = st.session_state.get("cores", 1)
     dry_run = st.session_state.get("dry_run", False)
 
-    cmd = ["snakemake", "-s", "Snakefile", "--cores", str(cores)]
+    snakemake_bin = _find_tool("snakemake") or "snakemake"
+    cmd = [snakemake_bin, "-s", "Snakefile", "--cores", str(cores)]
 
     config_args: list[str] = []
     if mode == "Multiplex":
@@ -791,8 +869,6 @@ def _preflight_checks() -> list[str]:
 
 def _write_pipeline_files():
     """Write Snakefile and params.txt to project root."""
-    from datetime import datetime
-
     mode = st.session_state.get("mode", "Singleplex")
     probe = st.session_state.get("probe_enabled", False)
 
@@ -829,19 +905,134 @@ def _write_pipeline_files():
     (PROJECT_ROOT / "params.txt").write_text(params_content)
 
 
+# Pipeline rule steps grouped for progress display
+_PIPELINE_RULES_DESIGN = [
+    ("make_MSA", "Building multiple sequence alignment"),
+    ("pick_representative_seqs", "Selecting representative sequences"),
+    ("generate_primers", "Generating primer candidates"),
+    ("build_index", "Building bowtie2 index"),
+    ("align", "Aligning primers to targets"),
+    ("parse_map", "Parsing alignment results"),
+    ("process_map", "Processing alignment maps"),
+    ("prepare_input", "Preparing ML model input"),
+    ("evaluate", "Evaluating with ML model"),
+    ("rescue_evaluate", "Rescue evaluation"),
+    ("filter_primer_list", "Filtering and ranking primers"),
+    ("check_coverage", "Checking primer coverage"),
+]
+
+_PIPELINE_RULES_EVALUATE = [
+    ("build_index", "Building bowtie2 index"),
+    ("align", "Aligning primers to targets"),
+    ("parse_map", "Parsing alignment results"),
+    ("process_map", "Processing alignment maps"),
+    ("prepare_input", "Preparing ML model input"),
+    ("evaluate_pset", "Evaluating primer set"),
+]
+
+
+def _get_pipeline_rules() -> list[tuple[str, str]]:
+    mode = st.session_state.get("mode", "Singleplex")
+    if mode == "Evaluate":
+        return _PIPELINE_RULES_EVALUATE
+    return _PIPELINE_RULES_DESIGN
+
+
+def _render_pipeline_progress(rules: list[tuple[str, str]], completed_rules: set[str],
+                               current_rule: str, detail: str = ""):
+    """Render pipeline progress like the fetch UI."""
+    lines = []
+    current_found = False
+    for rule_name, label in rules:
+        if rule_name in completed_rules:
+            lines.append(f"✅  {label}")
+        elif rule_name == current_rule:
+            lines.append(f"🔵  {label}...")
+            current_found = True
+        elif current_found:
+            lines.append(f"⚪  {label}")
+        else:
+            lines.append(f"⚪  {label}")
+    return "\n".join(lines)
+
+
+def _save_run_config():
+    """Save all run settings to a JSON file alongside the final output."""
+    run_id = st.session_state.get("run_id", "")
+    if not run_id:
+        return
+
+    workflow = st.session_state.get("workflow", "design")
+    mode = st.session_state.get("mode", "Singleplex")
+
+    config = {
+        "run_id": run_id,
+        "timestamp": datetime.now().isoformat(),
+        "workflow": workflow,
+        "mode": mode,
+        "targets": st.session_state.get("targets", []),
+        "cross_reactivity": st.session_state.get("cross", []),
+        "host": st.session_state.get("host", []),
+        "probe_enabled": st.session_state.get("probe_enabled", False),
+        "cores": st.session_state.get("cores", 1),
+    }
+
+    # Fetch settings (target)
+    fetch_prefix = "fetch"
+    fetch_config = {}
+    virus_sel = st.session_state.get(f"{fetch_prefix}_virus_select")
+    if virus_sel:
+        fetch_config["virus"] = virus_sel
+    for key_suffix in ("target_name", "nuc_completeness", "segment",
+                       "min_seq_length", "max_seq_length",
+                       "min_release_date", "max_release_date",
+                       "geo_location", "host",
+                       "limit", "min_collection_date", "max_collection_date",
+                       "max_ambiguous_chars", "refseq_only"):
+        val = st.session_state.get(f"{fetch_prefix}_{key_suffix}")
+        if val is not None and val != "" and val is not False:
+            fetch_config[key_suffix] = val
+    if fetch_config:
+        config["fetch_settings"] = fetch_config
+
+    # Evaluate-specific
+    if mode == "Evaluate":
+        config["eval_method"] = st.session_state.get("eval_method", "")
+        config["eval_target"] = st.session_state.get("eval_target", "")
+        if st.session_state.get("eval_method") == "Paste sequences":
+            config["eval_forward"] = st.session_state.get("eval_for", "")
+            config["eval_reverse"] = st.session_state.get("eval_rev", "")
+        else:
+            config["eval_pset_path"] = st.session_state.get("eval_pset_path", "")
+
+    # Parameters
+    config["parameters"] = dict(st.session_state.get("params", {}))
+
+    # Determine output directory
+    if mode == "Evaluate":
+        out_dir = PROJECT_ROOT / "evaluate" / run_id
+    else:
+        out_dir = PROJECT_ROOT / "final" / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Custom JSON serializer for dates
+    def _json_default(obj):
+        if isinstance(obj, (date, datetime)):
+            return obj.isoformat()
+        return str(obj)
+
+    config_path = out_dir / "run_config.json"
+    config_path.write_text(json.dumps(config, indent=2, default=_json_default, ensure_ascii=False))
+
+
 def _tab_run():
     st.header("Run Pipeline")
 
     # Controls
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     max_cpu = os.cpu_count() or 1
     c1.slider("CPU cores", min_value=1, max_value=max_cpu, value=min(4, max_cpu), key="cores")
     c2.checkbox("Dry run (plan only, no execution)", key="dry_run")
-    c3.checkbox("Show live output", value=True, key="show_live_output")
-
-    # Command preview
-    cmd = _build_command()
-    st.code(" ".join(cmd), language="bash")
 
     # Preflight
     errors = _preflight_checks()
@@ -849,137 +1040,181 @@ def _tab_run():
         for e in errors:
             st.error(e)
 
+    rules = _get_pipeline_rules()
+
+    # Clear previous result when entering Run page for first time
+    if st.session_state.get("_run_page_fresh", True):
+        st.session_state.pipeline_return_code = None
+        st.session_state.pipeline_log = ""
+        st.session_state.pipeline_completed_rules = set()
+        st.session_state._run_page_fresh = False
+
     # Run / Stop buttons
     col_run, col_stop = st.columns(2)
-
     running = st.session_state.get("pipeline_running", False)
 
     with col_run:
-        if st.button("Run", disabled=running or bool(errors), type="primary"):
-            _write_pipeline_files()
-            st.session_state.pipeline_log = ""
-            st.session_state.pipeline_return_code = None
-            st.session_state.pipeline_running = True
-
-            env = os.environ.copy()
-            env["PYTHONUNBUFFERED"] = "1"
-
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=str(PROJECT_ROOT),
-                env=env,
-                text=True,
-            )
-            st.session_state.pipeline_pid = proc.pid
-            st.session_state._pipeline_proc = proc
-            st.rerun()
-
+        run_clicked = st.button("Run", disabled=running or bool(errors), type="primary")
     with col_stop:
-        if st.button("Stop", disabled=not running):
-            pid = st.session_state.get("pipeline_pid")
-            if pid:
+        stop_clicked = st.button("Stop", disabled=not running, type="secondary")
+
+    # Handle Stop
+    if stop_clicked:
+        pid = st.session_state.get("pipeline_pid")
+        if pid:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
                 try:
-                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                    os.kill(pid, signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except (ProcessLookupError, PermissionError):
-                        pass
-            st.session_state.pipeline_running = False
-            st.session_state.pipeline_return_code = -1
-            st.rerun()
+                    pass
+        st.session_state.pipeline_running = False
+        st.session_state.pipeline_return_code = -1
+        st.rerun()
 
-    # Log output area
-    st.subheader("Pipeline output")
-    log_area = st.empty()
-    show_live = st.session_state.get("show_live_output", True)
+    # Handle Run click — set state and rerun so buttons update first
+    if run_clicked:
+        st.session_state.pipeline_running = True
+        st.session_state.pipeline_should_start = True
+        st.session_state.pipeline_return_code = None
+        st.session_state.pipeline_log = ""
+        st.session_state.pipeline_completed_rules = set()
+        st.rerun()
 
-    if running and hasattr(st.session_state, "_pipeline_proc"):
-        proc = st.session_state._pipeline_proc
-        log = st.session_state.get("pipeline_log", "")
+    # Execute pipeline (triggered after rerun from Run click)
+    if st.session_state.get("pipeline_should_start"):
+        st.session_state.pipeline_should_start = False
 
-        # Non-blocking read of available output
-        fd = proc.stdout.fileno()
-        ready, _, _ = select.select([fd], [], [], 0.1)
-        if ready:
-            chunk = os.read(fd, 8192).decode("utf-8", errors="replace")
-            if chunk:
-                log += chunk
-                st.session_state.pipeline_log = log
+        _write_pipeline_files()
 
-        # Check if process finished
-        rc = proc.poll()
-        if rc is not None:
-            # Read any remaining output
-            remaining = proc.stdout.read()
-            if remaining:
-                log += remaining
-                st.session_state.pipeline_log = log
-            st.session_state.pipeline_running = False
-            st.session_state.pipeline_return_code = rc
-            st.rerun()
+        # Unlock snakemake directory in case of leftover locks
+        snakemake_bin = _find_tool("snakemake") or "snakemake"
+        subprocess.run(
+            [snakemake_bin, "-s", "Snakefile", "--unlock", "--cores", "1"],
+            capture_output=True, cwd=str(PROJECT_ROOT),
+        )
 
-        if show_live:
-            log_area.code(log if log else "(waiting for output...)", language="text")
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env_bin = str(Path(sys.executable).parent)
+        if env_bin not in env.get("PATH", ""):
+            env["PATH"] = env_bin + os.pathsep + env.get("PATH", "")
+
+        cmd = _build_command()
+
+        progress_area = st.empty()
+        status_area = st.empty()
+
+        completed_rules: set[str] = set()
+        current_rule = rules[0][0] if rules else ""
+        log = ""
+        start_time = time.time()
+
+        def _update_progress():
+            lines = []
+            for rule_name, label in rules:
+                if rule_name in completed_rules:
+                    lines.append(f"✅ &nbsp; {label}")
+                elif rule_name == current_rule:
+                    lines.append(f"⏳ &nbsp; **{label}** ...")
+                else:
+                    lines.append(f"⚪ &nbsp; {label}")
+            elapsed = int(time.time() - start_time)
+            mins, secs = divmod(elapsed, 60)
+            progress_area.markdown("<br>".join(lines), unsafe_allow_html=True)
+            status_area.caption(f"Elapsed: {mins}m {secs}s")
+
+        _update_progress()
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            text=True,
+        )
+        st.session_state.pipeline_pid = proc.pid
+
+        while proc.poll() is None:
+            line = proc.stdout.readline()
+            if line:
+                log += line
+                stripped = line.strip()
+                if stripped.startswith("rule ") or stripped.startswith("localrule "):
+                    rule_name = stripped.split("rule ")[1].rstrip(":")
+                    if current_rule and current_rule != rule_name:
+                        completed_rules.add(current_rule)
+                    # Mark all rules before the current one as completed (skipped by snakemake)
+                    for rn, _ in rules:
+                        if rn == rule_name:
+                            break
+                        completed_rules.add(rn)
+                    current_rule = rule_name
+                    _update_progress()
+                elif "Finished job" in stripped:
+                    _update_progress()
+
+        # Read remaining output
+        remaining = proc.stdout.read()
+        if remaining:
+            log += remaining
+
+        # Mark last rule as complete
+        if current_rule:
+            completed_rules.add(current_rule)
+
+        rc = proc.returncode
+        st.session_state.pipeline_running = False
+        st.session_state.pipeline_return_code = rc
+        st.session_state.pipeline_log = log
+        st.session_state.pipeline_completed_rules = completed_rules
+
+        elapsed = int(time.time() - start_time)
+        mins, secs = divmod(elapsed, 60)
+
+        # Final progress
+        lines = []
+        for rule_name, label in rules:
+            if rule_name in completed_rules:
+                lines.append(f"✅ &nbsp; {label}")
+            else:
+                lines.append(f"⚪ &nbsp; {label}")
+        progress_area.markdown("<br>".join(lines), unsafe_allow_html=True)
+        status_area.caption(f"Completed in {mins}m {secs}s")
+
+        if rc == 0:
+            _save_run_config()
+            st.success("Pipeline finished successfully!")
         else:
-            log_area.info("Pipeline is running. Enable **Show live output** to see logs.")
+            st.error(f"Pipeline failed with exit code {rc}.")
+            with st.expander("Show error log"):
+                last_lines = "\n".join(log.splitlines()[-50:])
+                st.code(last_lines, language="text")
 
-        # Auto-refresh while running
-        if st.session_state.get("pipeline_running"):
-            time.sleep(1)
-            st.rerun()
-    else:
-        log = st.session_state.get("pipeline_log", "")
-        if log:
-            log_area.code(log, language="text")
-        else:
-            log_area.info("Click Run to start the pipeline.")
+    # Show previous run result if not currently running
+    elif not running and st.session_state.get("pipeline_return_code") is not None:
+        rc = st.session_state.pipeline_return_code
+        completed_rules = st.session_state.get("pipeline_completed_rules", set())
 
-    # Show inline results after successful completion
-    rc = st.session_state.get("pipeline_return_code")
-    if rc is not None and not st.session_state.get("pipeline_running"):
-        st.divider()
+        lines = []
+        for rule_name, label in rules:
+            if rule_name in completed_rules:
+                lines.append(f"✅ &nbsp; {label}")
+            else:
+                lines.append(f"⚪ &nbsp; {label}")
+        st.markdown("<br>".join(lines), unsafe_allow_html=True)
+
         if rc == 0:
             st.success("Pipeline finished successfully!")
-            mode = st.session_state.get("mode", "Singleplex")
-            run_id = st.session_state.get("run_id", "")
-            run_eval_dir = EVALUATE_DIR / run_id if run_id else EVALUATE_DIR
-            run_final_dir = FINAL_DIR / run_id if run_id else FINAL_DIR
-            if mode == "Evaluate" and run_eval_dir.exists():
-                xlsx_files = sorted(run_eval_dir.glob("**/*.xlsx"))
-                if xlsx_files:
-                    import pandas as pd
-
-                    st.subheader("Evaluation results preview")
-                    for xf in xlsx_files:
-                        try:
-                            df = pd.read_excel(xf, sheet_name="detail")
-                            st.write(f"**{xf.name}** — {len(df)} target alignments")
-                            st.dataframe(df.head(10), use_container_width=True)
-                        except Exception as exc:
-                            st.warning(f"Could not read {xf.name}: {exc}")
-                    st.caption("See the **Results** tab for full details and downloads.")
-                else:
-                    st.warning("Pipeline completed but no evaluation reports were generated. "
-                               "Check the log for warnings.")
-            elif run_final_dir.exists():
-                csvs = sorted(run_final_dir.glob("*.csv"))
-                if csvs:
-                    import pandas as pd
-
-                    st.subheader("Results preview")
-                    for csv_path in csvs:
-                        try:
-                            df = pd.read_csv(csv_path)
-                            st.write(f"**{csv_path.name}** — {len(df)} primer pairs")
-                            st.dataframe(df.head(10), use_container_width=True)
-                        except Exception as exc:
-                            st.warning(f"Could not read {csv_path.name}: {exc}")
-                    st.caption("See the **Results** tab for full details and downloads.")
         else:
-            st.error(f"Pipeline failed with exit code {rc}. Check the log above.")
+            st.error(f"Pipeline failed with exit code {rc}.")
+            log = st.session_state.get("pipeline_log", "")
+            if log:
+                with st.expander("Show error log"):
+                    last_lines = "\n".join(log.splitlines()[-50:])
+                    st.code(last_lines, language="text")
 
 
 # ---------------------------------------------------------------------------
@@ -1113,43 +1348,692 @@ def _tab_results():
 # Main
 # ---------------------------------------------------------------------------
 
-def _page_design():
-    """Design workflow — wraps the original tabs."""
-    tab_files, tab_config, tab_params, tab_run, tab_results = st.tabs(
-        ["Files", "Configuration", "Parameters", "Run", "Results"]
+def _page_select_target():
+    """Common page for selecting pathogen target sequences."""
+    _render_workflow_progress("select_target")
+
+    workflow = st.session_state.get("workflow", "design")
+    workflow_label = {"design": "Design", "evaluate": "Evaluate", "monitor": "Monitor"}[workflow]
+
+    st.header(f"{workflow_label} — Select Target Sequences")
+    st.markdown(
+        "Which pathogen do you want to detect? "
+        "Select target sequences from the list below, or add new ones."
     )
 
-    with tab_files:
-        _tab_files()
-    with tab_config:
-        _tab_configuration()
-    with tab_params:
-        _tab_parameters()
-    with tab_run:
-        _tab_run()
-    with tab_results:
-        _tab_results()
+    st.divider()
+
+    # --- Select from existing FASTA files ---
+    fastas = _available_fasta()
+
+    if fastas:
+        # Build display labels with sequence count and file size
+        labels = []
+        for stem in fastas:
+            info = _fasta_info(stem)
+            labels.append(f"{stem}  ({info['seqs']} seqs, {_format_size(info['size'])})")
+
+        selected_label = st.selectbox(
+            "Select a target sequence",
+            options=[""] + labels,
+            format_func=lambda x: "Choose a pathogen..." if x == "" else x,
+            key="target_select",
+        )
+
+        if selected_label:
+            # Extract stem name (everything before the first double-space)
+            selected_stem = selected_label.split("  (")[0]
+            st.session_state.targets = [selected_stem]
+        else:
+            st.session_state.targets = []
+    else:
+        st.info("No FASTA files found. Upload or fetch sequences below.")
+
+    st.divider()
+
+    # --- Add new sequences ---
+    st.subheader("Don't see your pathogen?")
+
+    add_col1, add_col2 = st.columns(2)
+
+    with add_col1:
+        st.markdown("**Upload FASTA file**")
+        uploaded = st.file_uploader(
+            "Upload FASTA file(s)",
+            type=["fa", "fasta", "fna"],
+            accept_multiple_files=True,
+            key="fasta_upload",
+            label_visibility="collapsed",
+        )
+        if uploaded:
+            for f in uploaded:
+                p = Path(f.name)
+                if p.suffix.lower() not in (".fa", ".fasta", ".fna"):
+                    st.error(f"Unsupported extension: {p.suffix}")
+                    continue
+                dest = FASTA_DIR / (p.stem + ".fa")
+                dest.write_bytes(f.getvalue())
+                for ext in (".fasta", ".fna"):
+                    old = FASTA_DIR / (p.stem + ext)
+                    if old.exists():
+                        old.unlink()
+                st.success(f"Saved {dest.name}")
+            st.rerun()
+
+    with add_col2:
+        st.markdown("**Fetch from NCBI Virus (using gget)**")
+        _render_fetch_ui("fetch")
+
+    st.divider()
+
+    # --- Continue button ---
+    selected = st.session_state.get("targets", [])
+    if st.button(
+        "Continue →",
+        disabled=not selected,
+        type="primary",
+        use_container_width=True,
+    ):
+        _navigate("select_offtarget")
+        st.rerun()
+
+    if not selected:
+        st.caption("Select a target sequence to continue.")
+
+
+def _render_fetch_ui(prefix: str):
+    """Render fetch-from-NCBI UI. prefix is used to namespace session state keys."""
+    _OTHER_OPTION = "Other (enter TaxID manually)"
+    virus_options = [f"{name}  (TaxID: {tid})" for name, tid in VIRUS_PRESETS]
+    virus_options.append(_OTHER_OPTION)
+
+    selected_virus = st.selectbox(
+        "Virus",
+        options=virus_options,
+        index=None,
+        placeholder="Type a virus name to search...",
+        key=f"{prefix}_virus_select",
+    )
+
+    taxid = ""
+    auto_name = ""
+    if selected_virus == _OTHER_OPTION:
+        taxid = st.text_input(
+            "Taxonomy ID",
+            placeholder="e.g., 2697049",
+            key=f"{prefix}_taxid_manual",
+        )
+    elif selected_virus:
+        taxid = selected_virus.split("TaxID: ")[1].rstrip(")")
+        auto_name = selected_virus.split("  (TaxID:")[0]
+
+    auto_target = auto_name
+    if not auto_name and taxid:
+        for name, tid in VIRUS_PRESETS:
+            if str(tid) == taxid.strip():
+                auto_target = name
+                break
+
+    prev_auto = st.session_state.get(f"_prev_auto_{prefix}", "")
+    if auto_target != prev_auto:
+        st.session_state[f"_prev_auto_{prefix}"] = auto_target
+        sanitized = re.sub(r"[^\w\-]", "_", auto_target)
+        sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+        st.session_state[f"{prefix}_target_name"] = sanitized
+
+    target_name = st.text_input(
+        "Target name",
+        placeholder="e.g., SARS-CoV-2",
+        key=f"{prefix}_target_name",
+        help="Name for the output FASTA file.",
+    )
+
+    nuc_completeness = st.selectbox(
+        "Nucleotide completeness",
+        options=["complete", "partial"],
+        key=f"{prefix}_nuc_completeness",
+    )
+
+    segment = st.text_input(
+        "Gene segment",
+        placeholder="e.g., 1, 2, 3 (leave blank for non-segmented)",
+        key=f"{prefix}_segment",
+    )
+
+    col_len1, col_len2 = st.columns(2)
+    with col_len1:
+        st.number_input(
+            "Min sequence length (bp)", min_value=0, value=None, step=100,
+            key=f"{prefix}_min_seq_length",
+        )
+    with col_len2:
+        st.number_input(
+            "Max sequence length (bp)", min_value=0, value=None, step=100,
+            key=f"{prefix}_max_seq_length",
+        )
+
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        st.date_input("Min release date", value=None, key=f"{prefix}_min_release_date")
+    with col_d2:
+        st.date_input("Max release date", value=None, key=f"{prefix}_max_release_date")
+
+    st.text_input("Geographic location", placeholder="e.g., USA, Africa, Nigeria",
+                   key=f"{prefix}_geo_location")
+    st.text_input("Host", placeholder="e.g., human, Homo sapiens", key=f"{prefix}_host")
+
+    with st.expander("Additional parameters"):
+        st.number_input("Max sequences", min_value=1, max_value=100000, value=None,
+                        step=100, key=f"{prefix}_limit")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            st.date_input("Min collection date", value=None, key=f"{prefix}_min_collection_date")
+        with col_c2:
+            st.date_input("Max collection date", value=None, key=f"{prefix}_max_collection_date")
+        st.number_input("Max ambiguous characters", min_value=0, value=10, step=1,
+                        key=f"{prefix}_max_ambiguous_chars")
+        st.checkbox("RefSeq only", key=f"{prefix}_refseq_only")
+
+    if st.button("Fetch sequences", disabled=not taxid or not target_name, key=f"{prefix}_fetch_btn"):
+        gget_bin = shutil.which("gget")
+        if not gget_bin:
+            env_bin = Path(sys.executable).parent
+            candidate = env_bin / "gget"
+            if candidate.exists():
+                gget_bin = str(candidate)
+        if not gget_bin:
+            st.error("'gget' is not installed. Run: `pip install gget`")
+        else:
+            gget_tmp = FASTA_DIR / f".gget_tmp_{target_name}"
+            gget_tmp.mkdir(parents=True, exist_ok=True)
+
+            cmd = [gget_bin, "virus", str(taxid).strip(), "--out", str(gget_tmp)]
+
+            nuc = st.session_state.get(f"{prefix}_nuc_completeness", "complete")
+            if nuc:
+                cmd.extend(["--nuc_completeness", nuc])
+            seg = st.session_state.get(f"{prefix}_segment", "").strip()
+            if seg:
+                cmd.extend(["--segment", seg])
+            min_len = st.session_state.get(f"{prefix}_min_seq_length")
+            if min_len:
+                cmd.extend(["--min_seq_length", str(min_len)])
+            max_len = st.session_state.get(f"{prefix}_max_seq_length")
+            if max_len:
+                cmd.extend(["--max_seq_length", str(max_len)])
+            min_rel = st.session_state.get(f"{prefix}_min_release_date")
+            if min_rel:
+                cmd.extend(["--min_release_date", str(min_rel)])
+            max_rel = st.session_state.get(f"{prefix}_max_release_date")
+            if max_rel:
+                cmd.extend(["--max_release_date", str(max_rel)])
+            geo = st.session_state.get(f"{prefix}_geo_location", "").strip()
+            if geo:
+                cmd.extend(["--geographic_location", geo])
+            host_val = st.session_state.get(f"{prefix}_host", "").strip()
+            if host_val:
+                cmd.extend(["--host", host_val])
+            if st.session_state.get(f"{prefix}_refseq_only"):
+                cmd.append("--refseq_only")
+            min_col = st.session_state.get(f"{prefix}_min_collection_date")
+            if min_col:
+                cmd.extend(["--min_collection_date", str(min_col)])
+            max_col = st.session_state.get(f"{prefix}_max_collection_date")
+            if max_col:
+                cmd.extend(["--max_collection_date", str(max_col)])
+            max_amb = st.session_state.get(f"{prefix}_max_ambiguous_chars")
+            if max_amb is not None:
+                cmd.extend(["--max_ambiguous_chars", str(max_amb)])
+
+            _FETCH_STEPS = [
+                ("STEP 1", "Validating input"),
+                ("STEP 2", "Checking optimized pathways"),
+                ("STEP 3", "Fetching metadata from NCBI"),
+                ("STEP 4", "Applying metadata filters"),
+                ("STEP 5", "Downloading sequences"),
+                ("STEP 6", "Applying sequence filters"),
+                ("STEP 7", "Saving output files"),
+                ("STEP 8", "Fetching GenBank metadata"),
+            ]
+
+            progress_area = st.empty()
+            detail_area = st.empty()
+            status_area = st.empty()
+
+            def _render_progress(current_step, detail=""):
+                lines = []
+                for i, (_, label) in enumerate(_FETCH_STEPS):
+                    if i < current_step:
+                        lines.append(f"✅  {label}")
+                    elif i == current_step:
+                        lines.append(f"🔵  {label}...")
+                    else:
+                        lines.append(f"⚪  {label}")
+                progress_area.markdown("\n".join(lines))
+                if detail:
+                    detail_area.caption(detail)
+
+            _render_progress(-1)
+
+            try:
+                env = os.environ.copy()
+                env["PYTHONUNBUFFERED"] = "1"
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        text=True, env=env)
+                current_step = -1
+                detail = ""
+                start_time = time.time()
+                timeout = 1800
+
+                while proc.poll() is None:
+                    if time.time() - start_time > timeout:
+                        proc.kill()
+                        st.error("Fetch timed out after 30 minutes.")
+                        break
+                    line = proc.stdout.readline()
+                    if line:
+                        for i, (key, _) in enumerate(_FETCH_STEPS):
+                            if key in line:
+                                current_step = i
+                                detail = ""
+                                break
+                        if "retrieved" in line and "records" in line:
+                            detail = line.split("INFO - ")[-1].strip() if "INFO - " in line else ""
+                        elif "Downloading sequences for" in line:
+                            detail = line.split("INFO - ")[-1].strip() if "INFO - " in line else ""
+                        elif "Received" in line and "sequences" in line:
+                            detail = line.split("INFO - ")[-1].strip() if "INFO - " in line else ""
+                        elif "PROCESS COMPLETED" in line:
+                            current_step = len(_FETCH_STEPS)
+                        _render_progress(current_step, detail)
+                    elapsed = int(time.time() - start_time)
+                    mins, secs = divmod(elapsed, 60)
+                    status_area.caption(f"Elapsed: {mins}m {secs}s")
+
+                remaining = proc.stdout.read()
+                if remaining and "PROCESS COMPLETED" in remaining:
+                    current_step = len(_FETCH_STEPS)
+                    _render_progress(current_step)
+
+                elapsed = int(time.time() - start_time)
+                mins, secs = divmod(elapsed, 60)
+                status_area.caption(f"Completed in {mins}m {secs}s")
+
+                if proc.returncode != 0:
+                    _render_progress(current_step, "")
+                    st.error(f"gget failed (exit code {proc.returncode})")
+                else:
+                    _render_progress(len(_FETCH_STEPS))
+                    fasta_files = list(gget_tmp.glob("*.fa")) + list(gget_tmp.glob("*.fasta"))
+                    if fasta_files:
+                        dest = FASTA_DIR / f"{target_name}.fa"
+                        shutil.move(str(fasta_files[0]), str(dest))
+                        from qprimer_designer.adapt_cli import _deduplicate_fasta
+                        n_deduped = _deduplicate_fasta(dest)
+                        with open(dest) as f:
+                            n_seqs = sum(1 for line in f if line.startswith(">"))
+                        msg = f"Downloaded {n_seqs} unique sequences → `{dest.name}`"
+                        if n_deduped > 0:
+                            msg += f" ({n_deduped} duplicates removed)"
+                        st.success(msg)
+                        detail_area.empty()
+                    else:
+                        st.warning("No FASTA output found. The query may have returned no results.")
+            except Exception as exc:
+                st.error(f"Fetch error: {exc}")
+            finally:
+                shutil.rmtree(gget_tmp, ignore_errors=True)
+
+
+def _page_select_offtarget():
+    """Page for selecting off-target (cross-reactivity) and host sequences."""
+    _render_workflow_progress("select_offtarget")
+
+    workflow = st.session_state.get("workflow", "design")
+    workflow_label = {"design": "Design", "evaluate": "Evaluate", "monitor": "Monitor"}[workflow]
+
+    st.header(f"{workflow_label} — Off-Target & Host Sequences")
+    st.markdown(
+        "Optionally specify sequences to check for cross-reactivity or host background. "
+        "You can skip this step if not needed."
+    )
+
+    st.divider()
+
+    fastas = _available_fasta()
+    # Exclude already-selected targets from the options
+    selected_targets = st.session_state.get("targets", [])
+    offtarget_options = [s for s in fastas if s not in selected_targets]
+
+    # --- Cross-reactivity sequences ---
+    st.subheader("Cross-reactivity sequences")
+    st.caption("Other pathogens you want to avoid detecting (off-target amplification)")
+
+    if offtarget_options:
+        cross_labels = []
+        for stem in offtarget_options:
+            info = _fasta_info(stem)
+            cross_labels.append(f"{stem}  ({info['seqs']} seqs, {_format_size(info['size'])})")
+
+        selected_cross = st.multiselect(
+            "Select cross-reactivity sequences",
+            options=cross_labels,
+            default=[],
+            key="cross_select",
+            placeholder="Choose pathogens to avoid...",
+        )
+        st.session_state.cross = [label.split("  (")[0] for label in selected_cross]
+    else:
+        st.info("No additional FASTA files available.")
+        st.session_state.cross = []
+
+    # Add new cross-reactivity sequences
+    with st.expander("Add new cross-reactivity sequences"):
+        add_cross_col1, add_cross_col2 = st.columns(2)
+
+        with add_cross_col1:
+            st.markdown("**Upload FASTA file**")
+            uploaded_cross = st.file_uploader(
+                "Upload FASTA",
+                type=["fa", "fasta", "fna"],
+                accept_multiple_files=True,
+                key="cross_fasta_upload",
+                label_visibility="collapsed",
+            )
+            if uploaded_cross:
+                for f in uploaded_cross:
+                    p = Path(f.name)
+                    if p.suffix.lower() not in (".fa", ".fasta", ".fna"):
+                        st.error(f"Unsupported extension: {p.suffix}")
+                        continue
+                    dest = FASTA_DIR / (p.stem + ".fa")
+                    dest.write_bytes(f.getvalue())
+                    for ext in (".fasta", ".fna"):
+                        old = FASTA_DIR / (p.stem + ext)
+                        if old.exists():
+                            old.unlink()
+                    st.success(f"Saved {dest.name}")
+                st.rerun()
+
+        with add_cross_col2:
+            st.markdown("**Fetch from NCBI Virus (using gget)**")
+            _render_fetch_ui("cross")
+
+    st.divider()
+
+    # --- Host sequences ---
+    st.subheader("Host sequences")
+    st.caption("Host genome to check for non-specific amplification (e.g., human genome)")
+
+    if offtarget_options:
+        host_labels = []
+        for stem in offtarget_options:
+            info = _fasta_info(stem)
+            host_labels.append(f"{stem}  ({info['seqs']} seqs, {_format_size(info['size'])})")
+
+        selected_host = st.multiselect(
+            "Select host sequences",
+            options=host_labels,
+            default=[],
+            key="host_select",
+            placeholder="Choose host genome...",
+        )
+        st.session_state.host = [label.split("  (")[0] for label in selected_host]
+    else:
+        st.info("No FASTA files available.")
+        st.session_state.host = []
+
+    # Upload host sequences
+    with st.expander("Upload host sequences"):
+        uploaded_host = st.file_uploader(
+            "Upload FASTA",
+            type=["fa", "fasta", "fna"],
+            accept_multiple_files=True,
+            key="host_fasta_upload",
+            label_visibility="collapsed",
+        )
+        if uploaded_host:
+            for f in uploaded_host:
+                p = Path(f.name)
+                if p.suffix.lower() not in (".fa", ".fasta", ".fna"):
+                    st.error(f"Unsupported extension: {p.suffix}")
+                    continue
+                dest = FASTA_DIR / (p.stem + ".fa")
+                dest.write_bytes(f.getvalue())
+                for ext in (".fasta", ".fna"):
+                    old = FASTA_DIR / (p.stem + ext)
+                    if old.exists():
+                        old.unlink()
+                st.success(f"Saved {dest.name}")
+            st.rerun()
+
+    st.divider()
+
+    # --- Continue / Skip ---
+    if st.button("Continue →", type="primary", use_container_width=True):
+        _navigate(f"{workflow}_config")
+        st.rerun()
+
+    st.caption("You can skip this step — cross-reactivity and host checks are optional.")
+
+
+def _config_design():
+    """Design-specific configuration."""
+    st.header("Design — Configuration")
+
+    # Summary of selections from previous steps
+    targets = st.session_state.get("targets", [])
+    cross = st.session_state.get("cross", [])
+    host = st.session_state.get("host", [])
+    st.markdown(f"**Target:** {', '.join(targets) if targets else 'none'}")
+    if cross:
+        st.markdown(f"**Cross-reactivity:** {', '.join(cross)}")
+    if host:
+        st.markdown(f"**Host:** {', '.join(host)}")
+
+    st.divider()
+
+    # Design mode
+    st.subheader("Design mode")
+    col_single, col_multi = st.columns(2)
+    with col_single:
+        singleplex = st.button(
+            "Singleplex",
+            use_container_width=True,
+            type="primary" if st.session_state.get("design_mode", "Singleplex") == "Singleplex" else "secondary",
+            key="btn_singleplex",
+        )
+        if singleplex:
+            st.session_state.design_mode = "Singleplex"
+            st.rerun()
+        st.caption("Design primers for a single target pathogen.")
+    with col_multi:
+        st.button(
+            "Multiplex (coming soon)",
+            use_container_width=True,
+            disabled=True,
+            key="btn_multiplex",
+        )
+        st.caption("Design a multiplexed panel for multiple targets simultaneously.")
+
+    # Set internal mode for pipeline
+    if st.session_state.get("design_mode", "Singleplex") == "Singleplex":
+        st.session_state.mode = "Singleplex"
+
+    st.divider()
+
+    # Probe design
+    st.checkbox("Enable probe design", key="probe_enabled")
+
+    # Parameters
+    _tab_parameters()
+
+    st.divider()
+
+    if st.button("Continue →", type="primary", use_container_width=True):
+        st.session_state._run_page_fresh = True
+        _navigate("run")
+        st.rerun()
+
+
+def _config_evaluate():
+    """Evaluate-specific configuration."""
+    st.header("Evaluate — Configuration")
+
+    # Summary of selections from previous steps
+    targets = st.session_state.get("targets", [])
+    cross = st.session_state.get("cross", [])
+    host = st.session_state.get("host", [])
+    st.markdown(f"**Target:** {', '.join(targets) if targets else 'none'}")
+    if cross:
+        st.markdown(f"**Cross-reactivity:** {', '.join(cross)}")
+    if host:
+        st.markdown(f"**Host:** {', '.join(host)}")
+
+    st.divider()
+
+    # Set internal mode
+    st.session_state.mode = "Evaluate"
+
+    # Primer input
+    st.subheader("Primer sequences to evaluate")
+
+    eval_method = st.radio(
+        "Input method",
+        ["Paste sequences", "Upload primer FASTA"],
+        key="eval_method",
+        horizontal=True,
+    )
+
+    if eval_method == "Paste sequences":
+        st.text_input("Forward primer sequence (5'→3')", key="eval_for",
+                       placeholder="e.g., ATGCGATCGATCGATCG")
+        st.text_input("Reverse primer sequence (5'→3')", key="eval_rev",
+                       placeholder="e.g., TAGCTAGCTAGCTAGCT")
+    else:
+        pset_upload = st.file_uploader(
+            "Upload primer set FASTA",
+            type=["fa", "fasta"],
+            key="eval_pset_upload",
+        )
+        if pset_upload:
+            pset_dir = PROJECT_ROOT / "evaluate"
+            pset_dir.mkdir(parents=True, exist_ok=True)
+            pset_path = pset_dir / pset_upload.name
+            pset_path.write_bytes(pset_upload.getvalue())
+            st.session_state["eval_pset_path"] = str(pset_path)
+            st.success(f"Saved {pset_upload.name}")
+
+    st.divider()
+
+    # Parameters
+    _tab_parameters()
+
+    st.divider()
+
+    if st.button("Continue →", type="primary", use_container_width=True):
+        st.session_state._run_page_fresh = True
+        _navigate("run")
+        st.rerun()
+
+
+def _config_monitor():
+    """Monitor-specific configuration."""
+    st.header("Monitor — Configuration")
+
+    # Summary of selections from previous steps
+    targets = st.session_state.get("targets", [])
+    cross = st.session_state.get("cross", [])
+    host = st.session_state.get("host", [])
+    st.markdown(f"**Target:** {', '.join(targets) if targets else 'none'}")
+    if cross:
+        st.markdown(f"**Cross-reactivity:** {', '.join(cross)}")
+    if host:
+        st.markdown(f"**Host:** {', '.join(host)}")
+
+    st.divider()
+
+    # Set internal mode
+    st.session_state.mode = "Evaluate"
+
+    # Primer input
+    st.subheader("Primer sequences to monitor")
+
+    eval_method = st.radio(
+        "Input method",
+        ["Paste sequences", "Upload primer FASTA"],
+        key="eval_method",
+        horizontal=True,
+    )
+
+    if eval_method == "Paste sequences":
+        st.text_input("Forward primer sequence (5'→3')", key="eval_for",
+                       placeholder="e.g., ATGCGATCGATCGATCG")
+        st.text_input("Reverse primer sequence (5'→3')", key="eval_rev",
+                       placeholder="e.g., TAGCTAGCTAGCTAGCT")
+    else:
+        pset_upload = st.file_uploader(
+            "Upload primer set FASTA",
+            type=["fa", "fasta"],
+            key="eval_pset_upload",
+        )
+        if pset_upload:
+            pset_dir = PROJECT_ROOT / "evaluate"
+            pset_dir.mkdir(parents=True, exist_ok=True)
+            pset_path = pset_dir / pset_upload.name
+            pset_path.write_bytes(pset_upload.getvalue())
+            st.session_state["eval_pset_path"] = str(pset_path)
+            st.success(f"Saved {pset_upload.name}")
+
+    st.divider()
+
+    # Parameters
+    _tab_parameters()
+
+    st.divider()
+
+    if st.button("Continue →", type="primary", use_container_width=True):
+        st.session_state._run_page_fresh = True
+        _navigate("run")
+        st.rerun()
+
+
+def _page_design():
+    """Design workflow — config page."""
+    _render_workflow_progress("config")
+    _config_design()
 
 
 def _page_evaluate():
-    """Evaluate workflow — wraps the original tabs with evaluate mode pre-selected."""
-    if "mode" not in st.session_state or st.session_state.mode != "Evaluate":
-        st.session_state.mode = "Evaluate"
+    """Evaluate workflow — config page."""
+    _render_workflow_progress("config")
+    _config_evaluate()
 
-    tab_files, tab_config, tab_params, tab_run, tab_results = st.tabs(
-        ["Files", "Configuration", "Parameters", "Run", "Results"]
-    )
 
-    with tab_files:
-        _tab_files()
-    with tab_config:
-        _tab_configuration()
-    with tab_params:
-        _tab_parameters()
-    with tab_run:
-        _tab_run()
-    with tab_results:
-        _tab_results()
+def _page_monitor():
+    """Monitor workflow — config page."""
+    _render_workflow_progress("config")
+    _config_monitor()
+
+
+def _page_run():
+    """Run pipeline page."""
+    _render_workflow_progress("run")
+    _tab_run()
+
+    # Show results button after pipeline completion
+    rc = st.session_state.get("pipeline_return_code")
+    if rc is not None and not st.session_state.get("pipeline_running"):
+        st.divider()
+        if st.button("View Results →", type="primary", use_container_width=True):
+            _navigate("results")
+            st.rerun()
+
+
+def _page_results():
+    """Results page."""
+    _render_workflow_progress("results")
+    _tab_results()
 
 
 def main():
@@ -1159,10 +2043,20 @@ def main():
 
     if page == "home":
         _page_home()
-    elif page == "design":
+    elif page == "select_target":
+        _page_select_target()
+    elif page == "select_offtarget":
+        _page_select_offtarget()
+    elif page in ("design", "design_config"):
         _page_design()
-    elif page == "evaluate":
+    elif page in ("evaluate", "evaluate_config"):
         _page_evaluate()
+    elif page in ("monitor", "monitor_config"):
+        _page_monitor()
+    elif page == "run":
+        _page_run()
+    elif page == "results":
+        _page_results()
     else:
         _page_home()
 
