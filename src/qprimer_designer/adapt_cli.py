@@ -636,12 +636,19 @@ def _deduplicate_fasta(fasta_path: Path) -> int:
     Keeps the first accession encountered for each unique sequence.
     Returns the number of duplicates removed.
     """
+    safe_root = (Path(__file__).resolve().parent.parent.parent / "target_seqs" / "original").resolve()
+    resolved_fasta_path = Path(fasta_path).resolve()
+    try:
+        resolved_fasta_path.relative_to(safe_root)
+    except ValueError as exc:
+        raise ValueError(f"Refusing to access FASTA outside allowed directory: {fasta_path}") from exc
+
     seen_seqs: dict[str, str] = {}  # sequence -> first header
     current_header = None
     current_seq_parts: list[str] = []
     entries: list[tuple[str, str]] = []  # (header_line, sequence)
 
-    with open(fasta_path) as f:
+    with open(resolved_fasta_path) as f:
         for line in f:
             if line.startswith(">"):
                 if current_header is not None:
@@ -664,7 +671,7 @@ def _deduplicate_fasta(fasta_path: Path) -> int:
 
     n_removed = n_before - len(unique_entries)
     if n_removed > 0:
-        with open(fasta_path, "w") as f:
+        with open(resolved_fasta_path, "w") as f:
             for header, seq in unique_entries:
                 f.write(header)
                 # Write sequence in 80-char lines
