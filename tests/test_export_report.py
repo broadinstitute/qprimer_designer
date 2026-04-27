@@ -50,11 +50,12 @@ class TestBuildSensitivityTable:
             "classifier": [1, 1, 0],
             "regressor": [0.9, 0.8, 0.1],
             "target": ["HIV", "HIV", "HIV"],
+            "seq_id": ["seq1", "seq2", "seq3"],
         })
         result = build_sensitivity_table(df)
         assert not result.empty
         assert "Coverage" in result.columns
-        assert result["Coverage"].iloc[0] == 2  # two classifier==1
+        assert result["Coverage"].iloc[0] == "2 / 3"
 
     def test_no_on_target_data(self):
         df = pd.DataFrame({
@@ -76,6 +77,7 @@ class TestBuildSpecificityTable:
             "classifier": [1, 0],
             "regressor": [0.9, 0.1],
             "target": ["FLU", "FLU"],
+            "seq_id": ["seq1", "seq2"],
         })
         result = build_specificity_table(df)
         assert not result.empty
