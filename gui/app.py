@@ -1982,7 +1982,7 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                             return
                         shutil.move(str(fasta_files[0]), str(dest))
                         from qprimer_designer.adapt_cli import _deduplicate_fasta
-                        n_deduped = _deduplicate_fasta(dest)
+                        n_deduped = _deduplicate_fasta(dest.name)
                         with open(dest) as f:
                             n_seqs = sum(1 for line in f if line.startswith(">"))
                         msg = f"Downloaded {n_seqs} unique sequences → `{dest.name}`"

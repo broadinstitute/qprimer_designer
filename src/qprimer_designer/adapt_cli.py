@@ -630,7 +630,7 @@ def _filter_fasta_by_accessions(
     return count
 
 
-def _deduplicate_fasta(fasta_path: Path) -> int:
+def _deduplicate_fasta(fasta_filename: str) -> int:
     """Remove duplicate sequences (same content, different accessions) in place.
 
     Keeps the first accession encountered for each unique sequence.
@@ -638,21 +638,20 @@ def _deduplicate_fasta(fasta_path: Path) -> int:
     """
     safe_root = (Path(__file__).resolve().parent.parent.parent / "target_seqs" / "original").resolve()
 
-    candidate = Path(fasta_path)
-    candidate_name = candidate.name
-    if str(candidate) != candidate_name:
-        raise ValueError(f"Refusing non-filename FASTA path: {fasta_path}")
+    candidate = Path(fasta_filename)
+    if candidate.name != fasta_filename or candidate.is_absolute():
+        raise ValueError(f"Refusing non-filename FASTA path: {fasta_filename}")
 
-    resolved_fasta_path = (safe_root / candidate_name).resolve()
+    resolved_fasta_path = (safe_root / fasta_filename).resolve()
     try:
         resolved_fasta_path.relative_to(safe_root)
     except ValueError as exc:
-        raise ValueError(f"Refusing to access FASTA outside allowed directory: {fasta_path}") from exc
+        raise ValueError(f"Refusing to access FASTA outside allowed directory: {fasta_filename}") from exc
 
     if resolved_fasta_path.suffix.lower() not in {".fa", ".fasta", ".fna"}:
-        raise ValueError(f"Refusing to access non-FASTA file: {fasta_path}")
+        raise ValueError(f"Refusing to access non-FASTA file: {fasta_filename}")
     if not resolved_fasta_path.exists() or not resolved_fasta_path.is_file():
-        raise ValueError(f"FASTA path is not a regular file: {fasta_path}")
+        raise ValueError(f"FASTA path is not a regular file: {fasta_filename}")
 
     seen_seqs: dict[str, str] = {}  # sequence -> first header
     current_header = None
