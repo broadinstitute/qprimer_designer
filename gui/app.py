@@ -14,6 +14,15 @@ from pathlib import Path
 
 import streamlit as st
 
+
+def _sanitize_filename_component(name: str) -> str:
+    """Return a safe single path component for output filenames."""
+    sanitized = re.sub(r"[^\w\-.]", "_", (name or ""))
+    sanitized = re.sub(r"_+", "_", sanitized).strip("._-")
+    if sanitized in {"", ".", ".."}:
+        return ""
+    return sanitized
+
 # ---------------------------------------------------------------------------
 # Resolve project root (parent of gui/)
 # ---------------------------------------------------------------------------
@@ -1959,7 +1968,18 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                     _render_progress(len(_FETCH_STEPS))
                     fasta_files = list(gget_tmp.glob("*.fa")) + list(gget_tmp.glob("*.fasta"))
                     if fasta_files:
-                        dest = FASTA_DIR / f"{target_name}.fa"
+                        safe_target_name = _sanitize_filename_component(target_name)
+                        if not safe_target_name:
+                            st.error("Invalid target name. Please use letters, numbers, '.', '_' or '-'.")
+                            detail_area.empty()
+                            return
+                        dest = FASTA_DIR / f"{safe_target_name}.fa"
+                        resolved_fasta_dir = FASTA_DIR.resolve()
+                        resolved_dest = dest.resolve()
+                        if resolved_fasta_dir not in resolved_dest.parents:
+                            st.error("Invalid target name path.")
+                            detail_area.empty()
+                            return
                         shutil.move(str(fasta_files[0]), str(dest))
                         from qprimer_designer.adapt_cli import _deduplicate_fasta
                         n_deduped = _deduplicate_fasta(dest)
