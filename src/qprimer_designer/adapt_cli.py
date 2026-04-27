@@ -641,6 +641,8 @@ def _deduplicate_fasta(fasta_filename: str) -> int:
     candidate = Path(fasta_filename)
     if candidate.name != fasta_filename or candidate.is_absolute():
         raise ValueError(f"Refusing non-filename FASTA path: {fasta_filename}")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.(?:fa|fasta|fna)", fasta_filename, flags=re.IGNORECASE):
+        raise ValueError(f"Refusing invalid FASTA filename: {fasta_filename}")
 
     resolved_fasta_path = (safe_root / fasta_filename).resolve()
     try:
