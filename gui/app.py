@@ -1846,46 +1846,60 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
         if not gget_bin:
             st.error("'gget' is not installed. Run: `pip install gget`")
         else:
-            gget_tmp = FASTA_DIR / f".gget_tmp_{target_name}"
+            safe_tmp = _sanitize_filename_component(target_name) or "tmp"
+            gget_tmp = (FASTA_DIR / f".gget_tmp_{safe_tmp}").resolve()
+            if FASTA_DIR.resolve() not in gget_tmp.parents:
+                st.error("Invalid target name.")
+                return
             gget_tmp.mkdir(parents=True, exist_ok=True)
 
-            cmd = [gget_bin, "virus", str(taxid).strip(), "--out", str(gget_tmp)]
+            safe_taxid = str(taxid).strip()
+            if not re.fullmatch(r"\d+", safe_taxid):
+                st.error("TaxID must be numeric.")
+                return
+
+            # Build gget command with validated arguments
+            _ALLOWED_NUC = {"complete", "partial", ""}
+            _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+            _SAFE_STR = re.compile(r"[\w\s.,\-]+")
+
+            cmd = [gget_bin, "virus", safe_taxid, "--out", str(gget_tmp)]
 
             nuc = st.session_state.get(f"{prefix}_nuc_completeness", "complete")
-            if nuc:
+            if nuc and nuc in _ALLOWED_NUC:
                 cmd.extend(["--nuc_completeness", nuc])
             seg = st.session_state.get(f"{prefix}_segment", "").strip()
-            if seg:
+            if seg and _SAFE_STR.fullmatch(seg):
                 cmd.extend(["--segment", seg])
             min_len = st.session_state.get(f"{prefix}_min_seq_length")
             if min_len:
-                cmd.extend(["--min_seq_length", str(min_len)])
+                cmd.extend(["--min_seq_length", str(int(min_len))])
             max_len = st.session_state.get(f"{prefix}_max_seq_length")
             if max_len:
-                cmd.extend(["--max_seq_length", str(max_len)])
+                cmd.extend(["--max_seq_length", str(int(max_len))])
             min_rel = st.session_state.get(f"{prefix}_min_release_date")
-            if min_rel:
+            if min_rel and _DATE_RE.fullmatch(str(min_rel)):
                 cmd.extend(["--min_release_date", str(min_rel)])
             max_rel = st.session_state.get(f"{prefix}_max_release_date")
-            if max_rel:
+            if max_rel and _DATE_RE.fullmatch(str(max_rel)):
                 cmd.extend(["--max_release_date", str(max_rel)])
             geo = st.session_state.get(f"{prefix}_geo_location", "").strip()
-            if geo:
+            if geo and _SAFE_STR.fullmatch(geo):
                 cmd.extend(["--geographic_location", geo])
             host_val = st.session_state.get(f"{prefix}_host", "").strip()
-            if host_val:
+            if host_val and _SAFE_STR.fullmatch(host_val):
                 cmd.extend(["--host", host_val])
             if st.session_state.get(f"{prefix}_refseq_only"):
                 cmd.append("--refseq_only")
             min_col = st.session_state.get(f"{prefix}_min_collection_date")
-            if min_col:
+            if min_col and _DATE_RE.fullmatch(str(min_col)):
                 cmd.extend(["--min_collection_date", str(min_col)])
             max_col = st.session_state.get(f"{prefix}_max_collection_date")
-            if max_col:
+            if max_col and _DATE_RE.fullmatch(str(max_col)):
                 cmd.extend(["--max_collection_date", str(max_col)])
             max_amb = st.session_state.get(f"{prefix}_max_ambiguous_chars")
             if max_amb is not None:
-                cmd.extend(["--max_ambiguous_chars", str(max_amb)])
+                cmd.extend(["--max_ambiguous_chars", str(int(max_amb))])
 
             _FETCH_STEPS = [
                 ("STEP 1", "Validating input"),
@@ -2712,12 +2726,12 @@ def _run_monitor():
         if e.strip()
     ]
 
-    # Append email config to run params.txt so it's self-contained
+    # Append non-sensitive email config to run params.txt
     with open(params_path, "a") as f:
         f.write(f"\n## Email configuration\n")
         f.write(f"EMAIL_SENDER = {email_sender}\n")
-        f.write(f"EMAIL_PASSWORD = {email_password}\n")
         f.write(f"EMAIL_RECIPIENTS = {recipients_str}\n")
+    # Note: EMAIL_PASSWORD is read from project params.txt at send time, never copied
 
     cores = st.session_state.get("cores", 1)
     progress_area = st.empty()

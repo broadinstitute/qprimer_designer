@@ -641,7 +641,9 @@ def _deduplicate_fasta(fasta_filename: str) -> int:
     candidate = Path(fasta_filename)
     if candidate.name != fasta_filename or candidate.is_absolute():
         raise ValueError(f"Refusing non-filename FASTA path: {fasta_filename}")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.(?:fa|fasta|fna)", fasta_filename, flags=re.IGNORECASE):
+    parts = fasta_filename.rsplit(".", 1)
+    if len(parts) != 2 or parts[1].lower() not in {"fa", "fasta", "fna"} \
+            or not re.fullmatch(r"[A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-]+)*", parts[0]):
         raise ValueError(f"Refusing invalid FASTA filename: {fasta_filename}")
 
     safe_name = re.sub(r"[^\w.\-]", "", fasta_filename)
