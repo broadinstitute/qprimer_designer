@@ -637,7 +637,13 @@ def _deduplicate_fasta(fasta_path: Path) -> int:
     Returns the number of duplicates removed.
     """
     safe_root = (Path(__file__).resolve().parent.parent.parent / "target_seqs" / "original").resolve()
-    resolved_fasta_path = Path(fasta_path).resolve()
+
+    candidate = Path(fasta_path)
+    candidate_name = candidate.name
+    if str(candidate) != candidate_name:
+        raise ValueError(f"Refusing non-filename FASTA path: {fasta_path}")
+
+    resolved_fasta_path = (safe_root / candidate_name).resolve()
     try:
         resolved_fasta_path.relative_to(safe_root)
     except ValueError as exc:
