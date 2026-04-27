@@ -19,12 +19,16 @@ class TestFindPositionValidProbes:
         ]
         probes_by_target = {"target1": {"probe_a"}}
         probe_positions = {("target1", "probe_a"): 150}
+        probe_mismatches = {("target1", "probe_a"): 0}
+        probe_indels = {("target1", "probe_a"): 0}
         probe_seqs_dict = {"probe_a": "ATCGATCGATCGATCGATCGATCG"}  # len 24
         buffer = 20
+        max_mismatches = 2
 
         result = _find_position_valid_probes(
             pair_full_rows, probes_by_target, probe_positions,
-            probe_seqs_dict, buffer
+            probe_mismatches, probe_indels,
+            probe_seqs_dict, buffer, max_mismatches
         )
         assert "probe_a" in result
 
@@ -40,12 +44,16 @@ class TestFindPositionValidProbes:
         probes_by_target = {"target1": {"probe_a"}}
         # Probe starts at position 105, but buffer is 20, so amp_start = 120
         probe_positions = {("target1", "probe_a"): 105}
+        probe_mismatches = {("target1", "probe_a"): 0}
+        probe_indels = {("target1", "probe_a"): 0}
         probe_seqs_dict = {"probe_a": "ATCG"}
         buffer = 20
+        max_mismatches = 2
 
         result = _find_position_valid_probes(
             pair_full_rows, probes_by_target, probe_positions,
-            probe_seqs_dict, buffer
+            probe_mismatches, probe_indels,
+            probe_seqs_dict, buffer, max_mismatches
         )
         assert "probe_a" not in result
 
@@ -60,12 +68,16 @@ class TestFindPositionValidProbes:
         ]
         probes_by_target = {}
         probe_positions = {}
+        probe_mismatches = {}
+        probe_indels = {}
         probe_seqs_dict = {}
         buffer = 20
+        max_mismatches = 2
 
         result = _find_position_valid_probes(
             pair_full_rows, probes_by_target, probe_positions,
-            probe_seqs_dict, buffer
+            probe_mismatches, probe_indels,
+            probe_seqs_dict, buffer, max_mismatches
         )
         assert result == []
 
@@ -80,12 +92,16 @@ class TestFindPositionValidProbes:
         ]
         probes_by_target = {"target1": {"probe_a"}}
         probe_positions = {("target1", "probe_a"): 150}
+        probe_mismatches = {("target1", "probe_a"): 0}
+        probe_indels = {("target1", "probe_a"): 0}
         probe_seqs_dict = {}  # probe_a not in dict
         buffer = 20
+        max_mismatches = 2
 
         result = _find_position_valid_probes(
             pair_full_rows, probes_by_target, probe_positions,
-            probe_seqs_dict, buffer
+            probe_mismatches, probe_indels,
+            probe_seqs_dict, buffer, max_mismatches
         )
         assert result == []
 
@@ -104,12 +120,16 @@ class TestFindPositionValidProbes:
         }
         # Valid for target1 but no mapping for target2
         probe_positions = {("target1", "probe_a"): 150}
+        probe_mismatches = {("target1", "probe_a"): 0}
+        probe_indels = {("target1", "probe_a"): 0}
         probe_seqs_dict = {"probe_a": "ATCG"}
         buffer = 10
+        max_mismatches = 2
 
         result = _find_position_valid_probes(
             pair_full_rows, probes_by_target, probe_positions,
-            probe_seqs_dict, buffer
+            probe_mismatches, probe_indels,
+            probe_seqs_dict, buffer, max_mismatches
         )
         # probe_a is missing from target2 positions, so it should fail
         assert "probe_a" not in result

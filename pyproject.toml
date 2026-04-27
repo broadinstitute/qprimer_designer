@@ -27,6 +27,7 @@ gui = ["streamlit>=1.30"]
 
 [project.scripts]
 qprimer = "qprimer_designer.cli:main"
+adapt = "qprimer_designer.adapt_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

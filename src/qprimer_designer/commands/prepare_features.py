@@ -39,10 +39,12 @@ def infer_primer_orientation(pname: str) -> str:
         return "f"
     elif pname_lower.endswith("_r") or pname_lower.endswith("_rev"):
         return "r"
+    elif pname_lower.endswith("_p") or pname_lower.endswith("_pro"):
+        return "p"
     else:
         raise ValueError(
             f"Cannot infer primer orientation from name: {pname}\n"
-            "Expected suffix: _f, _for, _r, or _rev"
+            "Expected suffix: _f, _for, _r, _rev, _p, or _pro"
         )
 
 

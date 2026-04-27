@@ -46,6 +46,7 @@ For more information on a specific command:
         pick_representatives,
         prepare_input,
         evaluate,
+        rescue_evaluate,
         filter_primers,
         build_output,
         select_multiplex,
@@ -59,6 +60,7 @@ For more information on a specific command:
     pick_representatives.register(subparsers)
     prepare_input.register(subparsers)
     evaluate.register(subparsers)
+    rescue_evaluate.register(subparsers)
     filter_primers.register(subparsers)
     build_output.register(subparsers)
     select_multiplex.register(subparsers)

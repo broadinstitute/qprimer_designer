@@ -1,0 +1,15 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 5%
+    patch:
+      default:
+        target: 0%
+        threshold: 0%
+
+ignore:
+  - "gui/"
+  - "training/"
+  - "workflows/"

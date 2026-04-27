@@ -32,7 +32,6 @@ amplicons and computes amplicon-level features.
     parser.add_argument("--reftype", dest="reftype", required=True, choices=["on", "off"], help="on-target or off-target")
     parser.add_argument("--features", dest="pri_features", required=True, help="Primer features CSV")
     parser.add_argument("--prev", default="", help="Previous evaluation file (for off-target restriction)")
-    parser.add_argument("--skip-length-filter", action="store_true", help="Skip amplicon length constraints")
     parser.set_defaults(func=run)
 
 
@@ -48,16 +47,10 @@ def _ensure_list(x):
 def run(args):
     """Run the prepare-input command."""
     params = parse_params(args.param_file)
-    if args.skip_length_filter:
-        min_amp_len = 0
-        max_amp_len = float('inf')
-        min_off_len = 0
-        max_off_len = float('inf')
-    else:
-        min_amp_len = int(params.get("AMPLEN_MIN", 60))
-        max_amp_len = int(params.get("AMPLEN_MAX", 200))
-        min_off_len = int(params.get("OFFLEN_MIN", 60))
-        max_off_len = int(params.get("OFFLEN_MAX", 2000))
+    min_amp_len = int(params.get("AMPLEN_MIN", 60))
+    max_amp_len = int(params.get("AMPLEN_MAX", 200))
+    min_off_len = int(params.get("OFFLEN_MIN", 50))
+    max_off_len = int(params.get("OFFLEN_MAX", 5000))
     num_select = int(params.get("NUM_TOP_SENSITIVITY", 100))
 
     print(f"Preparing ML input from {args.mapped}...")
@@ -115,14 +108,7 @@ def run(args):
 
     drop_cols = ['orientation', 'forrev']
 
-    skip = args.skip_length_filter
-
-    if skip:
-        fors = maptbl[maptbl['forrev'] == 'f'].drop(columns=drop_cols)
-        revs = maptbl[maptbl['forrev'] == 'r'].drop(columns=drop_cols)
-        minl, maxl = 0, float('inf')
-        lfunc = max
-    elif args.reftype == 'on':
+    if args.reftype == 'on':
         fors = maptbl[(maptbl['orientation'] == 0) & (maptbl['forrev'] == 'f')].drop(columns=drop_cols)
         revs = maptbl[(maptbl['orientation'] == 16) & (maptbl['forrev'] == 'r')].drop(columns=drop_cols)
         minl, maxl = min_amp_len, max_amp_len

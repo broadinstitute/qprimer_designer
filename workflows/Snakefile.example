@@ -95,22 +95,21 @@ else:
     TARGETS_PATTERN = "|".join(TARGETS) if TARGETS else ".*"
     ALL_TARGETS_PATTERN = "|".join(ALL_TARGETS) if ALL_TARGETS else ".*"
 
-# Get probe mismatch penalty from params
-def get_probe_mismatch_penalty():
-    """Calculate bowtie2 mismatch penalty from PROBE_MAX_MISMATCHES."""
+# Read PROBE_MAX_MISMATCHES from params (used for post-alignment filtering)
+def get_probe_max_mismatches():
+    """Read PROBE_MAX_MISMATCHES from params file."""
     if not os.path.exists(PARAMS):
-        return 10  # Default
+        return 2  # Default
     with open(PARAMS) as f:
         for line in f:
             if line.strip().startswith('PROBE_MAX_MISMATCHES'):
                 try:
-                    max_mm = int(line.split('=')[1].strip().split('#')[0].strip())
-                    return int(20 / max_mm)
+                    return int(line.split('=')[1].strip().split('#')[0].strip())
                 except:
-                    return 10
-    return 10  # Default if not found
+                    return 2
+    return 2
 
-PROBE_MISMATCH_PENALTY = get_probe_mismatch_penalty()
+PROBE_MAX_MISMATCHES = get_probe_max_mismatches()
 
 ############################################
 # Helper functions
@@ -141,8 +140,10 @@ def check_ids(fasta):
                 seen.setdefault(name[:-4], set()).add("for")
             elif name.endswith("_rev"):
                 seen.setdefault(name[:-4], set()).add("rev")
+            elif name.endswith("_pro"):
+                seen.setdefault(name[:-4], set()).add("pro")
 
-    ids = sorted(pid for pid, tags in seen.items() if tags == {"for", "rev"})
+    ids = sorted(pid for pid, tags in seen.items() if {"for", "rev"} <= tags)
 
     if not ids:
         raise ValueError(
@@ -154,6 +155,15 @@ def check_ids(fasta):
 
     return ids
 
+
+def has_probe(fasta):
+    """Check if FASTA file contains probe entries (*_pro)."""
+    with open(fasta) as f:
+        for line in f:
+            if line.startswith(">") and line.strip().endswith("_pro"):
+                return True
+    return False
+
 ############################################
 # Evaluate mode configuration
 ############################################
@@ -161,6 +171,7 @@ def check_ids(fasta):
 EVALUATE = bool(int(config.get("evaluate", 0)))
 FOR  = config.get("for")
 REV  = config.get("rev")
+PRO  = config.get("pro")
 PSET = config.get("pset")
 
 if EVALUATE:
@@ -192,7 +203,7 @@ if EVALUATE:
 if EVALUATE:
     rule all:
         input:
-            f"{EVAL_DIR}/{PSET_NAME}"
+            f"outputs/{PSET_NAME}.{PRIMARY_TARGET}.eval.rescue_done"
 
 elif MULTIPLEX:
     MULTIPLEX_STEM = "_".join(sorted(PANEL))
@@ -425,6 +436,10 @@ rule prepare_pset_fasta:
 
             with open(out, "w") as f:
                 f.write(f">{pair_id}_for\n{for_seq}\n>{pair_id}_rev\n{rev_seq_rc}\n")
+                # Optionally add probe sequence
+                pro_seq = config.get("pro")
+                if pro_seq:
+                    f.write(f">{pair_id}_pro\n{pro_seq}\n")
 
         ids = check_ids(out)
 
@@ -440,24 +455,69 @@ rule prepare_features:
         "--fa '{input.fa}' "
         "--out '{output.feat}'"
 
+rule extract_probe_from_pset:
+    """Extract probe entries (*_pro) from evaluate FASTA into separate file."""
+    wildcard_constraints:
+        filename="[^./]+"
+    input:
+        fasta="evaluate/{filename}.fa"
+    output:
+        probe_fa="evaluate/probes/{filename}.fa"
+    run:
+        from Bio import SeqIO
+        probes = [r for r in SeqIO.parse(input.fasta, "fasta") if r.id.endswith("_pro")]
+        with open(output.probe_fa, "w") as f:
+            SeqIO.write(probes, f, "fasta")
+        print(f"Extracted {len(probes)} probe(s) to {output.probe_fa}")
+
+
+# Determine if probe evaluation is needed at DAG time:
+# - Direct input (--for/--rev/--pro): check PRO config
+# - PSET file: check the file for _pro entries (file exists at DAG time)
+if EVALUATE:
+    EVAL_HAS_PROBE = PRO is not None if not PSET else has_probe(str(PSET_PATH))
+else:
+    EVAL_HAS_PROBE = False
+
 rule evaluate_pset:
     wildcard_constraints:
         filename="[^./]+"
     input:
         eval_on=f"outputs/{{filename}}.{PRIMARY_TARGET}.eval",
         eval_off=lambda wc: [f"outputs/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
-        fasta="evaluate/{filename}.fa"
+        fasta="evaluate/{filename}.fa",
+        probe_mapping_on=lambda wc: (
+            f"alignments/{wc.filename}.{PRIMARY_TARGET}.probe.csv"
+            if EVAL_HAS_PROBE else []
+        ),
+        probe_mapping_off=lambda wc: (
+            [f"alignments/{wc.filename}.{t}.probe.csv" for t in OFF_TARGETS]
+            if EVAL_HAS_PROBE else []
+        ),
+        probe_fa=lambda wc: (
+            f"evaluate/probes/{wc.filename}.fa"
+            if EVAL_HAS_PROBE else []
+        )
     output:
         directory(f"{EVAL_DIR}/{{filename}}")
     params:
         ids=lambda wc: " ".join(shlex.quote(i) for i in check_ids(f"evaluate/{wc.filename}.fa")),
-        off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else ""
+        off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
+        probe_args=lambda wc, input: (
+            f"--probe-mapping-on {shlex.quote(str(input.probe_mapping_on))} "
+            f"--probe-mapping-off {' '.join(shlex.quote(str(f)) for f in input.probe_mapping_off)} "
+            f"--probe-seqs {shlex.quote(str(input.probe_fa))} "
+            f"--probe-max-mismatches {PROBE_MAX_MISMATCHES}"
+            if EVAL_HAS_PROBE else ""
+        )
     shell:
         "qprimer export-report "
         "--on '{input.eval_on}' "
         "{params.off_arg} "
         "--out '{output}' "
-        "--names {params.ids}"
+        "--names {params.ids} "
+        "{params.probe_args} "
+        f"--ref 'target_seqs/original/{PRIMARY_TARGET}.fa'"
 
 
 ############################################
@@ -495,24 +555,25 @@ rule align:
         min(2, MAX_CORES)
     params:
         reference=lambda wc: f"bt2_index/{wc.target}",
-        multiMap=lambda wc: min(count_seqs(wc.target) * 5, 50000),
-        mapOption="--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
+        multiMap=lambda wc: min(count_seqs(wc.target) * 2, 50000),
+        mapOption="--mp 2,2 --np 2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
     shell:
         "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
-        "--no-hd --no-unal > '{output}'"
+        "--no-hd --no-unal -S '{output}'"
 
 
 rule align_probes:
-    """Align probes to ON-targets (strict) or OFF-targets (less strict)."""
+    """Align probes to on/off targets (design and evaluate modes)."""
     wildcard_constraints:
-        virus=TARGETS_PATTERN,
+        virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
         fasta=lambda wc: (
-            f"primer_seqs/{wc.virus}_probe.fa"
-            if wc.virus == wc.target
-            else f"primer_seqs/{wc.virus}_filt_probes.fa"
+            f"evaluate/probes/{wc.virus}.fa" if EVALUATE
+            else (f"primer_seqs/{wc.virus}_probe.fa"
+                    if wc.virus == wc.target
+                    else f"primer_seqs/{wc.virus}_filt_probes.fa")
         ),
         index="bt2_index/{target}.1.bt2"
     output:
@@ -521,23 +582,19 @@ rule align_probes:
         min(2, MAX_CORES)
     params:
         reference=lambda wc: f"bt2_index/{wc.target}",
-        multiMap=lambda wc: min(count_seqs(wc.target) * 5, 50000),
-        # Strict alignment for ON-target (virus==target), less strict for OFF-target
-        mapOption=lambda wc: (
-            f"--end-to-end --mp {PROBE_MISMATCH_PENALTY},{PROBE_MISMATCH_PENALTY} --rdg 20,20 --rfg 20,20 -N 1 --score-min L,-0.8,-0.8"
-            if wc.virus == wc.target
-            else "--mp 2,2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
-        )
+        multiMap=lambda wc: min(count_seqs(wc.target) * 2, 50000),
+        # Permissive alignment (6mm/20mer); mismatch filtering done post-alignment
+        mapOption="--mp 3,3 --np 2 --rdg 6,4 --rfg 6,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
     shell:
         "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
-        "--no-hd --no-unal > '{output}'"
+        "--no-hd --no-unal -S '{output}'"
 
 
 rule parse_probe_mapping:
     """Parse probe SAM file into mapping table."""
     wildcard_constraints:
-        virus=TARGETS_PATTERN,
+        virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
         sam="alignments/{virus}.{target}.probe.sam"
@@ -637,17 +694,16 @@ rule prepare_input:
     output:
         "inputs/{virus}.{target}.input"
     params:
-        ref_type=lambda wc: "on" if (wc.virus == wc.target or EVALUATE) else "off",
+        ref_type=lambda wc: "on" if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else "off",
         prev_arg=lambda wc: (
             f"--prev 'outputs/{wc.virus}.{wc.virus}.eval'"
             if wc.virus != wc.target and not EVALUATE else ""
-        ),
-        skip_len=lambda wc: "--skip-length-filter" if EVALUATE else ""
+        )
     shell:
         "qprimer prepare-input "
         "--in '{input.mapped}' {params.prev_arg} --out '{output}' "
         "--ref '{input.ref}' --reftype {params.ref_type} "
-        "--features '{input.features}' --params '{PARAMS}' {params.skip_len}"
+        "--features '{input.features}' --params '{PARAMS}'"
 
 
 rule evaluate:
@@ -669,6 +725,44 @@ rule evaluate:
         "qprimer evaluate "
         "--in '{input.inp}' --out '{output}' "
         "--ref '{input.ref}' --reftype {params.ref_type} "
+        "--threads {threads}"
+
+
+rule rescue_evaluate:
+    wildcard_constraints:
+        virus="[^./]+",
+        target=ALL_TARGETS_PATTERN
+    input:
+        eval="outputs/{virus}.{target}.eval",
+        report_dir=lambda wc: (
+            f"{EVAL_DIR}/{wc.virus}" if EVALUATE
+            else []
+        ),
+        fasta=lambda wc: (
+            f"evaluate/{wc.virus}.fa" if EVALUATE
+            else f"primer_seqs/{wc.virus}_init.fa"
+        ),
+        ref="target_seqs/original/{target}.fa",
+        features=lambda wc: (
+            f"evaluate/{wc.virus}.feat" if EVALUATE
+            else f"primer_seqs/{wc.virus}_init.feat"
+        )
+    output:
+        touch("outputs/{virus}.{target}.eval.rescue_done")
+    params:
+        ref_type=lambda wc: "on" if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else "off",
+        report_dir=lambda wc: (
+            f"{EVAL_DIR}/{wc.virus}" if EVALUATE
+            else ""
+        )
+    threads:
+        min(4, MAX_CORES)
+    shell:
+        "qprimer rescue-evaluate "
+        "--eval '{input.eval}' --report-dir '{params.report_dir}' "
+        "--fasta '{input.fasta}' "
+        "--ref '{input.ref}' --features '{input.features}' "
+        "--params '{PARAMS}' --reftype {params.ref_type} "
         "--threads {threads}"
 
 

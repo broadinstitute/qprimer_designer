@@ -354,6 +354,27 @@ def run(args):
         print(f"Sorted by sum of off-target scores")
 
 
+    # Convert coverage columns from numbers to "N / total" strings
+    if args.ref:
+        n_ref = sum(1 for _ in SeqIO.parse(args.ref, "fasta"))
+        final['cov_target'] = final['cov_target'].apply(
+            lambda x: f"{round(x * n_ref)} / {n_ref}"
+        )
+
+    # Off-target coverage: value is already an absolute count (not fraction)
+    ref_dir = os.path.dirname(args.ref) if args.ref else ""
+    for off_path in args.eval_off:
+        oname = os.path.basename(off_path).split(".")[1]
+        cov_col = f"cov_{oname}"
+        if cov_col in final.columns:
+            off_ref = os.path.join(ref_dir, f"{oname}.fa")
+            if os.path.exists(off_ref):
+                n_off = sum(1 for _ in SeqIO.parse(off_ref, "fasta"))
+                final[cov_col] = final[cov_col].apply(
+                    lambda x, total=n_off: f"{int(round(float(x)))} / {total}"
+                )
+
+
     # Write output
     final.round(3).to_csv(args.output)
 

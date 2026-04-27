@@ -18,7 +18,9 @@ def load_probe_data(probe_mapping_path, probe_seqs_path):
 
     # Build dict indexes for O(1) lookups instead of repeated DataFrame filtering
     probes_by_target = defaultdict(set)
-    probe_positions = {}
+    probe_positions = {}  # (target_id, probe_name) -> start_pos
+    probe_mismatches = {}  # (target_id, probe_name) -> mismatches
+    probe_indels = {}  # (target_id, probe_name) -> indels
     for row in mapping_df.itertuples(index=False):
         tid = row.target_id
         pname = row.probe_name
@@ -26,19 +28,24 @@ def load_probe_data(probe_mapping_path, probe_seqs_path):
         key = (tid, pname)
         if key not in probe_positions:
             probe_positions[key] = row.start_pos
+            probe_mismatches[key] = row.mismatches
+            probe_indels[key] = getattr(row, 'indels', 0)
 
-    return dict(probes_by_target), probe_positions, probe_seqs
+    return dict(probes_by_target), probe_positions, probe_mismatches, probe_indels, probe_seqs
 
 
 def _find_position_valid_probes(
     pair_full_rows,
     probes_by_target,
     probe_positions,
+    probe_mismatches,
+    probe_indels,
     probe_seqs_dict,
-    buffer
+    buffer,
+    max_mismatches,
 ):
     """
-    Find probes that pass mapping and position checks for a primer pair.
+    Find probes that pass mapping, position, mismatch, and indel checks.
 
     Does NOT check dimer ΔG — that is handled via batching in the caller.
 
@@ -46,11 +53,14 @@ def _find_position_valid_probes(
         pair_full_rows: List of rows from .full file for this pair
         probes_by_target: Dict {target_id: set of probe_names}
         probe_positions: Dict {(target_id, probe_name): start_pos}
+        probe_mismatches: Dict {(target_id, probe_name): mismatches}
+        probe_indels: Dict {(target_id, probe_name): indels}
         probe_seqs_dict: Dict {probe_name: sequence}
         buffer: Buffer distance from primer ends (nt)
+        max_mismatches: Maximum allowed mismatches for probe alignment
 
     Returns:
-        List of probe names passing position checks
+        List of probe names passing position, mismatch, and indel checks
     """
     # Collect all target-position mappings for this primer pair
     target_positions = {}  # {target_id: [(fwd_start, prod_len), ...]}
@@ -84,6 +94,13 @@ def _find_position_valid_probes(
         for target_id in all_targets:
             pos_key = (target_id, probe_name)
             if pos_key not in probe_positions:
+                valid_for_all = False
+                break
+
+            # Check mismatch and indel counts
+            mm = probe_mismatches.get(pos_key, 0)
+            indel = probe_indels.get(pos_key, 0)
+            if mm > max_mismatches or indel > 0:
                 valid_for_all = False
                 break
 
@@ -162,7 +179,7 @@ def run(args):
         print("Probe mode enabled - filtering by probe compatibility...")
 
         # Load probe data with pre-built indexes
-        probes_by_target, probe_positions, probe_seqs_dict = load_probe_data(
+        probes_by_target, probe_positions, probe_mismatches, probe_indels, probe_seqs_dict = load_probe_data(
             args.probe_mapping, args.probe_seqs
         )
 
@@ -170,6 +187,7 @@ def run(args):
         buffer = int(params.get("PROBE_AMPLICON_BUFFER", 20))
         min_probes = int(params.get("MIN_PROBES_PER_PAIR", 1))
         max_probes = int(params.get("MAX_PROBES_PER_PAIR", 5))
+        max_mismatches = int(params.get("PROBE_MAX_MISMATCHES", 2))
 
         # Select top N pairs FIRST
         top_candidates = res.iloc[:num_select].copy()
@@ -212,8 +230,11 @@ def run(args):
                 pair_full_data[pair_key],
                 probes_by_target,
                 probe_positions,
+                probe_mismatches,
+                probe_indels,
                 probe_seqs_dict,
-                buffer
+                buffer,
+                max_mismatches,
             )
 
             if not candidates:

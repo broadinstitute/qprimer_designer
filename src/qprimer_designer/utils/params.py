@@ -38,6 +38,19 @@ def parse_params(param_file: str | Path) -> dict[str, Any]:
     return params
 
 
+def parse_list_param(params: dict, key: str) -> list[str]:
+    """Parse a comma-separated parameter value into a list of strings.
+
+    Returns an empty list if the key is missing or the value is empty.
+    """
+    val = params.get(key, "")
+    if isinstance(val, (int, float)):
+        return [str(int(val))]
+    if not val or not val.strip():
+        return []
+    return [item.strip() for item in val.split(",") if item.strip()]
+
+
 def get_primer_params(params: dict) -> dict:
     """Extract primer generation parameters from parsed params dict."""
     return {

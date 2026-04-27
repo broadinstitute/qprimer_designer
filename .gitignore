@@ -86,3 +86,10 @@ target_seqs/selected/
 
 # Logs
 *.log
+
+# Parameters file (may contain email credentials)
+params.txt
+!workflows/params.txt.template
+
+# Monitor working directory
+monitor/
