@@ -1022,8 +1022,16 @@ def _send_email(
         return False
 
 
-def _install_cron(work_dir: Path, params_file: Path, schedule_email: str):
-    """Install a monthly cron job for adapt monitor."""
+_CRON_SCHEDULES = {
+    "biweekly": ("0 0 1,15 * *", "1st and 15th of every month"),
+    "monthly": ("0 0 1 * *", "1st of every month"),
+    "quarterly": ("0 0 1 1,4,7,10 *", "1st of Jan, Apr, Jul, Oct"),
+}
+
+
+def _install_cron(work_dir: Path, params_file: Path, schedule_email: str,
+                  frequency: str = "monthly"):
+    """Install a cron job for adapt monitor."""
     # Build the command to run
     adapt_path = shutil.which("adapt")
     if not adapt_path:
@@ -1038,7 +1046,8 @@ def _install_cron(work_dir: Path, params_file: Path, schedule_email: str):
     if schedule_email:
         cmd += f" --email {schedule_email}"
 
-    cron_line = f"0 0 1 * * {cmd}  # adapt-monitor"
+    schedule, description = _CRON_SCHEDULES.get(frequency, _CRON_SCHEDULES["monthly"])
+    cron_line = f"{schedule} {cmd}  # adapt-monitor"
 
     # Read existing crontab
     try:
@@ -1059,7 +1068,7 @@ def _install_cron(work_dir: Path, params_file: Path, schedule_email: str):
         ["crontab", "-"], input=new_cron, text=True
     )
     if proc.returncode == 0:
-        print(f"Cron job installed (runs 1st of every month at midnight)")
+        print(f"Cron job installed ({description} at midnight)")
         print(f"  {cron_line}")
     else:
         print("Error installing cron job", file=sys.stderr)

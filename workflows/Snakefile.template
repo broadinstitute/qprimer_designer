@@ -486,6 +486,7 @@ rule evaluate_pset:
         eval_on=f"outputs/{{filename}}.{PRIMARY_TARGET}.eval",
         eval_off=lambda wc: [f"outputs/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
         fasta="evaluate/{filename}.fa",
+        off_refs=lambda wc: [f"target_seqs/original/{t}.fa" for t in OFF_TARGETS],
         probe_mapping_on=lambda wc: (
             f"alignments/{wc.filename}.{PRIMARY_TARGET}.probe.csv"
             if EVAL_HAS_PROBE else []
@@ -503,6 +504,7 @@ rule evaluate_pset:
     params:
         ids=lambda wc: " ".join(shlex.quote(i) for i in check_ids(f"evaluate/{wc.filename}.fa")),
         off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
+        off_ref_arg=lambda wc, input: "--off-ref " + " ".join(shlex.quote(str(f)) for f in input.off_refs) if input.off_refs else "",
         probe_args=lambda wc, input: (
             f"--probe-mapping-on {shlex.quote(str(input.probe_mapping_on))} "
             f"--probe-mapping-off {' '.join(shlex.quote(str(f)) for f in input.probe_mapping_off)} "
@@ -514,6 +516,7 @@ rule evaluate_pset:
         "qprimer export-report "
         "--on '{input.eval_on}' "
         "{params.off_arg} "
+        "{params.off_ref_arg} "
         "--out '{output}' "
         "--names {params.ids} "
         "{params.probe_args} "
@@ -719,7 +722,7 @@ rule evaluate:
     resources:
         gpu=1
     params:
-        ref_type=lambda wc: "on" if (wc.virus == wc.target or EVALUATE) else "off"
+        ref_type=lambda wc: "on" if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else "off"
     shell:
         "qprimer evaluate "
         "--in '{input.inp}' --out '{output}' "

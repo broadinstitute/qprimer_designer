@@ -31,6 +31,7 @@ Creates one Excel file per primer set with:
     parser.add_argument("--off", nargs="*", default=[], help="Off-target evaluation files")
     parser.add_argument("--out", required=True, help="Output directory for Excel reports")
     parser.add_argument("--names", nargs="+", required=True, help="Primer set IDs to process")
+    parser.add_argument("--off-ref", nargs="*", default=[], help="Off-target reference FASTA files (same order as --off)")
     parser.add_argument("--probe-mapping-on", default=None, help="Probe mapping CSV for on-target")
     parser.add_argument("--probe-mapping-off", nargs="*", default=[], help="Probe mapping CSVs for off-targets")
     parser.add_argument("--probe-seqs", default=None, help="Probe FASTA file")
@@ -333,16 +334,33 @@ def build_specificity_table(df, has_probe=False):
 
     results = []
     for target, group in df_off.groupby("target"):
-        n_covered, n_total, act = _deduplicate_coverage(group, has_probe)
+        # Check if this is a placeholder (no real amplification predicted)
+        is_placeholder = (
+            len(group) == 1
+            and group.index[0] == "(none)"
+        )
 
-        results.append({
-            "target": target,
-            "Coverage": f"{n_covered} / {n_total}",
-            "Act_mean": round(act.mean(), 3) if len(act) > 0 else np.nan,
-            "Act_median": round(act.median(), 3) if len(act) > 0 else np.nan,
-            "Act_min": round(act.min(), 3) if len(act) > 0 else np.nan,
-            "Act_max": round(act.max(), 3) if len(act) > 0 else np.nan,
-        })
+        if is_placeholder:
+            off_total = group["_off_ref_total"].iloc[0]
+            off_total = int(off_total) if pd.notna(off_total) else 0
+            results.append({
+                "target": target,
+                "Coverage": f"0 / {off_total}",
+                "Act_mean": np.nan,
+                "Act_median": np.nan,
+                "Act_min": np.nan,
+                "Act_max": np.nan,
+            })
+        else:
+            n_covered, n_total, act = _deduplicate_coverage(group, has_probe)
+            results.append({
+                "target": target,
+                "Coverage": f"{n_covered} / {n_total}",
+                "Act_mean": round(act.mean(), 3) if len(act) > 0 else np.nan,
+                "Act_median": round(act.median(), 3) if len(act) > 0 else np.nan,
+                "Act_min": round(act.min(), 3) if len(act) > 0 else np.nan,
+                "Act_max": round(act.max(), 3) if len(act) > 0 else np.nan,
+            })
 
     return pd.DataFrame(results).set_index("target")
 
@@ -363,8 +381,11 @@ def save_eval_excel(df, outdir, filename, probe_seq=None, ref_total=None):
     has_probe = probe_seq is not None
 
     # Drop internal columns from detail sheet
-    drop_cols = ["pseq_f", "pseq_r"]
-    df.drop(columns=drop_cols).to_excel(xlsx_path, sheet_name="detail")
+    drop_cols = ["pseq_f", "pseq_r", "_off_ref_total"]
+    drop_cols = [c for c in drop_cols if c in df.columns]
+    # Remove placeholder rows from detail sheet
+    df_detail = df[df.index != "(none)"]
+    df_detail.drop(columns=drop_cols).to_excel(xlsx_path, sheet_name="detail")
 
     wb = load_workbook(xlsx_path)
 
@@ -508,6 +529,14 @@ def run(args):
     ref_seq_ids = _get_ref_seq_ids(args.ref) if args.ref else None
     ref_total = len(ref_seq_ids) if ref_seq_ids else None
 
+    # Build off-target reference totals: target_name → seq count
+    off_ref_totals = {}
+    for off_path, off_ref_path in zip(args.off, args.off_ref):
+        target_name = get_target_name(off_path)
+        off_ref_ids = _get_ref_seq_ids(off_ref_path)
+        if off_ref_ids is not None:
+            off_ref_totals[target_name] = len(off_ref_ids)
+
     cols = [
         "target", "eval_type", "decision", "reason",
         "classifier", "regressor",
@@ -549,21 +578,41 @@ def run(args):
         # Process off-target evaluations
         for off_path in args.off:
             try:
-                df_off = eval_to_target_df(
-                    eval_path=off_path,
-                    pid=pid,
-                    eval_type="off"
-                )
+                target_name = get_target_name(off_path)
+
+                try:
+                    df_off = eval_to_target_df(
+                        eval_path=off_path,
+                        pid=pid,
+                        eval_type="off"
+                    )
+                except ValueError:
+                    # No alignments found for this primer set against this
+                    # off-target — treat as zero amplification.
+                    df_off = pd.DataFrame()
 
                 if not df_off.empty:
                     df_off["eval_type"] = "off"
-                    target_name = get_target_name(off_path)
                     df_off["target"] = target_name
                     if has_probe:
                         off_probe_path = probe_mapping_off.get(target_name)
                         df_off = annotate_probe(df_off, off_probe_path, pid, probe_max_mm)
                     df_off = add_decision_columns(df_off, has_probe)
                     dfs.append(df_off[cols].sort_values("regressor", ascending=False))
+                else:
+                    # No predicted amplification — add a placeholder row so
+                    # the specificity table can show "0 / N"
+                    placeholder = {col: np.nan for col in cols}
+                    placeholder["eval_type"] = "off"
+                    placeholder["target"] = target_name
+                    placeholder["classifier"] = 0
+                    placeholder["regressor"] = "no_amplification"
+                    placeholder["decision"] = 0
+                    placeholder["reason"] = ""
+                    placeholder["_off_ref_total"] = off_ref_totals.get(target_name)
+                    if has_probe:
+                        placeholder["probe"] = 0
+                    dfs.append(pd.DataFrame([placeholder], index=pd.Index(["(none)"], name="seq_id")))
 
             except Exception as e:
                 print(f"[WARNING] off-target eval failed for {pid} ({off_path}): {e}")
