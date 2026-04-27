@@ -648,16 +648,19 @@ def _deduplicate_fasta(fasta_filename: str) -> int:
     if safe_name != fasta_filename or safe_name in {"", ".", ".."}:
         raise ValueError(f"Refusing unsafe FASTA filename: {fasta_filename}")
 
-    resolved_fasta_path = (safe_root / safe_name).resolve()
+    allowed_files = {
+        p.name: p.resolve()
+        for p in safe_root.iterdir()
+        if p.is_file() and p.suffix.lower() in {".fa", ".fasta", ".fna"}
+    }
+    resolved_fasta_path = allowed_files.get(safe_name)
+    if resolved_fasta_path is None:
+        raise ValueError(f"FASTA path is not a regular file: {safe_name}")
+
     try:
         resolved_fasta_path.relative_to(safe_root)
     except ValueError as exc:
         raise ValueError(f"Refusing to access FASTA outside allowed directory: {safe_name}") from exc
-
-    if resolved_fasta_path.suffix.lower() not in {".fa", ".fasta", ".fna"}:
-        raise ValueError(f"Refusing to access non-FASTA file: {safe_name}")
-    if not resolved_fasta_path.exists() or not resolved_fasta_path.is_file():
-        raise ValueError(f"FASTA path is not a regular file: {safe_name}")
 
     seen_seqs: dict[str, str] = {}  # sequence -> first header
     current_header = None
