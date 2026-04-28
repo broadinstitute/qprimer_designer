@@ -211,7 +211,7 @@ VIRUS_PRESETS: list[tuple[str, int]] = [
     ("RSV-B (Respiratory Syncytial Virus B)", 208895),
     ("MPOX (Monkeypox virus)", 10244),
     ("Ebola virus (Zaire)", 186538),
-    ("Marburg virus", 11269),
+    ("Marburg virus", 3052505),
     ("Dengue virus 1", 11053),
     ("Dengue virus 2", 11060),
     ("Dengue virus 3", 11069),
@@ -221,10 +221,10 @@ VIRUS_PRESETS: list[tuple[str, int]] = [
     ("HIV-1", 11676),
     ("HIV-2", 11709),
     ("Hepatitis B virus", 10407),
-    ("Hepatitis C virus", 11103),
+    ("Hepatitis C virus", 3052230),
     ("Human metapneumovirus", 162145),
     ("Measles virus", 11234),
-    ("Mumps virus", 11161),
+    ("Mumps virus", 2560602),
     ("Rubella virus", 11041),
     ("Norovirus GII", 142786),
     ("Rotavirus A", 28875),
@@ -233,10 +233,10 @@ VIRUS_PRESETS: list[tuple[str, int]] = [
     ("West Nile virus", 11082),
     ("Yellow Fever virus", 11089),
     ("Japanese Encephalitis virus", 11072),
-    ("Lassa virus", 11620),
-    ("Crimean-Congo hemorrhagic fever virus", 1980459),
+    ("Lassa virus", 3052310),
+    ("Crimean-Congo hemorrhagic fever virus", 3052518),
     ("Nipah virus", 121227),
-    ("Hendra virus", 63330),
+    ("Hendra virus", 3052223),
     ("Rabies virus", 11292),
     ("Variola virus (Smallpox)", 10255),
     ("Human parainfluenza virus 1", 12730),
@@ -1294,11 +1294,15 @@ def _tab_run():
         def _render_rule_line(rule_name, label, is_current=False):
             done_targets = rule_done_targets.get(rule_name, set())
             is_per_target = rule_name in _PER_TARGET_RULES and show_targets
-            is_done = rule_name in completed_rules
+
+            if is_per_target:
+                is_done = done_targets >= set(all_targets)
+            else:
+                is_done = rule_name in completed_rules
 
             if is_done:
                 if is_per_target:
-                    tstr = ", ".join(all_targets)
+                    tstr = ", ".join(sorted(done_targets))
                     return f"✅ &nbsp; {label} — {tstr}"
                 return f"✅ &nbsp; {label}"
             elif is_current:
@@ -1314,6 +1318,16 @@ def _tab_run():
                     tstr = ", ".join(parts)
                     return f"⏳ &nbsp; **{label}** — {tstr}"
                 return f"⏳ &nbsp; **{label}** ..."
+            elif is_per_target and done_targets:
+                # Not current rule but has some targets done (partially complete)
+                parts = []
+                for t in all_targets:
+                    if t in done_targets:
+                        parts.append(f"{t} ✓")
+                    else:
+                        parts.append(f"<span style='color:#ccc'>{t}</span>")
+                tstr = ", ".join(parts)
+                return f"⏳ &nbsp; {label} — {tstr}"
             else:
                 return f"⚪ &nbsp; {label}"
 
@@ -1349,20 +1363,29 @@ def _tab_run():
                     # Finish previous rule+target
                     _finish_current()
                     if current_rule and current_rule != rule_name:
-                        completed_rules.add(current_rule)
-                    # Mark all rules before the current one as completed
-                    for rn, _ in rules:
-                        if rn == rule_name:
-                            break
-                        completed_rules.add(rn)
+                        # Only mark non-per-target rules as completed on transition
+                        if current_rule not in _PER_TARGET_RULES or not show_targets:
+                            completed_rules.add(current_rule)
                     current_rule = rule_name
                     current_target = ""
                     _update_progress()
                 elif stripped.startswith("wildcards:"):
-                    # Parse target from "wildcards: virus=X, target=Y"
-                    match = re.search(r"target=(\S+)", stripped)
-                    if match:
-                        current_target = match.group(1).rstrip(",")
+                    # Parse target from wildcards line (target=, virus=, on=, or filename=)
+                    wc_target = ""
+                    for wc_name in ("target", "virus", "on"):
+                        m = re.search(rf"{wc_name}=(\S+)", stripped)
+                        if m:
+                            wc_target = m.group(1).rstrip(",")
+                            break
+                    if not wc_target:
+                        # Try filename= (format: "virus.target")
+                        m = re.search(r"filename=(\S+)", stripped)
+                        if m:
+                            parts = m.group(1).rstrip(",").split(".")
+                            if len(parts) >= 2:
+                                wc_target = parts[-1]
+                    if wc_target:
+                        current_target = wc_target
                         _update_progress()
                 elif "Finished job" in stripped:
                     _finish_current()
@@ -1376,13 +1399,20 @@ def _tab_run():
         # Mark last rule as complete
         _finish_current()
         if current_rule:
-            completed_rules.add(current_rule)
+            if current_rule not in _PER_TARGET_RULES or not show_targets:
+                completed_rules.add(current_rule)
+        # Mark per-target rules with any completed targets as done
+        # (pipeline finished, so all instances have run)
+        for rn, _ in rules:
+            if rn in _PER_TARGET_RULES and rule_done_targets.get(rn):
+                completed_rules.add(rn)
 
         rc = proc.returncode
         st.session_state.pipeline_running = False
         st.session_state.pipeline_return_code = rc
         st.session_state.pipeline_log = log
         st.session_state.pipeline_completed_rules = completed_rules
+        st.session_state.pipeline_rule_done_targets = rule_done_targets
 
         elapsed = int(time.time() - start_time)
         mins, secs = divmod(elapsed, 60)
@@ -1391,8 +1421,9 @@ def _tab_run():
         lines = []
         for rule_name, label in rules:
             if rule_name in completed_rules:
-                if rule_name in _PER_TARGET_RULES and show_targets:
-                    tstr = ", ".join(all_targets)
+                done_targets = rule_done_targets.get(rule_name, set())
+                if rule_name in _PER_TARGET_RULES and show_targets and done_targets:
+                    tstr = ", ".join(sorted(done_targets))
                     lines.append(f"✅ &nbsp; {label} — {tstr}")
                 else:
                     lines.append(f"✅ &nbsp; {label}")
@@ -1414,11 +1445,19 @@ def _tab_run():
     elif not running and st.session_state.get("pipeline_return_code") is not None:
         rc = st.session_state.pipeline_return_code
         completed_rules = st.session_state.get("pipeline_completed_rules", set())
+        rule_done_targets_saved = st.session_state.get("pipeline_rule_done_targets", {})
+        all_targets_saved = _get_all_targets()
+        show_targets_saved = len(all_targets_saved) > 1
 
         lines = []
         for rule_name, label in rules:
             if rule_name in completed_rules:
-                lines.append(f"✅ &nbsp; {label}")
+                done_targets = rule_done_targets_saved.get(rule_name, set())
+                if rule_name in _PER_TARGET_RULES and show_targets_saved and done_targets:
+                    tstr = ", ".join(sorted(done_targets))
+                    lines.append(f"✅ &nbsp; {label} — {tstr}")
+                else:
+                    lines.append(f"✅ &nbsp; {label}")
             else:
                 lines.append(f"⚪ &nbsp; {label}")
         st.markdown("<br>".join(lines), unsafe_allow_html=True)
@@ -1810,15 +1849,17 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
         )
 
     col_d1, col_d2 = st.columns(2)
+    _date_min = date(1900, 1, 1)
     with col_d1:
-        st.date_input("Min release date", value=None, key=f"{prefix}_min_release_date")
+        st.date_input("Min release date", value=None, min_value=_date_min,
+                       key=f"{prefix}_min_release_date")
     with col_d2:
         if monitor:
-            from datetime import date
-            st.date_input("Max release date", value=date.today(),
+            st.date_input("Max release date", value=date.today(), min_value=_date_min,
                           disabled=True, key=f"{prefix}_max_release_date")
         else:
-            st.date_input("Max release date", value=None, key=f"{prefix}_max_release_date")
+            st.date_input("Max release date", value=None, min_value=_date_min,
+                           key=f"{prefix}_max_release_date")
 
     st.text_input("Geographic location", placeholder="e.g., USA, Africa, Nigeria",
                    key=f"{prefix}_geo_location")
@@ -1829,9 +1870,11 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                         step=100, key=f"{prefix}_limit")
         col_c1, col_c2 = st.columns(2)
         with col_c1:
-            st.date_input("Min collection date", value=None, key=f"{prefix}_min_collection_date")
+            st.date_input("Min collection date", value=None, min_value=_date_min,
+                           key=f"{prefix}_min_collection_date")
         with col_c2:
-            st.date_input("Max collection date", value=None, key=f"{prefix}_max_collection_date")
+            st.date_input("Max collection date", value=None, min_value=_date_min,
+                           key=f"{prefix}_max_collection_date")
         st.number_input("Max ambiguous characters", min_value=0, value=10, step=1,
                         key=f"{prefix}_max_ambiguous_chars")
         st.checkbox("RefSeq only", key=f"{prefix}_refseq_only")
