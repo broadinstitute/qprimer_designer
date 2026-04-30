@@ -18,6 +18,7 @@ from qprimer_designer.adapt_cli import (
     _build_pset_fa,
     _extract_accessions,
     _filter_fasta_by_accessions,
+    _filter_fasta_by_subtype,
     _deduplicate_fasta,
     _get_new_seq_table,
     _read_excel_summary,
@@ -424,34 +425,90 @@ class TestFilterFastaByAccessions:
 # ---------------------------------------------------------------------------
 # _deduplicate_fasta
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# _filter_fasta_by_subtype
+# ---------------------------------------------------------------------------
+class TestFilterFastaBySubtype:
+    INFLUENZA_FASTA = (
+        ">ACC1 Influenza A virus (A/duck/USA/2024(H5N1)) segment 4\nATGC\n"
+        ">ACC2 Influenza A virus (A/human/USA/2024(H3N2)) segment 4\nGCAT\n"
+        ">ACC3 Influenza A virus (A/goose/USA/2024(H5N6)) segment 4\nATGCGC\n"
+        ">ACC4 Influenza A virus (A/chicken/USA/2024(H1N1)) segment 4\nGCATGC\n"
+    )
+
+    def test_exact_match(self, tmp_path):
+        fasta = tmp_path / "test.fa"
+        fasta.write_text(self.INFLUENZA_FASTA)
+        n = _filter_fasta_by_subtype(fasta, "H5N1")
+        assert n == 3
+        content = fasta.read_text()
+        assert "ACC1" in content
+        assert "ACC2" not in content
+
+    def test_wildcard(self, tmp_path):
+        fasta = tmp_path / "test.fa"
+        fasta.write_text(self.INFLUENZA_FASTA)
+        n = _filter_fasta_by_subtype(fasta, "H5N*")
+        assert n == 2
+        content = fasta.read_text()
+        assert "ACC1" in content
+        assert "ACC3" in content
+        assert "ACC2" not in content
+
+    def test_no_match_removes_all(self, tmp_path):
+        fasta = tmp_path / "test.fa"
+        fasta.write_text(self.INFLUENZA_FASTA)
+        n = _filter_fasta_by_subtype(fasta, "H9N2")
+        assert n == 4
+        assert fasta.read_text() == ""
+
+    def test_empty_pattern_no_change(self, tmp_path):
+        fasta = tmp_path / "test.fa"
+        fasta.write_text(self.INFLUENZA_FASTA)
+        n = _filter_fasta_by_subtype(fasta, "")
+        assert n == 0
+
+    def test_case_insensitive(self, tmp_path):
+        fasta = tmp_path / "test.fa"
+        fasta.write_text(self.INFLUENZA_FASTA)
+        n = _filter_fasta_by_subtype(fasta, "h5n1")
+        assert n == 3
+
+
+# ---------------------------------------------------------------------------
+# _deduplicate_fasta
+# ---------------------------------------------------------------------------
 class TestDeduplicateFasta:
-    def test_rejects_absolute_path(self):
-        with pytest.raises(ValueError, match="non-filename"):
-            _deduplicate_fasta("/etc/passwd")
-
-    def test_rejects_path_traversal(self):
-        with pytest.raises(ValueError, match="non-filename"):
-            _deduplicate_fasta("../../etc/passwd")
-
-    def test_rejects_invalid_extension(self):
-        with pytest.raises(ValueError, match="invalid"):
-            _deduplicate_fasta("file.txt")
-
-    def test_rejects_empty_name(self):
-        with pytest.raises(ValueError, match="invalid|unsafe"):
-            _deduplicate_fasta("")
-
-    def test_rejects_dotdot(self):
-        with pytest.raises(ValueError, match="non-filename|unsafe|invalid"):
-            _deduplicate_fasta("..")
-
-    def test_rejects_shell_chars(self):
-        with pytest.raises(ValueError, match="unsafe|invalid"):
-            _deduplicate_fasta("file;rm -rf.fa")
-
     def test_nonexistent_file(self):
         with pytest.raises(ValueError, match="not a regular file"):
-            _deduplicate_fasta("nonexistent_file_xyz.fa")
+            _deduplicate_fasta("/tmp/nonexistent_file_xyz.fa")
+
+    def test_rejects_path_traversal(self, tmp_path):
+        with pytest.raises(ValueError, match="traversal"):
+            _deduplicate_fasta(tmp_path / ".." / "etc" / "passwd")
+
+    def test_removes_duplicates(self, tmp_path):
+        fasta = tmp_path / "test.fa"
+        fasta.write_text(">A\nATGC\n>B\nGCAT\n>C\nATGC\n")
+        n = _deduplicate_fasta(fasta)
+        assert n == 1
+        content = fasta.read_text()
+        assert ">A" in content
+        assert ">B" in content
+        assert ">C" not in content
+
+    def test_no_duplicates(self, tmp_path):
+        fasta = tmp_path / "test.fa"
+        fasta.write_text(">A\nATGC\n>B\nGCAT\n")
+        n = _deduplicate_fasta(fasta)
+        assert n == 0
+
+    def test_accepts_any_path(self, tmp_path):
+        fasta = tmp_path / "subdir" / "test.fa"
+        fasta.parent.mkdir()
+        fasta.write_text(">A\nATGC\n")
+        n = _deduplicate_fasta(fasta)
+        assert n == 0
 
 
 # ---------------------------------------------------------------------------

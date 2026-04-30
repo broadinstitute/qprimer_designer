@@ -67,18 +67,21 @@ def build_alignment_string(df, side):
     """
     if side == "f":
         return (
-            "1    " + df["pseq_f"] + df["len_f"].astype(str).str.rjust(5) + "\n" +
-            "     " + df["match_f"] + "     \n" +
-            df["starts"].astype(str).str.ljust(5) + df["tseq_f"].apply(complement_dna) +
-            (df["starts"] + df["tseq_f"].str.replace("-", "").str.len() - 1).astype(str).str.rjust(5)
+            "1     " + df["pseq_f"] + df["len_f"].astype(str).str.rjust(6) + "\n" +
+            "      " + df["match_f"] + "      \n" +
+            df["starts"].astype(str).str.ljust(6) + df["tseq_f"].apply(complement_dna) +
+            (df["starts"] + df["tseq_f"].str.replace("-", "").str.len() - 1).astype(str).str.rjust(6)
         )
     else:
+        # Target coordinates are shown high→low (3'→5') since primer is 5'→3'
+        r_end = df["starts"] + df["prod_len"] - 1
+        r_start = df["starts"] + df["prod_len"] - df["tseq_r"].str.replace("-", "").str.len()
         return (
-            "1    " + df["pseq_r"] + df["len_r"].astype(str).str.rjust(5) + "\n" +
-            "     " + df["match_r"] + "     \n" +
-            (df["starts"] + df["prod_len"] - df["tseq_r"].str.replace("-", "").str.len()).astype(str).str.ljust(5) +
+            "1     " + df["pseq_r"] + df["len_r"].astype(str).str.rjust(6) + "\n" +
+            "      " + df["match_r"].str[::-1] + "      \n" +
+            r_end.astype(str).str.ljust(6) +
             df["tseq_r"].apply(complement_dna) +
-            (df["starts"] + df["prod_len"] - 1).astype(str).str.rjust(5)
+            r_start.astype(str).str.rjust(6)
         )
 
 
@@ -402,7 +405,7 @@ def save_eval_excel(df, outdir, filename, probe_seq=None, ref_total=None):
 
     for col_idx in align_cols:
         col_letter = get_column_letter(col_idx)
-        ws.column_dimensions[col_letter].width = 40
+        ws.column_dimensions[col_letter].width = 50
         for row in ws.iter_rows(min_row=2):
             cell = row[col_idx - 1]
             if cell.value:

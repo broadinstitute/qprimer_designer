@@ -23,6 +23,59 @@ def _sanitize_filename_component(name: str) -> str:
         return ""
     return sanitized
 
+
+def _safe_path_under(base_dir: Path, filename: str) -> Path | None:
+    """Build a safe file path under base_dir. Returns None if unsafe."""
+    safe_name = _sanitize_filename_component(filename)
+    if not safe_name:
+        return None
+    candidate = (base_dir / safe_name).resolve()
+    if base_dir.resolve() not in candidate.parents:
+        return None
+    return candidate
+
+
+def _build_fetch_command(
+    gget_bin: str, taxid: str, out_dir: str, params: dict,
+) -> list[str] | None:
+    """Build and validate a gget virus command. Returns None if taxid is invalid."""
+    safe_taxid = str(taxid).strip()
+    if not re.fullmatch(r"\d+", safe_taxid):
+        return None
+
+    _ALLOWED_NUC = {"complete", "partial", ""}
+    _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+    _SAFE_STR = re.compile(r"[\w\s.,\-]+")
+
+    cmd = [gget_bin, "virus", safe_taxid, "--out", out_dir]
+
+    nuc = params.get("nuc_completeness", "complete")
+    if nuc and nuc in _ALLOWED_NUC:
+        cmd.extend(["--nuc_completeness", nuc])
+    seg = str(params.get("segment", "")).strip()
+    if seg and _SAFE_STR.fullmatch(seg):
+        cmd.extend(["--segment", seg])
+    for key in ("min_seq_length", "max_seq_length"):
+        val = params.get(key)
+        if val:
+            cmd.extend([f"--{key}", str(int(val))])
+    for key in ("min_release_date", "max_release_date",
+                "min_collection_date", "max_collection_date"):
+        val = params.get(key)
+        if val and _DATE_RE.fullmatch(str(val)):
+            cmd.extend([f"--{key}", str(val)])
+    for key, flag in (("geo_location", "geographic_location"), ("host", "host")):
+        val = str(params.get(key, "")).strip()
+        if val and _SAFE_STR.fullmatch(val):
+            cmd.extend([f"--{flag}", val])
+    if params.get("refseq_only"):
+        cmd.append("--refseq_only")
+    max_amb = params.get("max_ambiguous_chars")
+    if max_amb is not None:
+        cmd.extend(["--max_ambiguous_chars", str(int(max_amb))])
+
+    return cmd
+
 # ---------------------------------------------------------------------------
 # Resolve project root (parent of gui/)
 # ---------------------------------------------------------------------------
@@ -389,33 +442,37 @@ def _render_sidebar():
                 import json
                 try:
                     sched_info = json.loads(MONITOR_SCHEDULE_PATH.read_text())
-                    lines = []
                     targets = sched_info.get("targets", [])
-                    if targets:
-                        lines.append(f"<b>Targets:</b> {', '.join(targets)}")
-                    primers = sched_info.get("primer_sets", [])
-                    if primers:
-                        primer_list = "".join(
-                            f"<br>&nbsp;&nbsp;&nbsp;{p}" for p in primers
+                    target_summary = ", ".join(targets) if targets else "N/A"
+                    with st.expander(target_summary):
+                        lines = []
+                        primers = sched_info.get("primer_sets", [])
+                        if primers:
+                            primer_list = "".join(
+                                f"<br>&nbsp;&nbsp;&nbsp;{p}" for p in primers
+                            )
+                            lines.append(f"<b>Primer sets:</b>{primer_list}")
+                        lines.append(f"<b>Frequency:</b> {sched_info.get('frequency', 'N/A')}")
+                        recipients = sched_info.get("recipients", "")
+                        if recipients:
+                            lines.append(f"<b>Email:</b> {recipients}")
+                        st.markdown(
+                            "<div style='font-size:0.85em; line-height:1.4;'>"
+                            + "<br>".join(lines)
+                            + "</div>",
+                            unsafe_allow_html=True,
                         )
-                        lines.append(f"<b>Primer sets:</b>{primer_list}")
-                    lines.append(f"<b>Frequency:</b> {sched_info.get('frequency', 'N/A')}")
-                    recipients = sched_info.get("recipients", "")
-                    if recipients:
-                        lines.append(f"<b>Email:</b> {recipients}")
-                    st.markdown(
-                        "<div style='font-size:0.85em; line-height:1.4;'>"
-                        + "<br>".join(lines)
-                        + "</div>",
-                        unsafe_allow_html=True,
-                    )
+                        if st.button("Stop monitoring", key="sidebar_stop_cron", use_container_width=True):
+                            _uninstall_cron()
+                            if MONITOR_SCHEDULE_PATH.exists():
+                                MONITOR_SCHEDULE_PATH.unlink()
+                            st.rerun()
                 except (json.JSONDecodeError, KeyError):
                     pass
-            if st.button("Stop monitoring", key="sidebar_stop_cron", use_container_width=True):
-                _uninstall_cron()
-                if MONITOR_SCHEDULE_PATH.exists():
-                    MONITOR_SCHEDULE_PATH.unlink()
-                st.rerun()
+            else:
+                if st.button("Stop monitoring", key="sidebar_stop_cron", use_container_width=True):
+                    _uninstall_cron()
+                    st.rerun()
 
 
 
@@ -596,8 +653,8 @@ via email reports.
             use_container_width=True,
             type="primary",
         ):
+            _reset_workflow_state()
             st.session_state.workflow = "design"
-            _clear_pipeline_state()
             _navigate("select_target")
             st.rerun()
         st.caption(
@@ -615,8 +672,8 @@ via email reports.
             use_container_width=True,
             type="primary",
         ):
+            _reset_workflow_state()
             st.session_state.workflow = "evaluate"
-            _clear_pipeline_state()
             _navigate("select_target")
             st.rerun()
         st.caption(
@@ -634,8 +691,8 @@ via email reports.
             use_container_width=True,
             type="primary",
         ):
+            _reset_workflow_state()
             st.session_state.workflow = "monitor"
-            _clear_pipeline_state()
             _navigate("monitor_target")
             st.rerun()
         st.caption(
@@ -649,7 +706,7 @@ via email reports.
     st.markdown(
         "<div style='text-align: center; color: gray; font-size: 0.9em;'>"
         "<strong>Contact</strong><br>"
-        "S. Chan Baek (<a href='mailto:baekseun@broadinstitute.org'>baekseun@broadinstitute.org</a>) · "
+        "S Chan Baek (<a href='mailto:baekseun@broadinstitute.org'>baekseun@broadinstitute.org</a>) · "
         "Kenneth B Hsu (<a href='mailto:khsu@broadinstitute.org'>khsu@broadinstitute.org</a>)"
         "</div>",
         unsafe_allow_html=True,
@@ -1193,7 +1250,8 @@ def _save_run_config():
 
 
 def _tab_run():
-    st.header("Run Pipeline")
+    workflow = st.session_state.get("workflow", "design")
+    st.header("Run Design" if workflow == "design" else "Run Evaluate")
 
     # Controls
     c1, c2 = st.columns(2)
@@ -1221,7 +1279,8 @@ def _tab_run():
     running = st.session_state.get("pipeline_running", False)
 
     with col_run:
-        run_clicked = st.button("Run", disabled=running or bool(errors), type="primary")
+        run_label = "Run Design" if workflow == "design" else "Run Evaluate"
+        run_clicked = st.button(run_label, disabled=running or bool(errors), type="primary")
     with col_stop:
         stop_clicked = st.button("Stop", disabled=not running, type="secondary")
 
@@ -1803,6 +1862,18 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
         taxid = selected_virus.split("TaxID: ")[1].rstrip(")")
         auto_name = selected_virus.split("  (TaxID:")[0]
 
+    # Subtype input (e.g., H5N1 for Influenza A)
+    st.text_input(
+        "Subtype",
+        placeholder="e.g., H5N1, H5N*, H3N2 (wildcards supported)",
+        key=f"{prefix}_subtype_filter",
+        help="Filter fetched sequences by subtype in the FASTA header. "
+             "Useful for Influenza A where all subtypes (H1N1, H3N2, H5N1, ...) are fetched together. "
+             "Supports wildcards: * matches anything, ? matches one character.",
+    )
+
+    # Build auto target name from virus + subtype
+    subtype_val = st.session_state.get(f"{prefix}_subtype_filter", "").strip()
     auto_target = auto_name
     if not auto_name and taxid:
         for name, tid in VIRUS_PRESETS:
@@ -1810,6 +1881,14 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                 auto_target = name
                 break
 
+    # Append subtype to target name (e.g., "Influenza_A" → "Influenza_A_H5N1")
+    if subtype_val:
+        subtype_clean = re.sub(r"[^\w\-]", "_", subtype_val)
+        subtype_clean = re.sub(r"_+", "_", subtype_clean).strip("_")
+        if subtype_clean:
+            auto_target = f"{auto_target}_{subtype_clean}" if auto_target else subtype_clean
+
+    # Track (virus + subtype) together for auto-name updates
     prev_auto = st.session_state.get(f"_prev_auto_{prefix}", "")
     if auto_target != prev_auto:
         st.session_state[f"_prev_auto_{prefix}"] = auto_target
@@ -1883,66 +1962,36 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
         gget_bin = shutil.which("gget")
         if not gget_bin:
             env_bin = Path(sys.executable).parent
-            candidate = env_bin / "gget"
-            if candidate.exists():
-                gget_bin = str(candidate)
+            gget_candidate = env_bin / "gget"
+            if gget_candidate.exists():
+                gget_bin = str(gget_candidate)
         if not gget_bin:
             st.error("'gget' is not installed. Run: `pip install gget`")
         else:
-            safe_tmp = _sanitize_filename_component(target_name) or "tmp"
-            gget_tmp = (FASTA_DIR / f".gget_tmp_{safe_tmp}").resolve()
-            if FASTA_DIR.resolve() not in gget_tmp.parents:
+            gget_tmp = _safe_path_under(FASTA_DIR, f".gget_tmp_{target_name}")
+            if not gget_tmp:
                 st.error("Invalid target name.")
                 return
             gget_tmp.mkdir(parents=True, exist_ok=True)
 
-            safe_taxid = str(taxid).strip()
-            if not re.fullmatch(r"\d+", safe_taxid):
+            fetch_params = {
+                "nuc_completeness": st.session_state.get(f"{prefix}_nuc_completeness", "complete"),
+                "segment": st.session_state.get(f"{prefix}_segment", ""),
+                "min_seq_length": st.session_state.get(f"{prefix}_min_seq_length"),
+                "max_seq_length": st.session_state.get(f"{prefix}_max_seq_length"),
+                "min_release_date": st.session_state.get(f"{prefix}_min_release_date"),
+                "max_release_date": st.session_state.get(f"{prefix}_max_release_date"),
+                "geo_location": st.session_state.get(f"{prefix}_geo_location", ""),
+                "host": st.session_state.get(f"{prefix}_host", ""),
+                "refseq_only": st.session_state.get(f"{prefix}_refseq_only"),
+                "min_collection_date": st.session_state.get(f"{prefix}_min_collection_date"),
+                "max_collection_date": st.session_state.get(f"{prefix}_max_collection_date"),
+                "max_ambiguous_chars": st.session_state.get(f"{prefix}_max_ambiguous_chars"),
+            }
+            cmd = _build_fetch_command(gget_bin, taxid, str(gget_tmp), fetch_params)
+            if not cmd:
                 st.error("TaxID must be numeric.")
                 return
-
-            # Build gget command with validated arguments
-            _ALLOWED_NUC = {"complete", "partial", ""}
-            _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-            _SAFE_STR = re.compile(r"[\w\s.,\-]+")
-
-            cmd = [gget_bin, "virus", safe_taxid, "--out", str(gget_tmp)]
-
-            nuc = st.session_state.get(f"{prefix}_nuc_completeness", "complete")
-            if nuc and nuc in _ALLOWED_NUC:
-                cmd.extend(["--nuc_completeness", nuc])
-            seg = st.session_state.get(f"{prefix}_segment", "").strip()
-            if seg and _SAFE_STR.fullmatch(seg):
-                cmd.extend(["--segment", seg])
-            min_len = st.session_state.get(f"{prefix}_min_seq_length")
-            if min_len:
-                cmd.extend(["--min_seq_length", str(int(min_len))])
-            max_len = st.session_state.get(f"{prefix}_max_seq_length")
-            if max_len:
-                cmd.extend(["--max_seq_length", str(int(max_len))])
-            min_rel = st.session_state.get(f"{prefix}_min_release_date")
-            if min_rel and _DATE_RE.fullmatch(str(min_rel)):
-                cmd.extend(["--min_release_date", str(min_rel)])
-            max_rel = st.session_state.get(f"{prefix}_max_release_date")
-            if max_rel and _DATE_RE.fullmatch(str(max_rel)):
-                cmd.extend(["--max_release_date", str(max_rel)])
-            geo = st.session_state.get(f"{prefix}_geo_location", "").strip()
-            if geo and _SAFE_STR.fullmatch(geo):
-                cmd.extend(["--geographic_location", geo])
-            host_val = st.session_state.get(f"{prefix}_host", "").strip()
-            if host_val and _SAFE_STR.fullmatch(host_val):
-                cmd.extend(["--host", host_val])
-            if st.session_state.get(f"{prefix}_refseq_only"):
-                cmd.append("--refseq_only")
-            min_col = st.session_state.get(f"{prefix}_min_collection_date")
-            if min_col and _DATE_RE.fullmatch(str(min_col)):
-                cmd.extend(["--min_collection_date", str(min_col)])
-            max_col = st.session_state.get(f"{prefix}_max_collection_date")
-            if max_col and _DATE_RE.fullmatch(str(max_col)):
-                cmd.extend(["--max_collection_date", str(max_col)])
-            max_amb = st.session_state.get(f"{prefix}_max_ambiguous_chars")
-            if max_amb is not None:
-                cmd.extend(["--max_ambiguous_chars", str(int(max_amb))])
 
             _FETCH_STEPS = [
                 ("STEP 1", "Validating input"),
@@ -2025,24 +2074,24 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                     _render_progress(len(_FETCH_STEPS))
                     fasta_files = list(gget_tmp.glob("*.fa")) + list(gget_tmp.glob("*.fasta"))
                     if fasta_files:
-                        safe_target_name = _sanitize_filename_component(target_name)
-                        if not safe_target_name:
+                        dest = _safe_path_under(FASTA_DIR, f"{target_name}.fa")
+                        if not dest:
                             st.error("Invalid target name. Please use letters, numbers, '.', '_' or '-'.")
                             detail_area.empty()
                             return
-                        dest = FASTA_DIR / f"{safe_target_name}.fa"
-                        resolved_fasta_dir = FASTA_DIR.resolve()
-                        resolved_dest = dest.resolve()
-                        if resolved_fasta_dir not in resolved_dest.parents:
-                            st.error("Invalid target name path.")
-                            detail_area.empty()
-                            return
                         shutil.move(str(fasta_files[0]), str(dest))
-                        from qprimer_designer.adapt_cli import _deduplicate_fasta
-                        n_deduped = _deduplicate_fasta(dest.name)
+                        # Filter by subtype if specified
+                        from qprimer_designer.adapt_cli import _filter_fasta_by_subtype, _deduplicate_fasta
+                        subtype = st.session_state.get(f"{prefix}_subtype_filter", "").strip()
+                        n_subtype_removed = 0
+                        if subtype:
+                            n_subtype_removed = _filter_fasta_by_subtype(dest, subtype)
+                        n_deduped = _deduplicate_fasta(dest)
                         with open(dest) as f:
                             n_seqs = sum(1 for line in f if line.startswith(">"))
                         msg = f"Downloaded {n_seqs} unique sequences → `{dest.name}`"
+                        if n_subtype_removed > 0:
+                            msg += f" ({n_subtype_removed} filtered by subtype '{subtype}')"
                         if n_deduped > 0:
                             msg += f" ({n_deduped} duplicates removed)"
                         st.success(msg)
@@ -2734,7 +2783,9 @@ def _run_monitor():
         date_dir = work_dir / date_str
     else:
         date_str = datetime.now().strftime("%Y%m%d")
-        runid = spreadsheet_id[:8]
+        runid = st.session_state.get("monitor_run_id", "").strip()
+        if not runid:
+            runid = spreadsheet_id[:8]
         work_dir = MONITOR_DIR / runid
         date_dir = work_dir / date_str
 
@@ -2751,14 +2802,13 @@ def _run_monitor():
     params_path = date_dir / "params.txt"
     params_path.write_text(params_content)
 
-    # Read email config from project params.txt
+    # Read email config from project params.txt (password deferred to send time)
     params_source = PROJECT_ROOT / "params.txt"
-    email_sender = email_password = ""
+    email_sender = ""
     default_recipients = ""
     if params_source.exists():
         p = parse_params(params_source)
         email_sender = str(p.get("EMAIL_SENDER", "")).strip()
-        email_password = str(p.get("EMAIL_PASSWORD", "")).strip()
         default_recipients = str(p.get("EMAIL_RECIPIENTS", "")).strip()
 
     recipients_str = st.session_state.get("monitor_email_recipients", "").strip()
@@ -3075,25 +3125,31 @@ def _run_monitor():
     # ===================== STEP 3: EMAIL =====================
     email_body = "\n".join(email_body_parts)
 
-    if email_sender and email_password and email_recipients and all_xlsx:
+    # Read password at send time only (avoid storing in long-lived variable)
+    _email_password = ""
+    if params_source.exists():
+        _email_password = str(parse_params(params_source).get("EMAIL_PASSWORD", "")).strip()
+
+    if email_sender and _email_password and email_recipients and all_xlsx:
         progress_lines.append("⏳ &nbsp; **Sending email report...**")
         _update(progress_lines)
 
         subject = f"[ADAPT Monitor] {date_str} — {len(target_names)} target(s)"
         ok = _send_email(
             sender=email_sender,
-            password=email_password,
+            password=_email_password,
             recipients=email_recipients,
             subject=subject,
             body=email_body,
             attachments=all_xlsx,
         )
+        _email_password = ""  # clear after use
         if ok:
             progress_lines[-1] = f"✅ &nbsp; Email sent to {', '.join(email_recipients)}"
         else:
             progress_lines[-1] = "⚠️ &nbsp; Email sending failed"
         _update(progress_lines)
-    elif not email_sender or not email_password:
+    elif not email_sender or not _email_password:
         progress_lines.append("⚪ &nbsp; Email skipped (not configured)")
         _update(progress_lines)
     elif not all_xlsx:
@@ -3120,6 +3176,19 @@ def _run_monitor():
 def _tab_run_monitor():
     """Run page for monitor workflow."""
     st.header("Run Monitor")
+
+    # Run ID for identifying this run later
+    sheet_data = st.session_state.get("monitor_spreadsheet_data")
+    default_run_id = ""
+    if sheet_data:
+        default_run_id = sheet_data.get("spreadsheet_id", "")[:8]
+    if "monitor_run_id" not in st.session_state:
+        st.session_state["monitor_run_id"] = default_run_id
+    st.text_input(
+        "Run ID",
+        key="monitor_run_id",
+        help="A short identifier for this run. Used to organize output directories.",
+    )
 
     c1, _ = st.columns(2)
     max_cpu = os.cpu_count() or 1
@@ -3166,8 +3235,14 @@ def _page_run():
 
     # Back button (only when pipeline is not running)
     if not st.session_state.get("pipeline_running"):
-        if st.button("← Back to Configuration", key="run_back"):
-            _navigate(f"{workflow}_config")
+        if workflow == "monitor":
+            back_label = "← Back to Report"
+            back_target = "monitor_report"
+        else:
+            back_label = "← Back to Configuration"
+            back_target = f"{workflow}_config"
+        if st.button(back_label, key="run_back"):
+            _navigate(back_target)
             st.rerun()
 
     if workflow == "monitor":
@@ -3267,10 +3342,10 @@ def _page_monitor_report():
     col_back, col_cont = st.columns(2)
     with col_back:
         if st.button("← Back", use_container_width=True, key="report_back"):
-            _navigate("config")
+            _navigate("monitor_config")
             st.rerun()
     with col_cont:
-        if st.button("Start monitoring →", type="primary", use_container_width=True,
+        if st.button("Continue →", type="primary", use_container_width=True,
                       key="report_cont", disabled=not email_configured):
             # Install cron job
             recipients = st.session_state.get("monitor_email_recipients", "").strip()
@@ -3308,7 +3383,6 @@ def _page_monitor_report():
                 st.session_state["_monitor_cron_installed"] = True
             except SystemExit:
                 st.error("Failed to install cron job. Is 'adapt' in PATH?")
-            # Also run immediately
             st.session_state._run_page_fresh = True
             _navigate("run")
             st.rerun()

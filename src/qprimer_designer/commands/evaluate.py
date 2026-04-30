@@ -43,7 +43,10 @@ def run(args):
     # Load models
     scaler, classifier, regressor, device = load_models()
 
-    print(f"Evaluating {args.input} with {device}...")
+    # Set PyTorch threads for CPU inference
+    torch.set_num_threads(int(args.threads))
+
+    print(f"Evaluating {args.input} with {device} ({args.threads} threads)...")
     start_time = time.time()
 
     if os.path.getsize(args.input) == 0:
@@ -62,7 +65,7 @@ def run(args):
         inps_se = chunk[['pseq_f', 'tseq_f', 'pseq_r', 'tseq_r']]
         inps_se = encode_batch_parallel(inps_se, int(args.threads))
         dataset = PcrDataset(inps_se, inps_fe, np.array([0] * len(chunk)))
-        loader = DataLoader(dataset, batch_size=64, shuffle=False)
+        loader = DataLoader(dataset, batch_size=256, shuffle=False)
 
         predict_cls, predict_reg = [], []
         with torch.no_grad():
@@ -96,6 +99,11 @@ def run(args):
             evaltbl = evaltbl.groupby(['pname_f', 'pname_r']).agg(agg_dict).reset_index()
             l.append(evaltbl)
 
+        # Periodically consolidate to bound memory
+        if len(clstbl) >= 10:
+            clstbl = [pd.concat(clstbl, ignore_index=True).groupby(['pname_f', 'pname_r']).agg("max").reset_index()]
+            regtbl = [pd.concat(regtbl, ignore_index=True).groupby(['pname_f', 'pname_r']).agg("max").reset_index()]
+
         header_flag = False
         mode = 'a'
 
@@ -107,16 +115,22 @@ def run(args):
     clstbl.fillna(0).round(3).to_csv(f'{args.output}.cl')
     regtbl.fillna(0).round(3).to_csv(f'{args.output}.re')
 
+    # Compute coverage and activity
     coverage = (clstbl > .5).sum(axis=1).reset_index(name='coverage')
     if args.reftype == 'on':
         coverage['coverage'] = coverage['coverage'] / len(tnames)
-        activity = (regtbl * (clstbl > .5)).mean(axis=1).reset_index(name='activity')
+        # Activity = mean(reg) over active targets only
+        # (coverage already penalizes missing/inactive targets; no double penalty)
+        active_mask = clstbl > .5
+        active_reg = regtbl.where(active_mask)
+        activity = active_reg.mean(axis=1).reset_index(name='activity')
     else:
         activity = (regtbl * (clstbl > .5)).max(axis=1).reset_index(name='activity')
 
     res = coverage.merge(activity, on=['pname_f', 'pname_r'])
+    res['activity'] = res['activity'].fillna(0)
     res['score'] = res['coverage'] * res['activity']
-    res = res.dropna().sort_values('score', ascending=False)
+    res = res.sort_values('score', ascending=False)
     res.round(4).to_csv(args.output, index=False)
 
     runtime = time.time() - start_time

@@ -230,7 +230,7 @@ _TRUE_FALSE_FLAGS = {
 # Columns that are metadata only (not passed to gget)
 _METADATA_COLUMNS = {"Pathogen", "Pathogen_abb", "Gene Segment", "Target name",
                       "Primer name", "query_id", "expected_count", "latest_count",
-                      "diff", "Forward", "Reverse", "Probe"}
+                      "diff", "Forward", "Reverse", "Probe", "subtype_filter"}
 
 # Max-date columns to strip when monitoring (monitor always fetches up to the latest)
 _MAX_DATE_COLUMNS = {"max_collection_date", "max_release_date"}
@@ -323,6 +323,10 @@ def _load_spreadsheet(csv_text: str) -> tuple[list[str], list[dict]]:
     data_rows = []
     for row in rows[3:]:
         if len(row) <= taxid_idx:
+            continue
+
+        # Skip example/template rows
+        if row[0].strip().lower() in ("example", "examples", "examples/definition"):
             continue
 
         row_dict = {}
@@ -533,8 +537,18 @@ def cmd_fetch(args):
             # Find the output FASTA and move to target_seqs/original/
             fasta_files = list(gget_out.glob("*.fa")) + list(gget_out.glob("*.fasta"))
             if fasta_files:
-                dest = out_dir / f"{target_name}.fa"
+                safe_name = re.sub(r"[^\w.\-]", "_", target_name)
+                dest = (out_dir / f"{safe_name}.fa").resolve()
+                if out_dir.resolve() not in dest.parents:
+                    print(f"  Error: invalid target name '{target_name}'")
+                    continue
                 shutil.move(str(fasta_files[0]), str(dest))
+                # Filter by subtype if specified
+                subtype = str(row.get("subtype_filter", "")).strip()
+                if subtype:
+                    n_filtered = _filter_fasta_by_subtype(dest, subtype)
+                    if n_filtered > 0:
+                        print(f"  Filtered by subtype '{subtype}': removed {n_filtered} sequence(s)")
                 # Remove duplicate sequences
                 n_deduped = _deduplicate_fasta(dest)
                 if n_deduped > 0:
@@ -630,46 +644,84 @@ def _filter_fasta_by_accessions(
     return count
 
 
-def _deduplicate_fasta(fasta_filename: str) -> int:
+def _validate_fasta_path(fasta_path) -> Path:
+    """Resolve and validate a FASTA path. Guards against path traversal."""
+    p = Path(fasta_path).resolve()
+    # Reject paths containing traversal components
+    if ".." in Path(fasta_path).parts:
+        raise ValueError(f"Refusing path with traversal: {fasta_path}")
+    if not p.is_file():
+        raise ValueError(f"FASTA path is not a regular file: {p}")
+    return p
+
+
+def _filter_fasta_by_subtype(fasta_path: Path, subtype_pattern: str) -> int:
+    """Filter FASTA in place, keeping only sequences whose header matches the subtype pattern.
+
+    The pattern is matched against the full header line (case-insensitive).
+    Shell-style wildcards are supported: * matches anything, ? matches one char.
+    Example: "H5N1", "H5N*", "H5*"
+
+    Returns the number of sequences removed.
+    """
+    import fnmatch
+    fasta_path = _validate_fasta_path(fasta_path)
+    pattern = subtype_pattern.strip()
+    if not pattern:
+        return 0
+
+    # Wrap pattern to match anywhere in the header (e.g., "H5N1" → "*H5N1*")
+    if not pattern.startswith("*"):
+        pattern = "*" + pattern
+    if not pattern.endswith("*"):
+        pattern = pattern + "*"
+
+    kept = []
+    current_header = None
+    current_seq_lines: list[str] = []
+    n_total = 0
+
+    with open(fasta_path) as f:
+        for line in f:
+            if line.startswith(">"):
+                if current_header is not None:
+                    n_total += 1
+                    if fnmatch.fnmatch(current_header.lower(), pattern.lower()):
+                        kept.append((current_header, current_seq_lines))
+                current_header = line
+                current_seq_lines = []
+            else:
+                current_seq_lines.append(line)
+        if current_header is not None:
+            n_total += 1
+            if fnmatch.fnmatch(current_header.lower(), pattern.lower()):
+                kept.append((current_header, current_seq_lines))
+
+    n_removed = n_total - len(kept)
+    if n_removed > 0:
+        with open(fasta_path, "w") as f:
+            for header, seq_lines in kept:
+                f.write(header)
+                for sl in seq_lines:
+                    f.write(sl)
+
+    return n_removed
+
+
+def _deduplicate_fasta(fasta_path) -> int:
     """Remove duplicate sequences (same content, different accessions) in place.
 
     Keeps the first accession encountered for each unique sequence.
     Returns the number of duplicates removed.
     """
-    safe_root = (Path(__file__).resolve().parent.parent.parent / "target_seqs" / "original").resolve()
-
-    candidate = Path(fasta_filename)
-    if candidate.name != fasta_filename or candidate.is_absolute():
-        raise ValueError(f"Refusing non-filename FASTA path: {fasta_filename}")
-    parts = fasta_filename.rsplit(".", 1)
-    if len(parts) != 2 or parts[1].lower() not in {"fa", "fasta", "fna"} \
-            or not re.fullmatch(r"[A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-]+)*", parts[0]):
-        raise ValueError(f"Refusing invalid FASTA filename: {fasta_filename}")
-
-    safe_name = re.sub(r"[^\w.\-]", "", fasta_filename)
-    if safe_name != fasta_filename or safe_name in {"", ".", ".."}:
-        raise ValueError(f"Refusing unsafe FASTA filename: {fasta_filename}")
-
-    allowed_files = {
-        p.name: p.resolve()
-        for p in safe_root.iterdir()
-        if p.is_file() and p.suffix.lower() in {".fa", ".fasta", ".fna"}
-    }
-    resolved_fasta_path = allowed_files.get(safe_name)
-    if resolved_fasta_path is None:
-        raise ValueError(f"FASTA path is not a regular file: {safe_name}")
-
-    try:
-        resolved_fasta_path.relative_to(safe_root)
-    except ValueError as exc:
-        raise ValueError(f"Refusing to access FASTA outside allowed directory: {safe_name}") from exc
+    fasta_path = _validate_fasta_path(fasta_path)
 
     seen_seqs: dict[str, str] = {}  # sequence -> first header
     current_header = None
     current_seq_parts: list[str] = []
     entries: list[tuple[str, str]] = []  # (header_line, sequence)
 
-    with open(resolved_fasta_path) as f:
+    with open(fasta_path) as f:
         for line in f:
             if line.startswith(">"):
                 if current_header is not None:
@@ -692,7 +744,7 @@ def _deduplicate_fasta(fasta_filename: str) -> int:
 
     n_removed = n_before - len(unique_entries)
     if n_removed > 0:
-        with open(resolved_fasta_path, "w") as f:
+        with open(fasta_path, "w") as f:
             for header, seq in unique_entries:
                 f.write(header)
                 # Write sequence in 80-char lines
