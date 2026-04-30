@@ -483,6 +483,10 @@ class TestDeduplicateFasta:
         with pytest.raises(ValueError, match="not a regular file"):
             _deduplicate_fasta("/tmp/nonexistent_file_xyz.fa")
 
+    def test_rejects_path_traversal(self, tmp_path):
+        with pytest.raises(ValueError, match="traversal"):
+            _deduplicate_fasta(tmp_path / ".." / "etc" / "passwd")
+
     def test_removes_duplicates(self, tmp_path):
         fasta = tmp_path / "test.fa"
         fasta.write_text(">A\nATGC\n>B\nGCAT\n>C\nATGC\n")

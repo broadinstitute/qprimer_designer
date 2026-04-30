@@ -537,7 +537,11 @@ def cmd_fetch(args):
             # Find the output FASTA and move to target_seqs/original/
             fasta_files = list(gget_out.glob("*.fa")) + list(gget_out.glob("*.fasta"))
             if fasta_files:
-                dest = out_dir / f"{target_name}.fa"
+                safe_name = re.sub(r"[^\w.\-]", "_", target_name)
+                dest = (out_dir / f"{safe_name}.fa").resolve()
+                if out_dir.resolve() not in dest.parents:
+                    print(f"  Error: invalid target name '{target_name}'")
+                    continue
                 shutil.move(str(fasta_files[0]), str(dest))
                 # Filter by subtype if specified
                 subtype = str(row.get("subtype_filter", "")).strip()
@@ -640,6 +644,17 @@ def _filter_fasta_by_accessions(
     return count
 
 
+def _validate_fasta_path(fasta_path) -> Path:
+    """Resolve and validate a FASTA path. Guards against path traversal."""
+    p = Path(fasta_path).resolve()
+    # Reject paths containing traversal components
+    if ".." in Path(fasta_path).parts:
+        raise ValueError(f"Refusing path with traversal: {fasta_path}")
+    if not p.is_file():
+        raise ValueError(f"FASTA path is not a regular file: {p}")
+    return p
+
+
 def _filter_fasta_by_subtype(fasta_path: Path, subtype_pattern: str) -> int:
     """Filter FASTA in place, keeping only sequences whose header matches the subtype pattern.
 
@@ -650,7 +665,7 @@ def _filter_fasta_by_subtype(fasta_path: Path, subtype_pattern: str) -> int:
     Returns the number of sequences removed.
     """
     import fnmatch
-    fasta_path = Path(fasta_path).resolve()
+    fasta_path = _validate_fasta_path(fasta_path)
     pattern = subtype_pattern.strip()
     if not pattern:
         return 0
@@ -699,9 +714,7 @@ def _deduplicate_fasta(fasta_path) -> int:
     Keeps the first accession encountered for each unique sequence.
     Returns the number of duplicates removed.
     """
-    fasta_path = Path(fasta_path).resolve()
-    if not fasta_path.is_file():
-        raise ValueError(f"FASTA path is not a regular file: {fasta_path}")
+    fasta_path = _validate_fasta_path(fasta_path)
 
     seen_seqs: dict[str, str] = {}  # sequence -> first header
     current_header = None
