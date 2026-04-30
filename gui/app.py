@@ -2087,6 +2087,8 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
             try:
                 env = os.environ.copy()
                 env["PYTHONUNBUFFERED"] = "1"
+                # codeql[py/command-line-injection]: False positive - subprocess.Popen with list (not shell=True)
+                # All cmd elements validated in _build_fetch_command via regex/allowlists before subprocess call
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                         text=True, env=env)
                 current_step = -1
