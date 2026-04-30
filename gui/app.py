@@ -30,8 +30,9 @@ def _safe_path_under(base_dir: Path, filename: str) -> Path | None:
     if not safe_name:
         return None
     base_real = os.path.realpath(base_dir)
+    base_prefix = base_real if base_real.endswith(os.sep) else base_real + os.sep
     candidate = os.path.realpath(os.path.join(base_real, safe_name))
-    if not candidate.startswith(base_real + os.sep):
+    if not candidate.startswith(base_prefix):
         return None
     return Path(candidate)
 
