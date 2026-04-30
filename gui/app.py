@@ -729,13 +729,21 @@ def _tab_files():
         key="fasta_upload",
     )
     if uploaded:
+        already_saved = st.session_state.get("_fasta_saved_ids", set())
+        new_saved = set()
         for f in uploaded:
+            fid = (f.name, f.size)
+            if fid in already_saved:
+                continue
             p = Path(f.name)
             if p.suffix.lower() not in (".fa", ".fasta", ".fna"):
                 st.error(f"Unsupported extension: {p.suffix}")
                 continue
             # Normalize to .fa extension
-            dest = FASTA_DIR / (p.stem + ".fa")
+            dest = _safe_path_under(FASTA_DIR, p.stem + ".fa")
+            if not dest:
+                st.error(f"Invalid filename: {f.name}")
+                continue
             dest.write_bytes(f.getvalue())
             # Remove any leftover files with other FASTA extensions
             for ext in (".fasta", ".fna"):
@@ -743,6 +751,9 @@ def _tab_files():
                 if old.exists():
                     old.unlink()
             st.success(f"Saved {dest.name}")
+            new_saved.add(fid)
+        if new_saved:
+            st.session_state["_fasta_saved_ids"] = already_saved | new_saved
 
     st.divider()
 
@@ -841,11 +852,14 @@ def _tab_configuration():
                 key="eval_pset_upload",
             )
             if pset_upload:
-                pset_dir = PROJECT_ROOT / "evaluate"
-                pset_dir.mkdir(parents=True, exist_ok=True)
-                pset_path = pset_dir / pset_upload.name
-                pset_path.write_bytes(pset_upload.getvalue())
-                st.session_state["eval_pset_path"] = str(pset_path)
+                fid = (pset_upload.name, pset_upload.size)
+                if st.session_state.get("_eval_pset_saved") != fid:
+                    pset_dir = PROJECT_ROOT / "evaluate"
+                    pset_dir.mkdir(parents=True, exist_ok=True)
+                    pset_path = pset_dir / pset_upload.name
+                    pset_path.write_bytes(pset_upload.getvalue())
+                    st.session_state["eval_pset_path"] = str(pset_path)
+                    st.session_state["_eval_pset_saved"] = fid
                 st.success(f"Saved {pset_upload.name}")
 
         st.selectbox(
@@ -1801,19 +1815,30 @@ def _page_select_target():
             label_visibility="collapsed",
         )
         if uploaded:
+            already_saved = st.session_state.get("_fasta_saved_ids", set())
+            new_saved = set()
             for f in uploaded:
+                fid = (f.name, f.size)
+                if fid in already_saved:
+                    continue
                 p = Path(f.name)
                 if p.suffix.lower() not in (".fa", ".fasta", ".fna"):
                     st.error(f"Unsupported extension: {p.suffix}")
                     continue
-                dest = FASTA_DIR / (p.stem + ".fa")
+                dest = _safe_path_under(FASTA_DIR, p.stem + ".fa")
+                if not dest:
+                    st.error(f"Invalid filename: {f.name}")
+                    continue
                 dest.write_bytes(f.getvalue())
                 for ext in (".fasta", ".fna"):
                     old = FASTA_DIR / (p.stem + ext)
                     if old.exists():
                         old.unlink()
                 st.success(f"Saved {dest.name}")
-            st.rerun()
+                new_saved.add(fid)
+            if new_saved:
+                st.session_state["_fasta_saved_ids"] = already_saved | new_saved
+                st.rerun()
 
     with add_col2:
         st.markdown("**Fetch from NCBI Virus (using gget)**")
@@ -2166,19 +2191,30 @@ def _page_select_offtarget():
                 label_visibility="collapsed",
             )
             if uploaded_cross:
+                already_saved = st.session_state.get("_fasta_saved_ids", set())
+                new_saved = set()
                 for f in uploaded_cross:
+                    fid = (f.name, f.size)
+                    if fid in already_saved:
+                        continue
                     p = Path(f.name)
                     if p.suffix.lower() not in (".fa", ".fasta", ".fna"):
                         st.error(f"Unsupported extension: {p.suffix}")
                         continue
-                    dest = FASTA_DIR / (p.stem + ".fa")
+                    dest = _safe_path_under(FASTA_DIR, p.stem + ".fa")
+                    if not dest:
+                        st.error(f"Invalid filename: {f.name}")
+                        continue
                     dest.write_bytes(f.getvalue())
                     for ext in (".fasta", ".fna"):
                         old = FASTA_DIR / (p.stem + ext)
                         if old.exists():
                             old.unlink()
                     st.success(f"Saved {dest.name}")
-                st.rerun()
+                    new_saved.add(fid)
+                if new_saved:
+                    st.session_state["_fasta_saved_ids"] = already_saved | new_saved
+                    st.rerun()
 
         with add_cross_col2:
             st.markdown("**Fetch from NCBI Virus (using gget)**")
@@ -2224,19 +2260,30 @@ def _page_select_offtarget():
             label_visibility="collapsed",
         )
         if uploaded_host:
+            already_saved = st.session_state.get("_fasta_saved_ids", set())
+            new_saved = set()
             for f in uploaded_host:
+                fid = (f.name, f.size)
+                if fid in already_saved:
+                    continue
                 p = Path(f.name)
                 if p.suffix.lower() not in (".fa", ".fasta", ".fna"):
                     st.error(f"Unsupported extension: {p.suffix}")
                     continue
-                dest = FASTA_DIR / (p.stem + ".fa")
+                dest = _safe_path_under(FASTA_DIR, p.stem + ".fa")
+                if not dest:
+                    st.error(f"Invalid filename: {f.name}")
+                    continue
                 dest.write_bytes(f.getvalue())
                 for ext in (".fasta", ".fna"):
                     old = FASTA_DIR / (p.stem + ext)
                     if old.exists():
                         old.unlink()
                 st.success(f"Saved {dest.name}")
-            st.rerun()
+                new_saved.add(fid)
+            if new_saved:
+                st.session_state["_fasta_saved_ids"] = already_saved | new_saved
+                st.rerun()
 
     st.divider()
 
@@ -2667,10 +2714,14 @@ def _page_monitor_primer():
             key="monitor_pset_upload",
         )
         if uploaded:
-            pset_path = PROJECT_ROOT / "evaluate" / uploaded.name
-            pset_path.parent.mkdir(parents=True, exist_ok=True)
-            pset_path.write_bytes(uploaded.getvalue())
-            st.session_state["monitor_pset_path"] = str(pset_path)
+            _id = (uploaded.name, uploaded.size)
+            saved = st.session_state.setdefault("_fasta_saved_ids", set())
+            if _id not in saved:
+                pset_path = PROJECT_ROOT / "evaluate" / uploaded.name
+                pset_path.parent.mkdir(parents=True, exist_ok=True)
+                pset_path.write_bytes(uploaded.getvalue())
+                st.session_state["monitor_pset_path"] = str(pset_path)
+                saved.add(_id)
             st.success(f"Uploaded: {uploaded.name}")
 
     st.divider()
