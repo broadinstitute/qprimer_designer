@@ -25,7 +25,7 @@ COPY --chown=$MAMBA_USER:$MAMBA_USER . /app
 RUN qprimer --help && \
     qprimer generate --help && \
     RNAduplex --version && \
-    bowtie2 --version | head -1
+    bowtie2 --version
 
 WORKDIR /data
 

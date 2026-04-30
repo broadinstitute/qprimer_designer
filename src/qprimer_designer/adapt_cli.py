@@ -646,13 +646,13 @@ def _filter_fasta_by_accessions(
 
 def _validate_fasta_path(fasta_path) -> Path:
     """Resolve and validate a FASTA path. Guards against path traversal."""
-    p = Path(fasta_path).resolve()
+    p = os.path.realpath(fasta_path)
     # Reject paths containing traversal components
     if ".." in Path(fasta_path).parts:
         raise ValueError(f"Refusing path with traversal: {fasta_path}")
-    if not p.is_file():
+    if not os.path.isfile(p):
         raise ValueError(f"FASTA path is not a regular file: {p}")
-    return p
+    return Path(p)
 
 
 def _filter_fasta_by_subtype(fasta_path: Path, subtype_pattern: str) -> int:
