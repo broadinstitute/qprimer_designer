@@ -23,6 +23,59 @@ def _sanitize_filename_component(name: str) -> str:
         return ""
     return sanitized
 
+
+def _safe_path_under(base_dir: Path, filename: str) -> Path | None:
+    """Build a safe file path under base_dir. Returns None if unsafe."""
+    safe_name = _sanitize_filename_component(filename)
+    if not safe_name:
+        return None
+    candidate = (base_dir / safe_name).resolve()
+    if base_dir.resolve() not in candidate.parents:
+        return None
+    return candidate
+
+
+def _build_fetch_command(
+    gget_bin: str, taxid: str, out_dir: str, params: dict,
+) -> list[str] | None:
+    """Build and validate a gget virus command. Returns None if taxid is invalid."""
+    safe_taxid = str(taxid).strip()
+    if not re.fullmatch(r"\d+", safe_taxid):
+        return None
+
+    _ALLOWED_NUC = {"complete", "partial", ""}
+    _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+    _SAFE_STR = re.compile(r"[\w\s.,\-]+")
+
+    cmd = [gget_bin, "virus", safe_taxid, "--out", out_dir]
+
+    nuc = params.get("nuc_completeness", "complete")
+    if nuc and nuc in _ALLOWED_NUC:
+        cmd.extend(["--nuc_completeness", nuc])
+    seg = str(params.get("segment", "")).strip()
+    if seg and _SAFE_STR.fullmatch(seg):
+        cmd.extend(["--segment", seg])
+    for key in ("min_seq_length", "max_seq_length"):
+        val = params.get(key)
+        if val:
+            cmd.extend([f"--{key}", str(int(val))])
+    for key in ("min_release_date", "max_release_date",
+                "min_collection_date", "max_collection_date"):
+        val = params.get(key)
+        if val and _DATE_RE.fullmatch(str(val)):
+            cmd.extend([f"--{key}", str(val)])
+    for key, flag in (("geo_location", "geographic_location"), ("host", "host")):
+        val = str(params.get(key, "")).strip()
+        if val and _SAFE_STR.fullmatch(val):
+            cmd.extend([f"--{flag}", val])
+    if params.get("refseq_only"):
+        cmd.append("--refseq_only")
+    max_amb = params.get("max_ambiguous_chars")
+    if max_amb is not None:
+        cmd.extend(["--max_ambiguous_chars", str(int(max_amb))])
+
+    return cmd
+
 # ---------------------------------------------------------------------------
 # Resolve project root (parent of gui/)
 # ---------------------------------------------------------------------------
@@ -1909,66 +1962,36 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
         gget_bin = shutil.which("gget")
         if not gget_bin:
             env_bin = Path(sys.executable).parent
-            candidate = env_bin / "gget"
-            if candidate.exists():
-                gget_bin = str(candidate)
+            gget_candidate = env_bin / "gget"
+            if gget_candidate.exists():
+                gget_bin = str(gget_candidate)
         if not gget_bin:
             st.error("'gget' is not installed. Run: `pip install gget`")
         else:
-            safe_tmp = _sanitize_filename_component(target_name) or "tmp"
-            gget_tmp = (FASTA_DIR / f".gget_tmp_{safe_tmp}").resolve()
-            if FASTA_DIR.resolve() not in gget_tmp.parents:
+            gget_tmp = _safe_path_under(FASTA_DIR, f".gget_tmp_{target_name}")
+            if not gget_tmp:
                 st.error("Invalid target name.")
                 return
             gget_tmp.mkdir(parents=True, exist_ok=True)
 
-            safe_taxid = str(taxid).strip()
-            if not re.fullmatch(r"\d+", safe_taxid):
+            fetch_params = {
+                "nuc_completeness": st.session_state.get(f"{prefix}_nuc_completeness", "complete"),
+                "segment": st.session_state.get(f"{prefix}_segment", ""),
+                "min_seq_length": st.session_state.get(f"{prefix}_min_seq_length"),
+                "max_seq_length": st.session_state.get(f"{prefix}_max_seq_length"),
+                "min_release_date": st.session_state.get(f"{prefix}_min_release_date"),
+                "max_release_date": st.session_state.get(f"{prefix}_max_release_date"),
+                "geo_location": st.session_state.get(f"{prefix}_geo_location", ""),
+                "host": st.session_state.get(f"{prefix}_host", ""),
+                "refseq_only": st.session_state.get(f"{prefix}_refseq_only"),
+                "min_collection_date": st.session_state.get(f"{prefix}_min_collection_date"),
+                "max_collection_date": st.session_state.get(f"{prefix}_max_collection_date"),
+                "max_ambiguous_chars": st.session_state.get(f"{prefix}_max_ambiguous_chars"),
+            }
+            cmd = _build_fetch_command(gget_bin, taxid, str(gget_tmp), fetch_params)
+            if not cmd:
                 st.error("TaxID must be numeric.")
                 return
-
-            # Build gget command with validated arguments
-            _ALLOWED_NUC = {"complete", "partial", ""}
-            _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-            _SAFE_STR = re.compile(r"[\w\s.,\-]+")
-
-            cmd = [gget_bin, "virus", safe_taxid, "--out", str(gget_tmp)]
-
-            nuc = st.session_state.get(f"{prefix}_nuc_completeness", "complete")
-            if nuc and nuc in _ALLOWED_NUC:
-                cmd.extend(["--nuc_completeness", nuc])
-            seg = st.session_state.get(f"{prefix}_segment", "").strip()
-            if seg and _SAFE_STR.fullmatch(seg):
-                cmd.extend(["--segment", seg])
-            min_len = st.session_state.get(f"{prefix}_min_seq_length")
-            if min_len:
-                cmd.extend(["--min_seq_length", str(int(min_len))])
-            max_len = st.session_state.get(f"{prefix}_max_seq_length")
-            if max_len:
-                cmd.extend(["--max_seq_length", str(int(max_len))])
-            min_rel = st.session_state.get(f"{prefix}_min_release_date")
-            if min_rel and _DATE_RE.fullmatch(str(min_rel)):
-                cmd.extend(["--min_release_date", str(min_rel)])
-            max_rel = st.session_state.get(f"{prefix}_max_release_date")
-            if max_rel and _DATE_RE.fullmatch(str(max_rel)):
-                cmd.extend(["--max_release_date", str(max_rel)])
-            geo = st.session_state.get(f"{prefix}_geo_location", "").strip()
-            if geo and _SAFE_STR.fullmatch(geo):
-                cmd.extend(["--geographic_location", geo])
-            host_val = st.session_state.get(f"{prefix}_host", "").strip()
-            if host_val and _SAFE_STR.fullmatch(host_val):
-                cmd.extend(["--host", host_val])
-            if st.session_state.get(f"{prefix}_refseq_only"):
-                cmd.append("--refseq_only")
-            min_col = st.session_state.get(f"{prefix}_min_collection_date")
-            if min_col and _DATE_RE.fullmatch(str(min_col)):
-                cmd.extend(["--min_collection_date", str(min_col)])
-            max_col = st.session_state.get(f"{prefix}_max_collection_date")
-            if max_col and _DATE_RE.fullmatch(str(max_col)):
-                cmd.extend(["--max_collection_date", str(max_col)])
-            max_amb = st.session_state.get(f"{prefix}_max_ambiguous_chars")
-            if max_amb is not None:
-                cmd.extend(["--max_ambiguous_chars", str(int(max_amb))])
 
             _FETCH_STEPS = [
                 ("STEP 1", "Validating input"),
@@ -2051,16 +2074,9 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                     _render_progress(len(_FETCH_STEPS))
                     fasta_files = list(gget_tmp.glob("*.fa")) + list(gget_tmp.glob("*.fasta"))
                     if fasta_files:
-                        safe_target_name = _sanitize_filename_component(target_name)
-                        if not safe_target_name:
+                        dest = _safe_path_under(FASTA_DIR, f"{target_name}.fa")
+                        if not dest:
                             st.error("Invalid target name. Please use letters, numbers, '.', '_' or '-'.")
-                            detail_area.empty()
-                            return
-                        dest = FASTA_DIR / f"{safe_target_name}.fa"
-                        resolved_fasta_dir = FASTA_DIR.resolve()
-                        resolved_dest = dest.resolve()
-                        if resolved_fasta_dir not in resolved_dest.parents:
-                            st.error("Invalid target name path.")
                             detail_area.empty()
                             return
                         shutil.move(str(fasta_files[0]), str(dest))
@@ -2786,14 +2802,13 @@ def _run_monitor():
     params_path = date_dir / "params.txt"
     params_path.write_text(params_content)
 
-    # Read email config from project params.txt
+    # Read email config from project params.txt (password deferred to send time)
     params_source = PROJECT_ROOT / "params.txt"
-    email_sender = email_password = ""
+    email_sender = ""
     default_recipients = ""
     if params_source.exists():
         p = parse_params(params_source)
         email_sender = str(p.get("EMAIL_SENDER", "")).strip()
-        email_password = str(p.get("EMAIL_PASSWORD", "")).strip()
         default_recipients = str(p.get("EMAIL_RECIPIENTS", "")).strip()
 
     recipients_str = st.session_state.get("monitor_email_recipients", "").strip()
@@ -3110,25 +3125,31 @@ def _run_monitor():
     # ===================== STEP 3: EMAIL =====================
     email_body = "\n".join(email_body_parts)
 
-    if email_sender and email_password and email_recipients and all_xlsx:
+    # Read password at send time only (avoid storing in long-lived variable)
+    _email_password = ""
+    if params_source.exists():
+        _email_password = str(parse_params(params_source).get("EMAIL_PASSWORD", "")).strip()
+
+    if email_sender and _email_password and email_recipients and all_xlsx:
         progress_lines.append("⏳ &nbsp; **Sending email report...**")
         _update(progress_lines)
 
         subject = f"[ADAPT Monitor] {date_str} — {len(target_names)} target(s)"
         ok = _send_email(
             sender=email_sender,
-            password=email_password,
+            password=_email_password,
             recipients=email_recipients,
             subject=subject,
             body=email_body,
             attachments=all_xlsx,
         )
+        _email_password = ""  # clear after use
         if ok:
             progress_lines[-1] = f"✅ &nbsp; Email sent to {', '.join(email_recipients)}"
         else:
             progress_lines[-1] = "⚠️ &nbsp; Email sending failed"
         _update(progress_lines)
-    elif not email_sender or not email_password:
+    elif not email_sender or not _email_password:
         progress_lines.append("⚪ &nbsp; Email skipped (not configured)")
         _update(progress_lines)
     elif not all_xlsx:
