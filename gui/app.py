@@ -389,33 +389,37 @@ def _render_sidebar():
                 import json
                 try:
                     sched_info = json.loads(MONITOR_SCHEDULE_PATH.read_text())
-                    lines = []
                     targets = sched_info.get("targets", [])
-                    if targets:
-                        lines.append(f"<b>Targets:</b> {', '.join(targets)}")
-                    primers = sched_info.get("primer_sets", [])
-                    if primers:
-                        primer_list = "".join(
-                            f"<br>&nbsp;&nbsp;&nbsp;{p}" for p in primers
+                    target_summary = ", ".join(targets) if targets else "N/A"
+                    with st.expander(target_summary):
+                        lines = []
+                        primers = sched_info.get("primer_sets", [])
+                        if primers:
+                            primer_list = "".join(
+                                f"<br>&nbsp;&nbsp;&nbsp;{p}" for p in primers
+                            )
+                            lines.append(f"<b>Primer sets:</b>{primer_list}")
+                        lines.append(f"<b>Frequency:</b> {sched_info.get('frequency', 'N/A')}")
+                        recipients = sched_info.get("recipients", "")
+                        if recipients:
+                            lines.append(f"<b>Email:</b> {recipients}")
+                        st.markdown(
+                            "<div style='font-size:0.85em; line-height:1.4;'>"
+                            + "<br>".join(lines)
+                            + "</div>",
+                            unsafe_allow_html=True,
                         )
-                        lines.append(f"<b>Primer sets:</b>{primer_list}")
-                    lines.append(f"<b>Frequency:</b> {sched_info.get('frequency', 'N/A')}")
-                    recipients = sched_info.get("recipients", "")
-                    if recipients:
-                        lines.append(f"<b>Email:</b> {recipients}")
-                    st.markdown(
-                        "<div style='font-size:0.85em; line-height:1.4;'>"
-                        + "<br>".join(lines)
-                        + "</div>",
-                        unsafe_allow_html=True,
-                    )
+                        if st.button("Stop monitoring", key="sidebar_stop_cron", use_container_width=True):
+                            _uninstall_cron()
+                            if MONITOR_SCHEDULE_PATH.exists():
+                                MONITOR_SCHEDULE_PATH.unlink()
+                            st.rerun()
                 except (json.JSONDecodeError, KeyError):
                     pass
-            if st.button("Stop monitoring", key="sidebar_stop_cron", use_container_width=True):
-                _uninstall_cron()
-                if MONITOR_SCHEDULE_PATH.exists():
-                    MONITOR_SCHEDULE_PATH.unlink()
-                st.rerun()
+            else:
+                if st.button("Stop monitoring", key="sidebar_stop_cron", use_container_width=True):
+                    _uninstall_cron()
+                    st.rerun()
 
 
 
@@ -596,8 +600,8 @@ via email reports.
             use_container_width=True,
             type="primary",
         ):
+            _reset_workflow_state()
             st.session_state.workflow = "design"
-            _clear_pipeline_state()
             _navigate("select_target")
             st.rerun()
         st.caption(
@@ -615,8 +619,8 @@ via email reports.
             use_container_width=True,
             type="primary",
         ):
+            _reset_workflow_state()
             st.session_state.workflow = "evaluate"
-            _clear_pipeline_state()
             _navigate("select_target")
             st.rerun()
         st.caption(
@@ -634,8 +638,8 @@ via email reports.
             use_container_width=True,
             type="primary",
         ):
+            _reset_workflow_state()
             st.session_state.workflow = "monitor"
-            _clear_pipeline_state()
             _navigate("monitor_target")
             st.rerun()
         st.caption(
@@ -1193,7 +1197,8 @@ def _save_run_config():
 
 
 def _tab_run():
-    st.header("Run Pipeline")
+    workflow = st.session_state.get("workflow", "design")
+    st.header("Run Design" if workflow == "design" else "Run Evaluate")
 
     # Controls
     c1, c2 = st.columns(2)
@@ -1221,7 +1226,8 @@ def _tab_run():
     running = st.session_state.get("pipeline_running", False)
 
     with col_run:
-        run_clicked = st.button("Run", disabled=running or bool(errors), type="primary")
+        run_label = "Run Design" if workflow == "design" else "Run Evaluate"
+        run_clicked = st.button(run_label, disabled=running or bool(errors), type="primary")
     with col_stop:
         stop_clicked = st.button("Stop", disabled=not running, type="secondary")
 
@@ -1803,6 +1809,18 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
         taxid = selected_virus.split("TaxID: ")[1].rstrip(")")
         auto_name = selected_virus.split("  (TaxID:")[0]
 
+    # Subtype input (e.g., H5N1 for Influenza A)
+    st.text_input(
+        "Subtype",
+        placeholder="e.g., H5N1, H5N*, H3N2 (wildcards supported)",
+        key=f"{prefix}_subtype_filter",
+        help="Filter fetched sequences by subtype in the FASTA header. "
+             "Useful for Influenza A where all subtypes (H1N1, H3N2, H5N1, ...) are fetched together. "
+             "Supports wildcards: * matches anything, ? matches one character.",
+    )
+
+    # Build auto target name from virus + subtype
+    subtype_val = st.session_state.get(f"{prefix}_subtype_filter", "").strip()
     auto_target = auto_name
     if not auto_name and taxid:
         for name, tid in VIRUS_PRESETS:
@@ -1810,6 +1828,14 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                 auto_target = name
                 break
 
+    # Append subtype to target name (e.g., "Influenza_A" → "Influenza_A_H5N1")
+    if subtype_val:
+        subtype_clean = re.sub(r"[^\w\-]", "_", subtype_val)
+        subtype_clean = re.sub(r"_+", "_", subtype_clean).strip("_")
+        if subtype_clean:
+            auto_target = f"{auto_target}_{subtype_clean}" if auto_target else subtype_clean
+
+    # Track (virus + subtype) together for auto-name updates
     prev_auto = st.session_state.get(f"_prev_auto_{prefix}", "")
     if auto_target != prev_auto:
         st.session_state[f"_prev_auto_{prefix}"] = auto_target
@@ -2038,11 +2064,18 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                             detail_area.empty()
                             return
                         shutil.move(str(fasta_files[0]), str(dest))
-                        from qprimer_designer.adapt_cli import _deduplicate_fasta
-                        n_deduped = _deduplicate_fasta(dest.name)
+                        # Filter by subtype if specified
+                        from qprimer_designer.adapt_cli import _filter_fasta_by_subtype, _deduplicate_fasta
+                        subtype = st.session_state.get(f"{prefix}_subtype_filter", "").strip()
+                        n_subtype_removed = 0
+                        if subtype:
+                            n_subtype_removed = _filter_fasta_by_subtype(dest, subtype)
+                        n_deduped = _deduplicate_fasta(dest)
                         with open(dest) as f:
                             n_seqs = sum(1 for line in f if line.startswith(">"))
                         msg = f"Downloaded {n_seqs} unique sequences → `{dest.name}`"
+                        if n_subtype_removed > 0:
+                            msg += f" ({n_subtype_removed} filtered by subtype '{subtype}')"
                         if n_deduped > 0:
                             msg += f" ({n_deduped} duplicates removed)"
                         st.success(msg)
@@ -2734,7 +2767,9 @@ def _run_monitor():
         date_dir = work_dir / date_str
     else:
         date_str = datetime.now().strftime("%Y%m%d")
-        runid = spreadsheet_id[:8]
+        runid = st.session_state.get("monitor_run_id", "").strip()
+        if not runid:
+            runid = spreadsheet_id[:8]
         work_dir = MONITOR_DIR / runid
         date_dir = work_dir / date_str
 
@@ -3121,6 +3156,19 @@ def _tab_run_monitor():
     """Run page for monitor workflow."""
     st.header("Run Monitor")
 
+    # Run ID for identifying this run later
+    sheet_data = st.session_state.get("monitor_spreadsheet_data")
+    default_run_id = ""
+    if sheet_data:
+        default_run_id = sheet_data.get("spreadsheet_id", "")[:8]
+    if "monitor_run_id" not in st.session_state:
+        st.session_state["monitor_run_id"] = default_run_id
+    st.text_input(
+        "Run ID",
+        key="monitor_run_id",
+        help="A short identifier for this run. Used to organize output directories.",
+    )
+
     c1, _ = st.columns(2)
     max_cpu = os.cpu_count() or 1
     c1.slider("CPU cores", min_value=1, max_value=max_cpu, value=min(4, max_cpu), key="cores")
@@ -3166,8 +3214,14 @@ def _page_run():
 
     # Back button (only when pipeline is not running)
     if not st.session_state.get("pipeline_running"):
-        if st.button("← Back to Configuration", key="run_back"):
-            _navigate(f"{workflow}_config")
+        if workflow == "monitor":
+            back_label = "← Back to Report"
+            back_target = "monitor_report"
+        else:
+            back_label = "← Back to Configuration"
+            back_target = f"{workflow}_config"
+        if st.button(back_label, key="run_back"):
+            _navigate(back_target)
             st.rerun()
 
     if workflow == "monitor":
@@ -3267,10 +3321,10 @@ def _page_monitor_report():
     col_back, col_cont = st.columns(2)
     with col_back:
         if st.button("← Back", use_container_width=True, key="report_back"):
-            _navigate("config")
+            _navigate("monitor_config")
             st.rerun()
     with col_cont:
-        if st.button("Start monitoring →", type="primary", use_container_width=True,
+        if st.button("Continue →", type="primary", use_container_width=True,
                       key="report_cont", disabled=not email_configured):
             # Install cron job
             recipients = st.session_state.get("monitor_email_recipients", "").strip()
@@ -3308,7 +3362,6 @@ def _page_monitor_report():
                 st.session_state["_monitor_cron_installed"] = True
             except SystemExit:
                 st.error("Failed to install cron job. Is 'adapt' in PATH?")
-            # Also run immediately
             st.session_state._run_page_fresh = True
             _navigate("run")
             st.rerun()

@@ -230,7 +230,7 @@ _TRUE_FALSE_FLAGS = {
 # Columns that are metadata only (not passed to gget)
 _METADATA_COLUMNS = {"Pathogen", "Pathogen_abb", "Gene Segment", "Target name",
                       "Primer name", "query_id", "expected_count", "latest_count",
-                      "diff", "Forward", "Reverse", "Probe"}
+                      "diff", "Forward", "Reverse", "Probe", "subtype_filter"}
 
 # Max-date columns to strip when monitoring (monitor always fetches up to the latest)
 _MAX_DATE_COLUMNS = {"max_collection_date", "max_release_date"}
@@ -323,6 +323,10 @@ def _load_spreadsheet(csv_text: str) -> tuple[list[str], list[dict]]:
     data_rows = []
     for row in rows[3:]:
         if len(row) <= taxid_idx:
+            continue
+
+        # Skip example/template rows
+        if row[0].strip().lower() in ("example", "examples", "examples/definition"):
             continue
 
         row_dict = {}
@@ -535,6 +539,12 @@ def cmd_fetch(args):
             if fasta_files:
                 dest = out_dir / f"{target_name}.fa"
                 shutil.move(str(fasta_files[0]), str(dest))
+                # Filter by subtype if specified
+                subtype = str(row.get("subtype_filter", "")).strip()
+                if subtype:
+                    n_filtered = _filter_fasta_by_subtype(dest, subtype)
+                    if n_filtered > 0:
+                        print(f"  Filtered by subtype '{subtype}': removed {n_filtered} sequence(s)")
                 # Remove duplicate sequences
                 n_deduped = _deduplicate_fasta(dest)
                 if n_deduped > 0:
@@ -628,6 +638,59 @@ def _filter_fasta_by_accessions(
             if writing:
                 fout.write(line)
     return count
+
+
+def _filter_fasta_by_subtype(fasta_path: Path, subtype_pattern: str) -> int:
+    """Filter FASTA in place, keeping only sequences whose header matches the subtype pattern.
+
+    The pattern is matched against the full header line (case-insensitive).
+    Shell-style wildcards are supported: * matches anything, ? matches one char.
+    Example: "H5N1", "H5N*", "H5*"
+
+    Returns the number of sequences removed.
+    """
+    import fnmatch
+    fasta_path = Path(fasta_path).resolve()
+    pattern = subtype_pattern.strip()
+    if not pattern:
+        return 0
+
+    # Wrap pattern to match anywhere in the header (e.g., "H5N1" → "*H5N1*")
+    if not pattern.startswith("*"):
+        pattern = "*" + pattern
+    if not pattern.endswith("*"):
+        pattern = pattern + "*"
+
+    kept = []
+    current_header = None
+    current_seq_lines: list[str] = []
+    n_total = 0
+
+    with open(fasta_path) as f:
+        for line in f:
+            if line.startswith(">"):
+                if current_header is not None:
+                    n_total += 1
+                    if fnmatch.fnmatch(current_header.lower(), pattern.lower()):
+                        kept.append((current_header, current_seq_lines))
+                current_header = line
+                current_seq_lines = []
+            else:
+                current_seq_lines.append(line)
+        if current_header is not None:
+            n_total += 1
+            if fnmatch.fnmatch(current_header.lower(), pattern.lower()):
+                kept.append((current_header, current_seq_lines))
+
+    n_removed = n_total - len(kept)
+    if n_removed > 0:
+        with open(fasta_path, "w") as f:
+            for header, seq_lines in kept:
+                f.write(header)
+                for sl in seq_lines:
+                    f.write(sl)
+
+    return n_removed
 
 
 def _deduplicate_fasta(fasta_path) -> int:
