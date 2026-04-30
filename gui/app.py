@@ -2049,8 +2049,10 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                 return
 
             # Explicitly verify cmd is a list for CodeQL - using list form prevents shell injection
-            assert isinstance(cmd, list) and all(isinstance(arg, str) for arg in cmd), \
-                "Command must be a list of strings"
+            # Using if/raise instead of assert since asserts can be disabled with -O flag
+            if not isinstance(cmd, list) or not all(isinstance(arg, str) for arg in cmd):
+                st.error("Internal error: invalid command structure")
+                return
 
             _FETCH_STEPS = [
                 ("STEP 1", "Validating input"),
