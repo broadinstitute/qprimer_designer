@@ -32,6 +32,7 @@ training/
 
 # Large files
 *.tar.bz2
+*.fa.bz2
 *.tar.gz
 *.zip
 
