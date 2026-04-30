@@ -2040,9 +2040,18 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                 "max_collection_date": st.session_state.get(f"{prefix}_max_collection_date"),
                 "max_ambiguous_chars": st.session_state.get(f"{prefix}_max_ambiguous_chars"),
             }
-            cmd = _build_fetch_command(gget_bin, taxid, str(gget_tmp), fetch_params)
+            # Build command with validated parameters
+            # gget_tmp is already validated by _safe_path_under above
+            validated_out_dir = os.path.realpath(str(gget_tmp))
+            cmd = _build_fetch_command(gget_bin, taxid, validated_out_dir, fetch_params)
             if not cmd:
                 st.error("TaxID must be numeric.")
+                return
+
+            # Explicitly verify cmd is a list for CodeQL - using list form prevents shell injection
+            # Using if/raise instead of assert since asserts can be disabled with -O flag
+            if not isinstance(cmd, list) or not all(isinstance(arg, str) for arg in cmd):
+                st.error("Internal error: invalid command structure")
                 return
 
             _FETCH_STEPS = [
