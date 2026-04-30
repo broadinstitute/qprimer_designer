@@ -653,7 +653,7 @@ via email reports.
     st.markdown(
         "<div style='text-align: center; color: gray; font-size: 0.9em;'>"
         "<strong>Contact</strong><br>"
-        "S. Chan Baek (<a href='mailto:baekseun@broadinstitute.org'>baekseun@broadinstitute.org</a>) · "
+        "S Chan Baek (<a href='mailto:baekseun@broadinstitute.org'>baekseun@broadinstitute.org</a>) · "
         "Kenneth B Hsu (<a href='mailto:khsu@broadinstitute.org'>khsu@broadinstitute.org</a>)"
         "</div>",
         unsafe_allow_html=True,
