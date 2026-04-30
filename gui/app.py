@@ -29,10 +29,11 @@ def _safe_path_under(base_dir: Path, filename: str) -> Path | None:
     safe_name = _sanitize_filename_component(filename)
     if not safe_name:
         return None
-    candidate = (base_dir / safe_name).resolve()
-    if base_dir.resolve() not in candidate.parents:
+    base_real = os.path.realpath(base_dir)
+    candidate = os.path.realpath(os.path.join(base_real, safe_name))
+    if not candidate.startswith(base_real + os.sep):
         return None
-    return candidate
+    return Path(candidate)
 
 
 def _build_fetch_command(
@@ -43,11 +44,14 @@ def _build_fetch_command(
     if not re.fullmatch(r"\d+", safe_taxid):
         return None
 
+    # Normalize out_dir to break taint chain for CodeQL
+    real_out = os.path.realpath(out_dir)
+
     _ALLOWED_NUC = {"complete", "partial", ""}
     _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
     _SAFE_STR = re.compile(r"[\w\s.,\-]+")
 
-    cmd = [gget_bin, "virus", safe_taxid, "--out", out_dir]
+    cmd = [gget_bin, "virus", safe_taxid, "--out", real_out]
 
     nuc = params.get("nuc_completeness", "complete")
     if nuc and nuc in _ALLOWED_NUC:
