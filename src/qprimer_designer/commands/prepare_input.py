@@ -6,12 +6,23 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+from math import log10
+
 import numpy as np
 import pandas as pd
 from Bio import SeqIO
 from pandas.errors import EmptyDataError
 
-from qprimer_designer.utils import parse_params, get_tm, reverse_complement_dna
+from qprimer_designer.utils import parse_params, reverse_complement_dna
+
+# GC-based Tm with offset to approximate Tm_NN(Na=50, Mg=1.5, dNTPs=0.6)
+_LOG10_NA = log10(0.05)
+_TM_OFFSET = 9.6
+
+
+def _gc_tm(gc_count, length):
+    """Fast amplicon Tm from pre-computed GC count and length."""
+    return 81.5 + 16.6 * _LOG10_NA + 41.0 * gc_count / length - 675.0 / length + _TM_OFFSET
 
 
 def register(subparsers):
@@ -57,8 +68,13 @@ def run(args):
     start_time = time.time()
     nlines = 0
 
-    # Load reference sequences
+    # Load reference sequences and build GC prefix sums
     tarseqs = {s.id: str(s.seq) for s in SeqIO.parse(args.reference, "fasta")}
+    gc_prefix = {}
+    for sid, seq in tarseqs.items():
+        arr = np.frombuffer(seq.upper().encode(), dtype='uint8')
+        gc = (arr == ord('G')) | (arr == ord('C'))
+        gc_prefix[sid] = np.concatenate([[0], np.cumsum(gc)])
 
     # Primer feature table
     feats = pd.read_csv(args.pri_features, index_col=0)
@@ -122,20 +138,41 @@ def run(args):
     revs['pseq'] = revs['pseq'].apply(reverse_complement_dna)
     revs['tseq'] = revs['tseq'].apply(reverse_complement_dna)
 
-    revs_meta = revs.reset_index().rename(columns={'index': 'r_id'})
-    rev_index = defaultdict(list)
-
-    for r in revs_meta.itertuples(index=False):
+    # Build sorted reverse index per target for binary search
+    rev_by_target = defaultdict(list)
+    for r in revs.itertuples():
+        r_id = r.Index
+        r_len = int(r.len)
         for t, st in zip(_ensure_list(r.tnames), _ensure_list(r.starts)):
-            rev_index[t].append((r.r_id, int(st)))
+            rev_by_target[t].append((int(st), r_id, r_len))
+
+    # Sort by start position and convert to numpy arrays
+    rev_sorted = {}
+    for t, entries in rev_by_target.items():
+        entries.sort()  # sort by start position
+        rev_sorted[t] = (
+            np.array([e[0] for e in entries]),  # starts
+            np.array([e[1] for e in entries]),  # ids
+            np.array([e[2] for e in entries]),  # lens
+        )
+    del rev_by_target
 
     if args.reftype == 'off' and valid_pairs is not None:
         allowed_r_by_f = valid_pairs.groupby('pname_f')['pname_r'].agg(set).to_dict()
-        rname_by_id = revs_meta.set_index('r_id')['pname']
+        rname_by_id = revs['pname']
 
     allpairs = []
+    n_fors = len(fors)
+    next_log_time = start_time + 60
 
-    for f in fors.itertuples():
+    for i, f in enumerate(fors.itertuples()):
+        now = time.time()
+        if now >= next_log_time:
+            elapsed = now - start_time
+            pct = (i + 1) / n_fors * 100
+            print(f"  Progress: {i+1}/{n_fors} ({pct:.1f}%) — {elapsed:.0f}s elapsed", flush=True)
+            next_log_time = now + 60
+
         f_id = f.Index
         fname = f.pname
 
@@ -150,25 +187,61 @@ def run(args):
         tms_by_r = defaultdict(list)
 
         for t_f, st_f in zip(tnamesf, startsf):
-            cand = rev_index.get(t_f)
-            if not cand:
+            rev_data = rev_sorted.get(t_f)
+            if rev_data is None:
                 continue
 
             st_f = int(st_f)
-            for r_id, st_r in cand:
+            r_starts_arr, r_ids_arr, r_lens_arr = rev_data
+
+            # Binary search for candidate reverse primers
+            # amplicon_len = r_start + r_len - st_f + 1
+            # Need: minl <= amplicon_len <= maxl
+            # Use conservative bounds (min/max r_len) then exact-filter
+            min_r_len = r_lens_arr[0] if len(r_lens_arr) == 1 else r_lens_arr.min()
+            max_r_len = r_lens_arr[0] if len(r_lens_arr) == 1 else r_lens_arr.max()
+            lo_bound = st_f - 1 + minl - max_r_len
+            hi_bound = st_f - 1 + maxl - min_r_len
+
+            lo_idx = int(np.searchsorted(r_starts_arr, lo_bound, side='left'))
+            hi_idx = int(np.searchsorted(r_starts_arr, hi_bound, side='right'))
+
+            if lo_idx >= hi_idx:
+                continue
+
+            # Vectorized length filtering on candidates
+            cand_starts = r_starts_arr[lo_idx:hi_idx]
+            cand_ids = r_ids_arr[lo_idx:hi_idx]
+            cand_lens = r_lens_arr[lo_idx:hi_idx]
+            amp_lens = cand_starts + cand_lens - st_f + 1
+            valid_mask = (amp_lens >= minl) & (amp_lens <= maxl)
+
+            if not valid_mask.any():
+                continue
+
+            v_ids = cand_ids[valid_mask]
+            v_amp_lens = amp_lens[valid_mask]
+            v_starts = cand_starts[valid_mask]
+            v_lens = cand_lens[valid_mask]
+
+            for j in range(len(v_ids)):
+                r_id = int(v_ids[j])
+
                 if args.reftype == 'off' and valid_pairs is not None:
                     if rname_by_id[r_id] not in allowed_r_by_f.get(fname, set()):
                         continue
 
-                # Coordinates assumed 1-based
-                # Use the reverse primer's actual length from features
-                r_len = int(revs.loc[r_id, 'len'])
-                ampseq = tarseqs[t_f][st_f - 1: st_r + r_len]
-                if len(ampseq) > 0 and minl <= len(ampseq) <= maxl:
-                    targets_by_r[r_id].append(t_f)
-                    starts_by_r[r_id].append(st_f)
-                    amplens_by_r[r_id].add(len(ampseq))
-                    tms_by_r[r_id].append(get_tm(ampseq))
+                al = int(v_amp_lens[j])
+                targets_by_r[r_id].append(t_f)
+                starts_by_r[r_id].append(st_f)
+                amplens_by_r[r_id].add(al)
+
+                pfx = gc_prefix.get(t_f)
+                if pfx is not None:
+                    amp_start = st_f - 1
+                    amp_end = min(int(v_starts[j]) + int(v_lens[j]), len(pfx) - 1)
+                    gc_count = int(pfx[amp_end] - pfx[amp_start])
+                    tms_by_r[r_id].append(_gc_tm(gc_count, al))
 
         if not targets_by_r:
             continue
