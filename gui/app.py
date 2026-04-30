@@ -299,10 +299,22 @@ VIRUS_PRESETS: list[tuple[str, int]] = [
 ]
 
 
+def _decompress_bz2_fastas(directory: Path) -> None:
+    """Auto-decompress any .fa.bz2 files that don't have a corresponding .fa."""
+    import bz2 as _bz2
+    for p in directory.iterdir():
+        if p.name.endswith(".fa.bz2") and p.is_file():
+            fa_path = directory / p.name[:-4]  # strip .bz2
+            if not fa_path.exists():
+                with open(p, "rb") as fin, open(fa_path, "wb") as fout:
+                    fout.write(_bz2.decompress(fin.read()))
+
+
 def _available_fasta() -> list[str]:
     """Return sorted list of FASTA stem names in target_seqs/original/."""
     if not FASTA_DIR.exists():
         return []
+    _decompress_bz2_fastas(FASTA_DIR)
     return sorted({
         p.stem for p in FASTA_DIR.iterdir()
         if p.suffix in (".fa", ".fasta", ".fna") and p.is_file()
@@ -724,11 +736,12 @@ def _tab_files():
     # Upload
     uploaded = st.file_uploader(
         "Upload FASTA file(s)",
-        type=["fa", "fasta", "fna"],
+        type=["fa", "fasta", "fna", "bz2"],
         accept_multiple_files=True,
         key="fasta_upload",
     )
     if uploaded:
+        import bz2 as _bz2
         already_saved = st.session_state.get("_fasta_saved_ids", set())
         new_saved = set()
         for f in uploaded:
@@ -736,15 +749,24 @@ def _tab_files():
             if fid in already_saved:
                 continue
             p = Path(f.name)
-            if p.suffix.lower() not in (".fa", ".fasta", ".fna"):
+            # Handle .fa.bz2 files
+            if p.name.endswith(".fa.bz2"):
+                stem = p.name[:-7]  # strip .fa.bz2
+                dest = _safe_path_under(FASTA_DIR, stem + ".fa")
+                if not dest:
+                    st.error(f"Invalid filename: {f.name}")
+                    continue
+                dest.write_bytes(_bz2.decompress(f.getvalue()))
+            elif p.suffix.lower() not in (".fa", ".fasta", ".fna"):
                 st.error(f"Unsupported extension: {p.suffix}")
                 continue
-            # Normalize to .fa extension
-            dest = _safe_path_under(FASTA_DIR, p.stem + ".fa")
-            if not dest:
-                st.error(f"Invalid filename: {f.name}")
-                continue
-            dest.write_bytes(f.getvalue())
+            else:
+                # Normalize to .fa extension
+                dest = _safe_path_under(FASTA_DIR, p.stem + ".fa")
+                if not dest:
+                    st.error(f"Invalid filename: {f.name}")
+                    continue
+                dest.write_bytes(f.getvalue())
             # Remove any leftover files with other FASTA extensions
             for ext in (".fasta", ".fna"):
                 old = FASTA_DIR / (p.stem + ext)
