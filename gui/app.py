@@ -152,9 +152,10 @@ def _reset_workflow_state():
     for key in ("workflow", "targets", "cross", "host",
                 "target_select", "cross_select", "host_select",
                 "eval_method", "eval_for", "eval_rev", "eval_pro",
+                "_eval_for_saved", "_eval_rev_saved", "_eval_pro_saved",
                 "eval_pset_path", "eval_pset_upload",
                 "mode", "design_mode", "probe_enabled",
-                "run_id",
+                "run_id", "design_run_id",
                 "monitor_spreadsheet_url", "monitor_spreadsheet_data",
                 "monitor_query_ids", "monitor_email_recipients",
                 "monitor_manual_primers", "monitor_pset_path",
@@ -172,9 +173,18 @@ def _current_page() -> str:
 
 
 # Workflow step definitions: (page_key, label)
-_WORKFLOW_STEPS_DEFAULT = [
+_WORKFLOW_STEPS_DESIGN = [
     ("select_target", "Target"),
     ("select_offtarget", "Off-Target"),
+    ("config", "Configuration"),
+    ("run", "Run"),
+    ("results", "Results"),
+]
+
+_WORKFLOW_STEPS_EVALUATE = [
+    ("select_target", "Target"),
+    ("select_offtarget", "Off-Target"),
+    ("eval_primer", "Primer Set"),
     ("config", "Configuration"),
     ("run", "Run"),
     ("results", "Results"),
@@ -194,7 +204,9 @@ def _get_workflow_steps():
     workflow = st.session_state.get("workflow", "design")
     if workflow == "monitor":
         return _WORKFLOW_STEPS_MONITOR
-    return _WORKFLOW_STEPS_DEFAULT
+    if workflow == "evaluate":
+        return _WORKFLOW_STEPS_EVALUATE
+    return _WORKFLOW_STEPS_DESIGN
 
 
 def _render_workflow_progress(current_step_key: str):
@@ -499,55 +511,13 @@ def _render_sidebar():
 
 def _page_home():
     st.markdown(
-        "<h1 style='text-align: center;'>qPrimer Designer</h1>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        "<p style='text-align: center; font-size: 1.2em; color: gray;'>"
+        "<h1 style='text-align: center; margin-top: -2rem; margin-bottom: 0;'>qPrimer Designer</h1>"
+        "<p style='text-align: center; font-size: 1.2em; color: gray; margin-bottom: 0;'>"
         "ML-guided PCR primer design and evaluation"
-        "</p>",
+        "</p>"
+        "<hr style='margin-top: 1rem; margin-bottom: 1rem;'>",
         unsafe_allow_html=True,
     )
-
-    st.divider()
-
-    # Schematic
-    if SCHEMATIC_PATH.exists():
-        col_pad_l, col_img, col_pad_r = st.columns([1, 2, 1])
-        with col_img:
-            st.image(str(SCHEMATIC_PATH), use_container_width=True)
-
-    st.markdown("")
-
-    # Description
-    st.markdown(
-        """
-qPrimer Designer is an AI-powered tool for PCR diagnostics primer design and
-evaluation. It enables a **scalable, data-driven approach for adaptive
-diagnostic design** against rapidly evolving pathogens — accessible anywhere
-in the world, without requiring deep specialist expertise.
-
-The tool is built on **machine learning models** that predict PCR activity for
-a given primer pair and target sequence. These models were trained on
-experimental data from over **50,000 unique primer pair–target sequence
-combinations**, and significantly outperform predictions based on mismatch
-counts or free energy alone
-([Baek, Hsu et al., NeurIPS 2025 Workshop on AI for Science](https://openreview.net/forum?id=GJaNhMEZGM#discussion)).
-
-Its core capabilities include **Design** — generating new primer sets for
-given pathogen sequences — and **Evaluate** — assessing the performance of
-existing primer sets. Pathogen sequences can be uploaded directly as FASTA
-files or fetched from NCBI Virus by specifying a taxonomy ID and metadata
-parameters. In addition to the target pathogen, users can specify
-cross-reactivity sequences from other pathogens or host genomes to evaluate
-and minimize non-specific amplification. Finally, the **Monitor** feature
-tracks the validity of existing designs against newly observed pathogen
-sequences by periodically running fetch and evaluate, and delivering results
-via email reports.
-"""
-    )
-
-    st.divider()
 
     # Action button illustrations (inline SVG)
     _ICON_DESIGN = """
@@ -662,11 +632,11 @@ via email reports.
 
     with col1:
         st.markdown(
-            f'<div style="text-align: center; padding: 1em 0;">{_ICON_DESIGN}</div>',
+            f'<div style="text-align: center; padding: 0.3em 0;">{_ICON_DESIGN}</div>',
             unsafe_allow_html=True,
         )
         if st.button(
-            "Design new primer sets",
+            "Design",
             use_container_width=True,
             type="primary",
         ):
@@ -676,16 +646,16 @@ via email reports.
             st.rerun()
         st.caption(
             "Generate optimized primer sets for your target pathogen sequences. "
-            "Supports singleplex, multiplex, and probe design modes."
+            "Supports probe design."
         )
 
     with col2:
         st.markdown(
-            f'<div style="text-align: center; padding: 1em 0;">{_ICON_EVALUATE}</div>',
+            f'<div style="text-align: center; padding: 0.3em 0;">{_ICON_EVALUATE}</div>',
             unsafe_allow_html=True,
         )
         if st.button(
-            "Evaluate existing primer sets",
+            "Evaluate",
             use_container_width=True,
             type="primary",
         ):
@@ -694,17 +664,16 @@ via email reports.
             _navigate("select_target")
             st.rerun()
         st.caption(
-            "Assess the performance of your existing primers against target sequences. "
-            "Upload a primer set or paste individual sequences."
+            "Assess the performance of your existing primers against target sequences."
         )
 
     with col3:
         st.markdown(
-            f'<div style="text-align: center; padding: 1em 0;">{_ICON_MONITOR}</div>',
+            f'<div style="text-align: center; padding: 0.3em 0;">{_ICON_MONITOR}</div>',
             unsafe_allow_html=True,
         )
         if st.button(
-            "Monitor primer performance",
+            "Monitor",
             use_container_width=True,
             type="primary",
         ):
@@ -716,6 +685,36 @@ via email reports.
             "Track the validity of existing primer designs against newly observed "
             "pathogen sequences."
         )
+
+    st.markdown("<hr style='margin-top: 1rem; margin-bottom: 1rem;'>", unsafe_allow_html=True)
+
+    # Description
+    st.markdown(
+        """
+qPrimer Designer is an AI-powered tool for PCR diagnostics primer design and
+evaluation. It enables a **scalable, data-driven approach for adaptive
+diagnostic design** against rapidly evolving pathogens — accessible anywhere
+in the world, without requiring deep specialist expertise.
+
+The tool is built on **machine learning models** that predict PCR activity for
+a given primer pair and target sequence. These models were trained on
+experimental data from over **50,000 unique primer pair–target sequence
+combinations**, and significantly outperform predictions based on mismatch
+counts or free energy alone
+([Baek, Hsu et al., NeurIPS 2025 Workshop on AI for Science](https://openreview.net/forum?id=GJaNhMEZGM#discussion)).
+
+Its core capabilities include **Design** — generating new primer sets for
+given pathogen sequences — and **Evaluate** — assessing the performance of
+existing primer sets. Pathogen sequences can be uploaded directly as FASTA
+files or fetched from NCBI Virus by specifying a taxonomy ID and metadata
+parameters. In addition to the target pathogen, users can specify
+cross-reactivity sequences from other pathogens or host genomes to evaluate
+and minimize non-specific amplification. Finally, the **Monitor** feature
+tracks the validity of existing designs against newly observed pathogen
+sequences by periodically running fetch and evaluate, and delivering results
+via email reports.
+"""
+    )
 
     st.divider()
 
@@ -1092,13 +1091,13 @@ def _build_command() -> list[str]:
         if pset_path:
             config_args.append(f"pset={pset_path}")
         else:
-            fwd = st.session_state.get("eval_for", "")
-            rev = st.session_state.get("eval_rev", "")
+            fwd = st.session_state.get("eval_for") or st.session_state.get("_eval_for_saved", "")
+            rev = st.session_state.get("eval_rev") or st.session_state.get("_eval_rev_saved", "")
             if fwd:
                 config_args.append(f"for={fwd}")
             if rev:
                 config_args.append(f"rev={rev}")
-            pro = st.session_state.get("eval_pro", "")
+            pro = st.session_state.get("eval_pro") or st.session_state.get("_eval_pro_saved", "")
             if pro:
                 config_args.append(f"pro={pro}")
 
@@ -1125,7 +1124,9 @@ def _preflight_checks() -> list[str]:
             errors.append("No PANEL targets selected in Configuration tab.")
     elif mode == "Evaluate":
         has_pset = bool(st.session_state.get("eval_pset_path"))
-        has_seq = bool(st.session_state.get("eval_for")) and bool(st.session_state.get("eval_rev"))
+        eval_fwd = st.session_state.get("eval_for") or st.session_state.get("_eval_for_saved", "")
+        eval_rev = st.session_state.get("eval_rev") or st.session_state.get("_eval_rev_saved", "")
+        has_seq = bool(eval_fwd) and bool(eval_rev)
         if not has_pset and not has_seq:
             errors.append("Provide primer sequences or upload a primer set FASTA.")
         if not st.session_state.get("targets"):
@@ -1153,7 +1154,9 @@ def _write_pipeline_files():
     else:
         host = st.session_state.get("host", [])
 
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = st.session_state.get("design_run_id", "").strip()
+    if not run_id:
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     st.session_state.run_id = run_id
 
     snakefile_content = build_snakefile(
@@ -1265,8 +1268,8 @@ def _save_run_config():
         config["eval_method"] = st.session_state.get("eval_method", "")
         config["eval_target"] = st.session_state.get("eval_target", "")
         if st.session_state.get("eval_method") == "Paste sequences":
-            config["eval_forward"] = st.session_state.get("eval_for", "")
-            config["eval_reverse"] = st.session_state.get("eval_rev", "")
+            config["eval_forward"] = st.session_state.get("eval_for") or st.session_state.get("_eval_for_saved", "")
+            config["eval_reverse"] = st.session_state.get("eval_rev") or st.session_state.get("_eval_rev_saved", "")
         else:
             config["eval_pset_path"] = st.session_state.get("eval_pset_path", "")
 
@@ -1293,6 +1296,13 @@ def _save_run_config():
 def _tab_run():
     workflow = st.session_state.get("workflow", "design")
     st.header("Run Design" if workflow == "design" else "Run Evaluate")
+
+    # Run ID
+    default_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if "design_run_id" not in st.session_state:
+        st.session_state["design_run_id"] = default_run_id
+    st.text_input("Run ID", key="design_run_id",
+                  help="Identifier for this run. Results will be saved under this name.")
 
     # Controls
     c1, c2 = st.columns(2)
@@ -2333,7 +2343,10 @@ def _page_select_offtarget():
             st.rerun()
     with col_cont:
         if st.button("Continue →", type="primary", use_container_width=True):
-            _navigate(f"{workflow}_config")
+            if workflow == "evaluate":
+                _navigate("eval_primer")
+            else:
+                _navigate(f"{workflow}_config")
             st.rerun()
 
     st.caption("You can skip this step — cross-reactivity and host checks are optional.")
@@ -2342,6 +2355,9 @@ def _page_select_offtarget():
 def _config_design():
     """Design-specific configuration."""
     st.header("Design — Configuration")
+    st.markdown(
+        "Configure design mode and parameters for primer generation."
+    )
 
     # Summary of selections from previous steps
     targets = st.session_state.get("targets", [])
@@ -2404,33 +2420,25 @@ def _config_design():
             st.rerun()
 
 
-def _config_evaluate():
-    """Evaluate-specific configuration."""
-    st.header("Evaluate — Configuration")
-
-    # Summary of selections from previous steps
-    targets = st.session_state.get("targets", [])
-    cross = st.session_state.get("cross", [])
-    host = st.session_state.get("host", [])
-    st.markdown(f"**Target:** {', '.join(targets) if targets else 'none'}")
-    if cross:
-        st.markdown(f"**Cross-reactivity:** {', '.join(cross)}")
-    if host:
-        st.markdown(f"**Host:** {', '.join(host)}")
+def _page_eval_primer():
+    """Evaluate step 3: Primer set input."""
+    _render_workflow_progress("eval_primer")
+    st.header("Evaluate — Primer Set")
+    st.markdown(
+        "Add primer sets by entering sequences or uploading a FASTA file."
+    )
 
     st.divider()
 
     # Set internal mode
     st.session_state.mode = "Evaluate"
 
-    # Primer input
-    st.subheader("Primer sequences to evaluate")
-
     eval_method = st.radio(
         "Input method",
         ["Paste sequences", "Upload primer FASTA"],
         key="eval_method",
         horizontal=True,
+        label_visibility="collapsed",
     )
 
     if eval_method == "Paste sequences":
@@ -2456,6 +2464,52 @@ def _config_evaluate():
 
     st.divider()
 
+    col_back, col_cont = st.columns(2)
+    with col_back:
+        if st.button("← Back", use_container_width=True, key="eval_primer_back"):
+            _navigate("select_offtarget")
+            st.rerun()
+    with col_cont:
+        if st.button("Continue →", type="primary", use_container_width=True, key="eval_primer_cont"):
+            # Persist widget values before navigating away (widgets clear when
+            # not rendered, so copy to non-widget keys)
+            for k in ("eval_for", "eval_rev", "eval_pro"):
+                st.session_state[f"_{k}_saved"] = st.session_state.get(k, "")
+            _navigate("evaluate_config")
+            st.rerun()
+
+
+def _config_evaluate():
+    """Evaluate-specific configuration (parameters only)."""
+    st.header("Evaluate — Configuration")
+    st.markdown(
+        "Adjust amplicon length parameters for the evaluation pipeline."
+    )
+
+    # Summary of selections from previous steps
+    targets = st.session_state.get("targets", [])
+    cross = st.session_state.get("cross", [])
+    host = st.session_state.get("host", [])
+    eval_fwd = st.session_state.get("_eval_for_saved", "")
+    eval_rev_seq = st.session_state.get("_eval_rev_saved", "")
+    pset_path = st.session_state.get("eval_pset_path", "")
+
+    st.markdown(f"**Target:** {', '.join(targets) if targets else 'none'}")
+    if cross:
+        st.markdown(f"**Cross-reactivity:** {', '.join(cross)}")
+    if host:
+        st.markdown(f"**Host:** {', '.join(host)}")
+    if pset_path:
+        st.markdown(f"**Primer set:** {Path(pset_path).name}")
+    elif eval_fwd and eval_rev_seq:
+        st.markdown(f"**Forward:** {eval_fwd}")
+        st.markdown(f"**Reverse:** {eval_rev_seq}")
+
+    st.divider()
+
+    # Set internal mode
+    st.session_state.mode = "Evaluate"
+
     # Parameters
     _tab_parameters(mode="evaluate")
 
@@ -2464,7 +2518,7 @@ def _config_evaluate():
     col_back, col_cont = st.columns(2)
     with col_back:
         if st.button("← Back", use_container_width=True, key="eval_back"):
-            _navigate("select_offtarget")
+            _navigate("eval_primer")
             st.rerun()
     with col_cont:
         if st.button("Continue →", type="primary", use_container_width=True, key="eval_cont"):
@@ -2674,6 +2728,11 @@ def _page_monitor_primer():
     _render_workflow_progress("monitor_primer")
 
     st.header("Monitor — Primer Sets")
+    st.markdown(
+        "Review primer sets from the spreadsheet, or add additional ones by entering sequences or uploading a FASTA file."
+    )
+
+    st.divider()
 
     sheet_data = st.session_state.get("monitor_spreadsheet_data")
 
@@ -2699,7 +2758,6 @@ def _page_monitor_primer():
 
     # --- Manual input ---
     st.subheader("Add primer sets manually")
-    st.caption("Add additional primer sets by entering sequences or uploading a FASTA file.")
 
     # Initialize manual primer sets list
     if "monitor_manual_primers" not in st.session_state:
@@ -2779,6 +2837,11 @@ def _page_monitor_primer():
 def _config_monitor():
     """Monitor step 3: Amplicon length configuration."""
     st.header("Monitor — Configuration")
+    st.markdown(
+        "Adjust amplicon length parameters for the monitoring pipeline."
+    )
+
+    st.divider()
 
     # --- Amplicon length ---
     st.subheader("Amplicon length")
@@ -3514,6 +3577,8 @@ def main():
         _page_select_offtarget()
     elif page in ("design", "design_config"):
         _page_design()
+    elif page == "eval_primer":
+        _page_eval_primer()
     elif page in ("evaluate", "evaluate_config"):
         _page_evaluate()
     elif page == "monitor_target":
