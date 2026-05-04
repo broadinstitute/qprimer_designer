@@ -793,13 +793,84 @@ def _country_to_iso3(name: str) -> str | None:
         return None
 
 
+def _download_virus_map_data():
+    """Download virus map data from NCBI with progress display."""
+    import importlib, sys
+    # Ensure gui/ directory is importable regardless of working directory
+    _gui_dir = str(Path(__file__).parent)
+    if _gui_dir not in sys.path:
+        sys.path.insert(0, _gui_dir)
+    _mod = importlib.import_module("fetch_virus_map_data")
+    DEFAULT_VIRUSES = _mod.DEFAULT_VIRUSES
+    CONTINENTS = _mod.CONTINENTS
+    fetch_continent = _mod.fetch_continent
+    extract_record = _mod.extract_record
+
+    st.subheader("Downloading virus geographic data...")
+    st.caption("This is a one-time download from NCBI. It may take 10–20 minutes.")
+
+    VIRUS_MAP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    progress = st.progress(0.0)
+    status = st.empty()
+    total = len(DEFAULT_VIRUSES)
+
+    for i, (name, taxid) in enumerate(DEFAULT_VIRUSES):
+        out_path = VIRUS_MAP_DATA_DIR / f"{name}.json"
+        if out_path.exists():
+            progress.progress((i + 1) / total)
+            continue
+
+        status.text(f"Fetching {name.replace('_', ' ')} ({i + 1}/{total})...")
+        records = []
+        for continent in CONTINENTS:
+            raw = fetch_continent(taxid, continent)
+            for rec in raw:
+                parsed = extract_record(rec)
+                if parsed:
+                    records.append(parsed)
+
+        countries = set(r["country"] for r in records)
+        data = {
+            "name": name,
+            "taxid": taxid,
+            "total_sequences": len(records),
+            "num_countries": len(countries),
+            "records": records,
+        }
+        with open(out_path, "w") as f:
+            json.dump(data, f)
+
+        progress.progress((i + 1) / total)
+
+    # Save index
+    index = []
+    for p in sorted(VIRUS_MAP_DATA_DIR.glob("*.json")):
+        if p.name == "index.json":
+            continue
+        with open(p) as f:
+            d = json.load(f)
+        index.append({
+            "name": d["name"], "taxid": d["taxid"],
+            "total_sequences": d["total_sequences"],
+            "num_countries": d["num_countries"],
+        })
+    with open(VIRUS_MAP_DATA_DIR / "index.json", "w") as f:
+        json.dump(index, f, indent=2)
+
+    status.text("Download complete!")
+    st.rerun()
+
+
 def _page_virus_map():
     """Virus Map page: world choropleth showing virus sequence geographic distribution."""
     import plotly.express as px
     import pandas as pd
 
-    if not VIRUS_MAP_DATA_DIR.exists() or not list(VIRUS_MAP_DATA_DIR.glob("*.json")):
-        st.warning("No virus map data found. Run `gui/fetch_virus_map_data.py` to fetch data.")
+    if not VIRUS_MAP_DATA_DIR.exists() or not any(
+        p.name != "index.json" for p in VIRUS_MAP_DATA_DIR.glob("*.json")
+    ):
+        _download_virus_map_data()
         return
 
     # Load available viruses
