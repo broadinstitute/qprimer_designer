@@ -342,11 +342,13 @@ rule pick_representative_seqs:
     input:
         "target_seqs/msa/{virus}.aln"
     output:
-        "target_seqs/representative/{virus}.fa"
+        fa="target_seqs/representative/{virus}.fa",
+        probe_regions="target_seqs/representative/{virus}_probe_regions.tsv"
     shell:
         "qprimer pick-representatives "
-        "--in '{input}' --out '{output}' "
-        "--params '{PARAMS}' --name '{wildcards.virus}'"
+        "--in '{input}' --out '{output.fa}' "
+        "--params '{PARAMS}' --name '{wildcards.virus}' "
+        "--probe-regions '{output.probe_regions}'"
 
 def selected_source_fa(wc):
     # Ensure the checkpoint has run and we can read its output
@@ -357,6 +359,14 @@ def selected_source_fa(wc):
         return f"target_seqs/representative/{wc.virus}.fa"
     else:
         return f"target_seqs/original/{wc.virus}.fa"
+
+def selected_probe_regions(wc):
+    """Return probe regions file if representative path was chosen."""
+    ckpt = checkpoints.choose_target_seq.get(virus=wc.virus)
+    choice = open(ckpt.output[0]).read().strip()
+    if choice == "representative":
+        return f"target_seqs/representative/{wc.virus}_probe_regions.tsv"
+    return []
 
 rule resolve_target_seq:
     wildcard_constraints:
@@ -392,14 +402,19 @@ rule generate_probes:
     wildcard_constraints:
         virus=TARGETS_PATTERN
     input:
-        "target_seqs/selected/{virus}.fa"
+        seqs="target_seqs/selected/{virus}.fa",
+        regions=selected_probe_regions
     output:
         fasta="primer_seqs/{virus}_probe.fa",
         features="primer_seqs/{virus}_probe.feat"
-    shell:
-        "qprimer generate-probe "
-        "--in '{input}' --out '{output.fasta}' "
-        "--params '{PARAMS}' --name '{wildcards.virus}'"
+    run:
+        regions_arg = f"--conserved-regions '{input.regions}'" if input.regions else ""
+        shell(
+            "qprimer generate-probe "
+            "--in '{input.seqs}' --out '{output.fasta}' "
+            f"--params '{{PARAMS}}' --name '{{wildcards.virus}}' "
+            f"{regions_arg}"
+        )
 
 
 ############################################

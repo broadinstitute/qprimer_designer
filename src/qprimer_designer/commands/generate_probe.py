@@ -2,6 +2,7 @@
 
 import argparse
 import random
+import sys
 import time
 from collections import defaultdict
 
@@ -32,7 +33,17 @@ self-dimer free energy (ΔG), homopolymer runs, and 5' nucleotide constraints.
                        help="Parameters file (params.txt)")
     parser.add_argument("--name", required=True,
                        help="Name prefix for probe IDs")
+    parser.add_argument("--conserved-regions", dest="conserved_regions", default=None,
+                       help="TSV of conserved probe regions (from pick-representatives)")
     parser.set_defaults(func=run)
+
+
+def _position_in_regions(pos, probe_len, regions):
+    """Check if a probe at pos with given length falls within any conserved region."""
+    for start, end in regions:
+        if pos >= start and pos + probe_len <= end:
+            return True
+    return False
 
 
 def generate_probes(
@@ -46,8 +57,14 @@ def generate_probes(
     homopolymer_max: int,
     avoid_5prime_G: bool,
     max_num: int,
+    conserved_regions=None,
 ):
-    """Generate and filter probe candidates across multiple target sequences."""
+    """Generate and filter probe candidates across multiple target sequences.
+
+    Args:
+        conserved_regions: Optional list of (start, end) tuples. If provided,
+            only probes falling entirely within a conserved region are generated.
+    """
     # Generate all candidate probes with step=1 from both strands
     probes = {}
     for target_seq in target_seqs:
@@ -56,6 +73,8 @@ def generate_probes(
         # Generate from forward strand
         for probe_len in range(len_min, len_max + 1):
             for i in range(0, seq_len - probe_len + 1):
+                if conserved_regions and not _position_in_regions(i, probe_len, conserved_regions):
+                    continue
                 seq = target_seq[i : i + probe_len]
                 if "N" not in seq:
                     probes[seq] = i
@@ -64,11 +83,11 @@ def generate_probes(
         target_seq_rc = reverse_complement_dna(target_seq)
         for probe_len in range(len_min, len_max + 1):
             for i in range(0, seq_len - probe_len + 1):
+                original_pos = seq_len - i - probe_len
+                if conserved_regions and not _position_in_regions(original_pos, probe_len, conserved_regions):
+                    continue
                 seq = target_seq_rc[i : i + probe_len]
                 if "N" not in seq:
-                    # Convert RC position to original sequence coordinates
-                    # Position in original = len - position_in_rc - probe_len
-                    original_pos = seq_len - i - probe_len
                     probes[seq] = original_pos
 
     print(f">> Probes with unique sequence: {len(probes)}")
@@ -91,7 +110,7 @@ def generate_probes(
         gc = gc_fraction(pseq)
 
         # Filter by Tm and GC
-        if min_tm <= tm <= max_tm and gc <= max_gc:
+        if min_tm <= tm <= max_tm and gc <= max_gc / 100.0:
             dG = compute_self_dimer_dg(pseq)
 
             # Only add features if all filters pass
@@ -133,6 +152,17 @@ def run(args):
 
     target_seqs = [sanitize_iupac(str(s.seq)) for s in SeqIO.parse(args.target_seqs, "fasta")]
 
+    # Load conserved regions if provided
+    conserved_regions = None
+    if args.conserved_regions:
+        import csv
+        conserved_regions = []
+        with open(args.conserved_regions) as f:
+            reader = csv.DictReader(f, delimiter='\t')
+            for row in reader:
+                conserved_regions.append((int(row['start']), int(row['end'])))
+        print(f"Using {len(conserved_regions)} conserved probe region(s)")
+
     print(f"Generating probes from {args.target_seqs}...")
     print(f"Probe lengths: {len_min}-{len_max}")
     print(f"Tm range: {min_tm}-{max_tm}")
@@ -142,7 +172,19 @@ def run(args):
         target_seqs, len_min, len_max,
         max_tm, min_tm, max_gc, min_dg,
         homopolymer_max, avoid_5prime_G, max_num,
+        conserved_regions=conserved_regions,
     )
+
+    if not filtered and conserved_regions:
+        print(
+            f"[ERROR] No probes passed filters within conserved regions.\n"
+            f"  Conserved regions: {len(conserved_regions)}, "
+            f"Tm range: {min_tm}-{max_tm}, GC max: {max_gc}\n"
+            f"  Try adjusting PROBE_CONSERVATION_THRESHOLD, PROBE_MAX_MISMATCHES, "
+            f"or probe Tm/GC/length parameters in params.txt.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Write output FASTA
     probe_list = list(filtered.keys())
