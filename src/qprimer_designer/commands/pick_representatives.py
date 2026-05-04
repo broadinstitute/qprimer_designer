@@ -9,6 +9,7 @@ import hashlib
 import heapq
 import math
 import random
+import sys
 import time
 from collections import defaultdict
 
@@ -16,7 +17,7 @@ import numpy as np
 from Bio import SeqIO
 from scipy.cluster import hierarchy
 
-from qprimer_designer.utils import parse_params
+from qprimer_designer.utils import parse_params, get_probe_params
 
 
 def register(subparsers):
@@ -33,6 +34,8 @@ for downstream primer design using MinHash-based approximate clustering.
     parser.add_argument("--out", dest="output", required=True, help="Output FASTA of representatives")
     parser.add_argument("--params", dest="param_file", required=True, help="Parameters file")
     parser.add_argument("--name", required=True, help="Target name")
+    parser.add_argument("--probe-regions", dest="probe_regions", default=None,
+                       help="Output TSV of conserved probe regions (optional)")
     parser.set_defaults(func=run)
 
 
@@ -226,6 +229,96 @@ def trim_to_window(seqs, window_start, window_size):
     return trimmed
 
 
+def find_conserved_probe_regions(
+    aligned_seqs,
+    window_start,
+    window_size,
+    probe_len_max=28,
+    max_variable_sites=2,
+    conservation_threshold=0.8,
+):
+    """Find conserved regions within the design window suitable for probe design.
+
+    Scans the MSA design window for sub-windows of probe_len_max where the
+    number of variable columns is at most max_variable_sites.
+
+    Args:
+        aligned_seqs: List of aligned sequences (with gaps).
+        window_start: Start position of the design window in MSA coordinates.
+        window_size: Size of the design window.
+        probe_len_max: Window size for scanning (use max probe length).
+        max_variable_sites: Maximum variable columns allowed per window.
+        conservation_threshold: Column conservation fraction below which
+            a column is considered "variable".
+
+    Returns:
+        List of (start, end, num_variable) tuples in ungapped coordinates
+        relative to the design window consensus.
+    """
+    from collections import Counter
+
+    seq_len = len(aligned_seqs[0])
+    win_end = min(window_start + window_size, seq_len)
+
+    # Compute per-column conservation within the design window
+    is_variable = []
+    non_gap_columns = []  # Track which columns have non-gap bases
+    for col_idx in range(window_start, win_end):
+        bases = [s[col_idx].upper() for s in aligned_seqs if s[col_idx] != '-']
+        if not bases:
+            is_variable.append(True)
+            non_gap_columns.append(False)
+            continue
+        non_gap_columns.append(True)
+        cnt = Counter(bases)
+        most_common_frac = cnt.most_common(1)[0][1] / len(bases)
+        is_variable.append(most_common_frac < conservation_threshold)
+
+    # Build list of conservation flags for non-gap columns only
+    ungapped_variable = []
+    for i, has_base in enumerate(non_gap_columns):
+        if has_base:
+            ungapped_variable.append(is_variable[i])
+
+    if len(ungapped_variable) < probe_len_max:
+        return []
+
+    # Find windows where variable sites <= max_variable_sites
+    conserved_starts = set()
+    var_count = sum(ungapped_variable[:probe_len_max])
+
+    for start in range(len(ungapped_variable) - probe_len_max + 1):
+        if start > 0:
+            var_count -= ungapped_variable[start - 1]
+            var_count += ungapped_variable[start + probe_len_max - 1]
+        if var_count <= max_variable_sites:
+            conserved_starts.add(start)
+
+    if not conserved_starts:
+        return []
+
+    # Merge overlapping windows into contiguous regions
+    sorted_starts = sorted(conserved_starts)
+    regions = []
+    reg_start = sorted_starts[0]
+    reg_end = sorted_starts[0] + probe_len_max
+
+    for s in sorted_starts[1:]:
+        if s <= reg_end:
+            reg_end = s + probe_len_max
+        else:
+            # Count variable sites in this merged region
+            n_var = sum(ungapped_variable[reg_start:reg_end])
+            regions.append((reg_start, reg_end, n_var))
+            reg_start = s
+            reg_end = s + probe_len_max
+
+    n_var = sum(ungapped_variable[reg_start:reg_end])
+    regions.append((reg_start, reg_end, n_var))
+
+    return regions
+
+
 def cluster_sequences(seqs, kmer_size=10, signature_size=100, dist_threshold=0.3):
     """Cluster sequences using MinHash and hierarchical clustering."""
     if len(seqs) <= 1:
@@ -299,6 +392,10 @@ def run(args):
         with open(args.output, "w") as out:
             for r in records:
                 out.write(f">{r.id}\n{str(r.seq).replace('-', '')}\n")
+        # Write empty probe regions (no MSA-based filtering needed)
+        if getattr(args, 'probe_regions', None):
+            with open(args.probe_regions, "w") as f:
+                f.write("start\tend\tnum_variable_sites\n")
         print(f"Wrote {len(seqs)} sequences (all) to {args.output}")
         return
 
@@ -314,6 +411,9 @@ def run(args):
             for i in range(min(num_reps, len(records))):
                 r = records[i]
                 out.write(f">{r.id}\n{str(r.seq).replace('-', '')}\n")
+        if getattr(args, 'probe_regions', None):
+            with open(args.probe_regions, "w") as f:
+                f.write("start\tend\tnum_variable_sites\n")
         print(f"Wrote {min(num_reps, len(records))} sequences to {args.output}")
         return
 
@@ -339,6 +439,35 @@ def run(args):
         for i in medoid_indices:
             r = records[i]
             out.write(f">{r.id}\n{str(r.seq).replace('-', '')}\n")
+
+    # Compute conserved probe regions if requested
+    if getattr(args, 'probe_regions', None):
+        probe_params = get_probe_params(params)
+        regions = find_conserved_probe_regions(
+            aligned_seqs=seqs,
+            window_start=window_start,
+            window_size=window_size,
+            probe_len_max=probe_params["len_max"],
+            max_variable_sites=probe_params["max_mismatches"],
+            conservation_threshold=probe_params["conservation_threshold"],
+        )
+        with open(args.probe_regions, "w") as f:
+            f.write("start\tend\tnum_variable_sites\n")
+            for start, end, n_var in regions:
+                f.write(f"{start}\t{end}\t{n_var}\n")
+        if regions:
+            total_bp = sum(e - s for s, e, _ in regions)
+            print(f"Found {len(regions)} conserved probe region(s) covering {total_bp} bp")
+        else:
+            print(
+                f"[ERROR] No conserved probe regions found with current settings:\n"
+                f"  PROBE_CONSERVATION_THRESHOLD = {probe_params['conservation_threshold']}\n"
+                f"  PROBE_MAX_MISMATCHES = {probe_params['max_mismatches']}\n"
+                f"  Try lowering PROBE_CONSERVATION_THRESHOLD (e.g. 0.6) or "
+                f"increasing PROBE_MAX_MISMATCHES (e.g. 3-4) in params.txt.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     runtime = time.time() - start_time
     print(f"Wrote {len(medoid_indices)} representative sequences to {args.output} ({runtime:.1f} sec)")

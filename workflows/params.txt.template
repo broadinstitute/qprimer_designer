@@ -28,12 +28,15 @@ PROBE_LEN_MIN = 24
 PROBE_LEN_MAX = 28
 PROBE_TM_MIN = 65
 PROBE_TM_MAX = 70
+PROBE_GC_MAX = 60
+PROBE_DG_MIN = -8
 PROBE_HOMOPOLYMER_MAX = 3
 PROBE_AVOID_5PRIME_G = True
+PROBE_CONSERVATION_THRESHOLD = 0.8  # Column conservation fraction for probe region selection
 
 ## Probe mode configuration (singleplex only)
 PROBE_MAX_MISMATCHES = 2  # Maximum mismatches for probe-to-target alignment
-PROBE_AMPLICON_BUFFER = 20  # Minimum distance (nt) from primer ends
+PROBE_AMPLICON_BUFFER = 10  # Minimum distance (nt) from primer ends
 MIN_PROBES_PER_PAIR = 1  # Minimum valid probes required per primer pair
 MAX_PROBES_PER_PAIR = 5  # Maximum number of probes to output per primer pair
 

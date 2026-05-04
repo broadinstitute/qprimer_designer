@@ -90,6 +90,7 @@ def _find_position_valid_probes(
 
         probe_len = len(probe_seqs_dict[probe_name])
         valid_for_all = True
+        total_mm = 0
 
         for target_id in all_targets:
             pos_key = (target_id, probe_name)
@@ -103,6 +104,7 @@ def _find_position_valid_probes(
             if mm > max_mismatches or indel > 0:
                 valid_for_all = False
                 break
+            total_mm += mm
 
             probe_start = probe_positions[pos_key]
             probe_end = probe_start + probe_len
@@ -120,9 +122,11 @@ def _find_position_valid_probes(
                 break
 
         if valid_for_all:
-            passing.append(probe_name)
+            passing.append((probe_name, total_mm))
 
-    return passing
+    # Sort by total mismatches (ascending) and return names only
+    passing.sort(key=lambda x: x[1])
+    return [name for name, _ in passing]
 
 
 def register(subparsers):
@@ -189,36 +193,30 @@ def run(args):
         max_probes = int(params.get("MAX_PROBES_PER_PAIR", 5))
         max_mismatches = int(params.get("PROBE_MAX_MISMATCHES", 2))
 
-        # Select top N pairs FIRST
-        top_candidates = res.iloc[:num_select].copy()
-
-        # Load .full file and process row-by-row for memory efficiency
+        # Load .full file for ALL pairs (probe compatibility checked first)
         eval_full_path = f"{args.scores}.full"
 
-        # Build lookup of top pairs we care about
-        top_pairs_set = set(zip(top_candidates['pname_f'], top_candidates['pname_r']))
+        all_pairs_set = set(zip(res['pname_f'], res['pname_r']))
 
-        # Read .full file in chunks and extract ALL rows for top pairs
-        # Only keep rows with classifier >= 0.5 (high confidence predictions)
         pair_full_data = {}
         for chunk in pd.read_csv(eval_full_path, chunksize=10000):
             for _, row in chunk.iterrows():
                 pair_key = (row['pname_f'], row['pname_r'])
                 if row.get('classifier', 1.0) < 0.5:
                     continue
-                if pair_key in top_pairs_set:
+                if pair_key in all_pairs_set:
                     if pair_key not in pair_full_data:
                         pair_full_data[pair_key] = []
                     pair_full_data[pair_key].append(row)
 
-        print(f"Checking top {len(top_candidates)} pairs for probe compatibility...")
+        print(f"Checking {len(res)} pairs for probe compatibility (before top-N selection)...")
 
-        # Phase 1: position filtering (cheap) — collect all position-passing
-        # probes per pair, and accumulate dimer pairs for batch computation
+        # Phase 1: position filtering (cheap) — check pairs in score order,
+        # stop early once we have enough probe-compatible candidates
         pair_candidates = []  # [(pair_key, [probe_names...])]
         all_dimer_pairs = []  # flat list of (probe_seq, primer_seq) for batch
 
-        for _, row in top_candidates.iterrows():
+        for _, row in res.iterrows():
             pname_f = row['pname_f']
             pname_r = row['pname_r']
             pair_key = (pname_f, pname_r)
@@ -247,6 +245,10 @@ def run(args):
                 probe_seq = probe_seqs_dict[probe_name]
                 all_dimer_pairs.append((probe_seq, fwd_seq))
                 all_dimer_pairs.append((probe_seq, rev_seq))
+
+            # Early stop: enough candidates found (dG filtering may reduce this)
+            if len(pair_candidates) >= num_select * 2:
+                break
 
         # Phase 2: batch dimer computation (single RNAduplex process)
         all_dg = []
@@ -277,17 +279,18 @@ def run(args):
                 valid_pairs.append(pair_key)
                 valid_probes_per_pair[pair_key] = pair_valid_probes
 
-        print(f"Found {len(valid_pairs)} of top {len(top_candidates)} pairs with compatible probes")
+        print(f"Found {len(valid_pairs)} pairs with compatible probes, selecting top {num_select}...")
 
-        # Filter to only pairs with valid probes
+        # Select top N from probe-compatible pairs (ranked by original score order)
         if valid_pairs:
             valid_pairs_set = set(valid_pairs)
-            top = top_candidates[
-                top_candidates.apply(lambda r: (r['pname_f'], r['pname_r']) in valid_pairs_set, axis=1)
-            ].copy()
+            probe_compatible = res[
+                res.apply(lambda r: (r['pname_f'], r['pname_r']) in valid_pairs_set, axis=1)
+            ]
+            top = probe_compatible.iloc[:num_select].copy()
         else:
-            print("WARNING: No primer pairs in top N have compatible probes!")
-            top = top_candidates.iloc[:0].copy()  # Empty DataFrame
+            print("WARNING: No primer pairs have compatible probes!")
+            top = res.iloc[:0].copy()  # Empty DataFrame
 
         # Add primer sequences, probe count, and probe names to top DataFrame
         if not top.empty:
@@ -302,10 +305,13 @@ def run(args):
                 axis=1
             )
 
-        # Write probe assignments (limit to first N probes per pair)
+        # Write probe assignments (only for top N pairs, limit probes per pair)
         if args.probe_out:
+            top_pairs_set = set(zip(top['pname_f'], top['pname_r']))
             probe_assignments = []
             for pair_key in valid_pairs:
+                if pair_key not in top_pairs_set:
+                    continue
                 pname_f, pname_r = pair_key
                 pair_probes = valid_probes_per_pair[pair_key]
                 for probe_name in pair_probes[:max_probes]:

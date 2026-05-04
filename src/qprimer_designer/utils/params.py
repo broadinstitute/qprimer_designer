@@ -83,9 +83,11 @@ def get_probe_params(params: dict) -> dict:
         "max_tm": float(params.get("PROBE_TM_MAX", 70)),
         "homopolymer_max": int(params.get("PROBE_HOMOPOLYMER_MAX", 3)),
         "avoid_5prime_g": avoid_5prime_g,
-        "max_gc": float(params.get("GC_MAX", 60)),
-        "min_dg": float(params.get("DG_MIN", -6)),
+        "max_gc": float(params.get("PROBE_GC_MAX", 60)),
+        "min_dg": float(params.get("PROBE_DG_MIN", -8)),
         "max_num": int(params.get("MAX_PRIMER_CANDIDATES", 10000)),
+        "conservation_threshold": float(params.get("PROBE_CONSERVATION_THRESHOLD", 0.8)),
+        "max_mismatches": int(params.get("PROBE_MAX_MISMATCHES", 2)),
     }
 
 

@@ -164,8 +164,10 @@ class TestGetProbeParams:
         assert result["homopolymer_max"] == 3
         assert result["avoid_5prime_g"] is True
         assert result["max_gc"] == 60
-        assert result["min_dg"] == -6
+        assert result["min_dg"] == -8
         assert result["max_num"] == 10000
+        assert result["conservation_threshold"] == 0.8
+        assert result["max_mismatches"] == 2
 
     def test_avoid_5prime_g_true_string(self):
         """Test boolean parsing of avoid_5prime_g."""
