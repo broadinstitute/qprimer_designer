@@ -93,3 +93,6 @@ params.txt
 
 # Monitor working directory
 monitor/
+
+# Virus map cached data (download via fetch_virus_map_data.py)
+gui/virus_map_data/
