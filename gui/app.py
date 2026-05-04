@@ -120,6 +120,7 @@ from qprimer_designer.adapt_cli import (
 
 MONITOR_DIR = PROJECT_ROOT / "monitor"
 MONITOR_SCHEDULE_PATH = MONITOR_DIR / "schedule.json"
+VIRUS_MAP_DATA_DIR = Path(__file__).parent / "virus_map_data"
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -305,7 +306,7 @@ VIRUS_PRESETS: list[tuple[str, int]] = [
     ("Japanese Encephalitis virus", 11072),
     ("Lassa virus", 3052310),
     ("Crimean-Congo hemorrhagic fever virus", 3052518),
-    ("Nipah virus", 121227),
+    ("Nipah virus", 3052225),
     ("Hendra virus", 3052223),
     ("Rabies virus", 11292),
     ("Variola virus (Smallpox)", 10255),
@@ -428,6 +429,19 @@ def _render_sidebar():
 
         if page == "home":
             st.markdown("**Home**")
+            if st.button(":material/public: Start from Map", use_container_width=True, key="sidebar_virus_map"):
+                _navigate("virus_map")
+                st.rerun()
+        elif page == "virus_map":
+            if st.button("< Back to Home", use_container_width=True, key="sidebar_back_from_map"):
+                for k in ("virus_map_selected_countries", "_virus_map_prev_clicks",
+                           "virus_map_country_multiselect", "virus_map_chart",
+                           "virus_map_select", "virus_map_date_range"):
+                    st.session_state.pop(k, None)
+                _navigate("home")
+                st.rerun()
+            st.divider()
+            st.markdown("**Virus Map**")
         else:
             if st.button("< Back to Home", use_container_width=True):
                 _reset_workflow_state()
@@ -727,6 +741,421 @@ via email reports.
         "</div>",
         unsafe_allow_html=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Virus Map
+# ---------------------------------------------------------------------------
+
+# Map NCBI country names to ISO-3166 alpha-3 codes for plotly choropleth
+_NCBI_TO_ISO3 = {
+    "USA": "USA", "United States": "USA", "Puerto Rico": "PRI",
+    "U.S. Virgin Islands": "VIR", "Guam": "GUM",
+    "Viet Nam": "VNM", "Vietnam": "VNM",
+    "Republic of Korea": "KOR", "Korea": "KOR", "South Korea": "KOR",
+    "Democratic Republic of the Congo": "COD", "Zaire": "COD",
+    "Republic of the Congo": "COG", "Congo": "COG",
+    "Czech Republic": "CZE", "Czechia": "CZE",
+    "Reunion": "REU", "French Guiana": "GUF",
+    "Guadeloupe": "GLP", "Martinique": "MTQ",
+    "Chinese Taipei": "TWN", "Taiwan": "TWN",
+    "Myanmar": "MMR", "Burma": "MMR",
+    "Cote d'Ivoire": "CIV", "Ivory Coast": "CIV",
+    "Lao People's Democratic Republic": "LAO", "Laos": "LAO",
+    "Russian Federation": "RUS", "Russia": "RUS",
+    "Iran": "IRN", "Iran, Islamic Republic of": "IRN",
+    "Syria": "SYR", "Syrian Arab Republic": "SYR",
+    "Tanzania": "TZA", "United Republic of Tanzania": "TZA",
+    "Venezuela": "VEN", "Bolivia": "BOL",
+    "Micronesia": "FSM", "Micronesia, Federated States of": "FSM",
+    "Palestine": "PSE", "State of Palestine": "PSE",
+    "North Macedonia": "MKD", "Macedonia": "MKD",
+    "Brunei": "BRN", "Brunei Darussalam": "BRN",
+    "Cape Verde": "CPV", "Cabo Verde": "CPV",
+    "East Timor": "TLS", "Timor-Leste": "TLS",
+    "Micronesia": "FSM",
+    "Turkey": "TUR", "Turkiye": "TUR",
+    "Saint Barthelemy": "BLM", "Saint Martin": "MAF",
+    "Virgin Islands": "VIR",
+    "Borneo": "MYS",  # Borneo is split; default to Malaysia
+}
+
+
+def _country_to_iso3(name: str) -> str | None:
+    """Convert a country name to ISO-3166 alpha-3 code."""
+    if name in _NCBI_TO_ISO3:
+        return _NCBI_TO_ISO3[name]
+    try:
+        import pycountry
+        result = pycountry.countries.lookup(name)
+        return result.alpha_3
+    except (LookupError, ImportError):
+        return None
+
+
+def _download_virus_map_data():
+    """Download virus map data from NCBI with progress display."""
+    import importlib, sys
+    # Ensure gui/ directory is importable regardless of working directory
+    _gui_dir = str(Path(__file__).parent)
+    if _gui_dir not in sys.path:
+        sys.path.insert(0, _gui_dir)
+    _mod = importlib.import_module("fetch_virus_map_data")
+    DEFAULT_VIRUSES = _mod.DEFAULT_VIRUSES
+    CONTINENTS = _mod.CONTINENTS
+    fetch_continent = _mod.fetch_continent
+    extract_record = _mod.extract_record
+
+    st.subheader("Downloading virus geographic data...")
+    st.caption("This is a one-time download from NCBI. It may take 10–20 minutes.")
+
+    VIRUS_MAP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    progress = st.progress(0.0)
+    status = st.empty()
+    total = len(DEFAULT_VIRUSES)
+
+    for i, (name, taxid) in enumerate(DEFAULT_VIRUSES):
+        out_path = VIRUS_MAP_DATA_DIR / f"{name}.json"
+        if out_path.exists():
+            progress.progress((i + 1) / total)
+            continue
+
+        status.text(f"Fetching {name.replace('_', ' ')} ({i + 1}/{total})...")
+        records = []
+        for continent in CONTINENTS:
+            raw = fetch_continent(taxid, continent)
+            for rec in raw:
+                parsed = extract_record(rec)
+                if parsed:
+                    records.append(parsed)
+
+        countries = set(r["country"] for r in records)
+        data = {
+            "name": name,
+            "taxid": taxid,
+            "total_sequences": len(records),
+            "num_countries": len(countries),
+            "records": records,
+        }
+        with open(out_path, "w") as f:
+            json.dump(data, f)
+
+        progress.progress((i + 1) / total)
+
+    # Save index
+    index = []
+    for p in sorted(VIRUS_MAP_DATA_DIR.glob("*.json")):
+        if p.name == "index.json":
+            continue
+        with open(p) as f:
+            d = json.load(f)
+        index.append({
+            "name": d["name"], "taxid": d["taxid"],
+            "total_sequences": d["total_sequences"],
+            "num_countries": d["num_countries"],
+        })
+    with open(VIRUS_MAP_DATA_DIR / "index.json", "w") as f:
+        json.dump(index, f, indent=2)
+
+    status.text("Download complete!")
+    st.rerun()
+
+
+def _page_virus_map():
+    """Virus Map page: world choropleth showing virus sequence geographic distribution."""
+    import plotly.express as px
+    import pandas as pd
+
+    if not VIRUS_MAP_DATA_DIR.exists() or not any(
+        p.name != "index.json" for p in VIRUS_MAP_DATA_DIR.glob("*.json")
+    ):
+        _download_virus_map_data()
+        return
+
+    # Load available viruses
+    available = []
+    for p in sorted(VIRUS_MAP_DATA_DIR.glob("*.json")):
+        if p.name == "index.json":
+            continue
+        available.append(p.stem)
+
+    if not available:
+        st.warning("No virus data files found.")
+        return
+
+    # --- Left panel: controls | Right panel: map ---
+    col_left, col_right = st.columns([1, 3])
+
+    with col_left:
+        selected = st.selectbox(
+            "Virus",
+            options=available,
+            format_func=lambda x: x.replace("_", " "),
+            key="virus_map_select",
+        )
+
+        if not selected:
+            return
+
+        # Load data
+        data_path = VIRUS_MAP_DATA_DIR / f"{selected}.json"
+        with open(data_path) as f:
+            data = json.load(f)
+
+        records = data.get("records", [])
+        has_records = bool(records)
+
+        if not has_records:
+            st.warning("No geographic data available for this virus.")
+
+        rec_df = pd.DataFrame(records) if has_records else pd.DataFrame(columns=["country", "collection_date", "release_date"])
+
+        if has_records:
+            # Parse dates
+            rec_df["date_str"] = rec_df["collection_date"].where(
+                rec_df["collection_date"] != "", rec_df["release_date"],
+            )
+            rec_df["date_parsed"] = pd.to_datetime(
+                rec_df["date_str"].str[:10], errors="coerce", format="mixed",
+            )
+
+            valid_dates = rec_df["date_parsed"].dropna()
+            date_min = date(2010, 1, 1)
+            if len(valid_dates) > 0:
+                date_max = valid_dates.max().date()
+            else:
+                date_max = date.today()
+
+            date_today = date.today()
+            if date_max < date_today:
+                date_max = date_today
+
+            filter_start, filter_end = st.slider(
+                "Collection date",
+                min_value=date_min,
+                max_value=date_max,
+                value=(date_min, date_max),
+                key="virus_map_date_range",
+            )
+
+            # Apply date filter
+            mask = pd.Series(True, index=rec_df.index)
+            mask &= rec_df["date_parsed"].isna() | (rec_df["date_parsed"].dt.date >= filter_start)
+            mask &= rec_df["date_parsed"].isna() | (rec_df["date_parsed"].dt.date <= filter_end)
+            filtered = rec_df[mask]
+
+            # Summary metrics (updated after df is built below)
+            seq_count = len(filtered)
+
+            # Build country counts
+            country_counts = filtered["country"].value_counts()
+            rows = []
+            unmapped = []
+            for country, count in country_counts.items():
+                iso3 = _country_to_iso3(country)
+                if iso3:
+                    rows.append({"country": country, "iso3": iso3, "sequences": int(count)})
+                else:
+                    unmapped.append(country)
+        else:
+            filtered = rec_df
+            seq_count = data.get("total_sequences", 0)
+            rows = []
+            unmapped = []
+
+        if rows:
+            df = pd.DataFrame(rows)
+            df = df.groupby("iso3", as_index=False).agg(
+                country=("country", "first"),
+                sequences=("sequences", "sum"),
+            )
+            df = df.sort_values("sequences", ascending=False).reset_index(drop=True)
+            display_df = df[["country", "sequences"]].copy()
+        else:
+            df = None
+            display_df = pd.DataFrame(columns=["country", "sequences"])
+
+        # Metrics placeholder — filled after selection is known
+        metrics_seq = st.empty()
+        metrics_countries = st.empty()
+
+        # Country breakdown
+        with st.expander(f"Country breakdown ({len(display_df)})", expanded=False):
+            st.dataframe(
+                display_df.rename(columns={"country": "Country", "sequences": "Sequences"}),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+    # Initialize accumulated selections in session state
+    if "virus_map_selected_countries" not in st.session_state:
+        st.session_state["virus_map_selected_countries"] = []
+
+    with col_right:
+        if df is not None and not df.empty:
+            # Highlight already-selected countries
+            picked = set(st.session_state["virus_map_selected_countries"])
+
+            fig = px.choropleth(
+                df,
+                locations="iso3",
+                locationmode="ISO-3",
+                color="sequences",
+                hover_name="country",
+                hover_data={"iso3": False, "sequences": True},
+                color_continuous_scale="YlOrRd",
+                title="",
+                labels={"sequences": "Sequences"},
+            )
+
+            # Highlight selected countries with thicker borders on the same trace
+            if picked:
+                line_widths = [3 if c in picked else 0.5 for c in df["country"]]
+                line_colors = ["#2E86AB" if c in picked else "#999" for c in df["country"]]
+                fig.update_traces(
+                    marker_line_width=line_widths,
+                    marker_line_color=line_colors,
+                )
+
+            fig.update_layout(
+                geo=dict(
+                    showframe=False,
+                    showcoastlines=True,
+                    projection_type="natural earth",
+                ),
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=450,
+                uirevision=selected,  # preserve zoom per virus, reset on virus change
+            )
+            event = st.plotly_chart(
+                fig, use_container_width=True,
+                on_select="rerun", selection_mode="points",
+                key="virus_map_chart",
+            )
+
+            # Detect new clicks (toggle: add if not selected, remove if already selected)
+            curr_click_set = set()
+            if event and event.selection and event.selection.points:
+                for pt in event.selection.points:
+                    country_name = pt.get("hovertext", "")
+                    if country_name:
+                        curr_click_set.add(country_name)
+
+            prev_click_set = set(st.session_state.get("_virus_map_prev_clicks", []))
+            new_clicks = curr_click_set - prev_click_set
+            st.session_state["_virus_map_prev_clicks"] = list(curr_click_set)
+
+            if new_clicks:
+                current = list(st.session_state["virus_map_selected_countries"])
+                for c in new_clicks:
+                    if c in current:
+                        current.remove(c)
+                    else:
+                        current.append(c)
+                st.session_state["virus_map_selected_countries"] = current
+                st.session_state["_virus_map_sync"] = True
+                # Clear plotly selection state to allow re-clicking same country
+                st.session_state.pop("virus_map_chart", None)
+                st.rerun()
+        else:
+            # Show empty world map
+            import plotly.graph_objects as go
+            fig = go.Figure(go.Choropleth(locations=[], z=[]))
+            fig.update_layout(
+                geo=dict(showframe=False, showcoastlines=True, projection_type="natural earth"),
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=450,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    # --- Bottom section: selected countries + action buttons ---
+    all_country_options = display_df["country"].tolist() if df is not None else []
+
+    # Only overwrite multiselect from map clicks, not on every rerun
+    if st.session_state.pop("_virus_map_sync", False):
+        valid_accumulated = [c for c in st.session_state.get("virus_map_selected_countries", []) if c in all_country_options]
+        st.session_state["virus_map_country_multiselect"] = valid_accumulated
+
+    def _on_multiselect_change():
+        st.session_state["virus_map_selected_countries"] = list(
+            st.session_state.get("virus_map_country_multiselect", [])
+        )
+
+    col_sel, col_reset = st.columns([6, 1])
+    with col_sel:
+        selected_countries = st.multiselect(
+            "Selected countries",
+            options=all_country_options,
+            default=[c for c in st.session_state.get("virus_map_selected_countries", []) if c in all_country_options]
+                if "virus_map_country_multiselect" not in st.session_state else None,
+            key="virus_map_country_multiselect",
+            on_change=_on_multiselect_change,
+        )
+    with col_reset:
+        st.markdown("<div style='height: 1.8rem'></div>", unsafe_allow_html=True)
+        if st.button("Reset", key="virus_map_reset_sel"):
+            st.session_state["virus_map_selected_countries"] = []
+            st.session_state["_virus_map_prev_clicks"] = []
+            st.session_state.pop("virus_map_country_multiselect", None)
+            st.rerun()
+    # Sync multiselect back to accumulated state
+    st.session_state["virus_map_selected_countries"] = list(selected_countries)
+
+    # Update metrics based on selection
+    if selected_countries and df is not None:
+        sel_df = df[df["country"].isin(selected_countries)]
+        metrics_seq.metric("Sequences", f"{int(sel_df['sequences'].sum()):,}")
+        metrics_countries.metric("Countries", len(sel_df))
+    else:
+        metrics_seq.metric("Sequences", f"{seq_count:,}")
+        metrics_countries.metric("Countries", len(display_df))
+
+    def _prefill_virus(prefix: str):
+        """Pre-fill virus, date, and country settings for the target workflow."""
+        virus_display = next(
+            (f"{name}  (TaxID: {tid})" for name, tid in VIRUS_PRESETS
+             if str(tid) == str(data["taxid"])),
+            None,
+        )
+        if virus_display:
+            st.session_state[f"{prefix}_virus_select"] = virus_display
+            # Set target name from virus name
+            virus_name = virus_display.split("  (TaxID:")[0]
+            sanitized = re.sub(r"[^\w\-]", "_", virus_name)
+            sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+            st.session_state[f"{prefix}_target_name"] = sanitized
+            st.session_state[f"_prev_auto_{prefix}"] = virus_name
+        if selected_countries:
+            st.session_state[f"{prefix}_geo_location"] = ", ".join(selected_countries)
+        # Pass date range as collection date filters
+        st.session_state[f"{prefix}_min_collection_date"] = filter_start
+        st.session_state[f"{prefix}_max_collection_date"] = filter_end
+        # Clean up virus map state
+        st.session_state["virus_map_selected_countries"] = []
+
+    btn1, btn2, btn3 = st.columns(3)
+    with btn1:
+        if st.button("Start Design", type="primary", use_container_width=True):
+            _reset_workflow_state()
+            st.session_state.workflow = "design"
+            _prefill_virus("fetch")
+            _navigate("select_target")
+            st.rerun()
+    with btn2:
+        if st.button("Start Evaluate", type="primary", use_container_width=True):
+            _reset_workflow_state()
+            st.session_state.workflow = "evaluate"
+            _prefill_virus("fetch")
+            _navigate("select_target")
+            st.rerun()
+    with btn3:
+        if st.button("Start Monitor", type="primary", use_container_width=True):
+            _reset_workflow_state()
+            st.session_state.workflow = "monitor"
+            _prefill_virus("monitor_fetch")
+            _navigate("monitor_target")
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1992,15 +2421,15 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
     col_d1, col_d2 = st.columns(2)
     _date_min = date(1900, 1, 1)
     with col_d1:
-        st.date_input("Min release date", value=None, min_value=_date_min,
-                       key=f"{prefix}_min_release_date")
+        st.date_input("Min collection date", value=None, min_value=_date_min,
+                       key=f"{prefix}_min_collection_date")
     with col_d2:
         if monitor:
-            st.date_input("Max release date", value=date.today(), min_value=_date_min,
-                          disabled=True, key=f"{prefix}_max_release_date")
+            st.date_input("Max collection date", value=date.today(), min_value=_date_min,
+                          disabled=True, key=f"{prefix}_max_collection_date")
         else:
-            st.date_input("Max release date", value=None, min_value=_date_min,
-                           key=f"{prefix}_max_release_date")
+            st.date_input("Max collection date", value=None, min_value=_date_min,
+                           key=f"{prefix}_max_collection_date")
 
     st.text_input("Geographic location", placeholder="e.g., USA, Africa, Nigeria",
                    key=f"{prefix}_geo_location")
@@ -2009,13 +2438,13 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
     with st.expander("Additional parameters"):
         st.number_input("Max sequences", min_value=1, max_value=100000, value=None,
                         step=100, key=f"{prefix}_limit")
-        col_c1, col_c2 = st.columns(2)
-        with col_c1:
-            st.date_input("Min collection date", value=None, min_value=_date_min,
-                           key=f"{prefix}_min_collection_date")
-        with col_c2:
-            st.date_input("Max collection date", value=None, min_value=_date_min,
-                           key=f"{prefix}_max_collection_date")
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            st.date_input("Min release date", value=None, min_value=_date_min,
+                           key=f"{prefix}_min_release_date")
+        with col_r2:
+            st.date_input("Max release date", value=None, min_value=_date_min,
+                           key=f"{prefix}_max_release_date")
         st.number_input("Max ambiguous characters", min_value=0, value=10, step=1,
                         key=f"{prefix}_max_ambiguous_chars")
         st.checkbox("RefSeq only", key=f"{prefix}_refseq_only")
@@ -2050,19 +2479,10 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                 "max_collection_date": st.session_state.get(f"{prefix}_max_collection_date"),
                 "max_ambiguous_chars": st.session_state.get(f"{prefix}_max_ambiguous_chars"),
             }
-            # Build command with validated parameters
-            # gget_tmp is already validated by _safe_path_under above
-            validated_out_dir = os.path.realpath(str(gget_tmp))
-            cmd = _build_fetch_command(gget_bin, taxid, validated_out_dir, fetch_params)
-            if not cmd:
-                st.error("TaxID must be numeric.")
-                return
 
-            # Explicitly verify cmd is a list for CodeQL - using list form prevents shell injection
-            # Using if/raise instead of assert since asserts can be disabled with -O flag
-            if not isinstance(cmd, list) or not all(isinstance(arg, str) for arg in cmd):
-                st.error("Internal error: invalid command structure")
-                return
+            # Split multi-country geo_location into individual locations
+            raw_geo = fetch_params.get("geo_location", "").strip()
+            geo_locations = [g.strip() for g in raw_geo.split(",") if g.strip()] if raw_geo else [""]
 
             _FETCH_STEPS = [
                 ("STEP 1", "Validating input"),
@@ -2079,8 +2499,10 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
             detail_area = st.empty()
             status_area = st.empty()
 
-            def _render_progress(current_step, detail=""):
+            def _render_progress(current_step, detail="", loc_label=""):
                 lines = []
+                if loc_label:
+                    lines.append(f"**{loc_label}**")
                 for i, (_, label) in enumerate(_FETCH_STEPS):
                     if i < current_step:
                         lines.append(f"✅  {label}")
@@ -2092,13 +2514,15 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                 if detail:
                     detail_area.caption(detail)
 
-            _render_progress(-1)
+            def _run_single_fetch(cmd, loc_label=""):
+                """Run a single fetch command, updating progress. Returns True on success."""
+                if not isinstance(cmd, list) or not all(isinstance(arg, str) for arg in cmd):
+                    st.error("Internal error: invalid command structure")
+                    return False
 
-            try:
+                _render_progress(-1, loc_label=loc_label)
                 env = os.environ.copy()
                 env["PYTHONUNBUFFERED"] = "1"
-                # codeql[py/command-line-injection]: False positive - subprocess.Popen with list (not shell=True)
-                # All cmd elements validated in _build_fetch_command via regex/allowlists before subprocess call
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                         text=True, env=env)
                 current_step = -1
@@ -2110,7 +2534,7 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                     if time.time() - start_time > timeout:
                         proc.kill()
                         st.error("Fetch timed out after 30 minutes.")
-                        break
+                        return False
                     line = proc.stdout.readline()
                     if line:
                         for i, (key, _) in enumerate(_FETCH_STEPS):
@@ -2126,51 +2550,83 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                             detail = line.split("INFO - ")[-1].strip() if "INFO - " in line else ""
                         elif "PROCESS COMPLETED" in line:
                             current_step = len(_FETCH_STEPS)
-                        _render_progress(current_step, detail)
+                        _render_progress(current_step, detail, loc_label=loc_label)
                     elapsed = int(time.time() - start_time)
                     mins, secs = divmod(elapsed, 60)
                     status_area.caption(f"Elapsed: {mins}m {secs}s")
 
                 remaining = proc.stdout.read()
                 if remaining and "PROCESS COMPLETED" in remaining:
-                    current_step = len(_FETCH_STEPS)
-                    _render_progress(current_step)
+                    _render_progress(len(_FETCH_STEPS), loc_label=loc_label)
 
-                elapsed = int(time.time() - start_time)
-                mins, secs = divmod(elapsed, 60)
-                status_area.caption(f"Completed in {mins}m {secs}s")
+                return proc.returncode == 0
 
-                if proc.returncode != 0:
-                    _render_progress(current_step, "")
-                    st.error(f"gget failed (exit code {proc.returncode})")
-                else:
-                    _render_progress(len(_FETCH_STEPS))
-                    fasta_files = list(gget_tmp.glob("*.fa")) + list(gget_tmp.glob("*.fasta"))
-                    if fasta_files:
-                        dest = _safe_path_under(FASTA_DIR, f"{target_name}.fa")
-                        if not dest:
-                            st.error("Invalid target name. Please use letters, numbers, '.', '_' or '-'.")
-                            detail_area.empty()
-                            return
-                        shutil.move(str(fasta_files[0]), str(dest))
-                        # Filter by subtype if specified
-                        from qprimer_designer.adapt_cli import _filter_fasta_by_subtype, _deduplicate_fasta
-                        subtype = st.session_state.get(f"{prefix}_subtype_filter", "").strip()
-                        n_subtype_removed = 0
-                        if subtype:
-                            n_subtype_removed = _filter_fasta_by_subtype(dest, subtype)
-                        n_deduped = _deduplicate_fasta(dest)
-                        with open(dest) as f:
-                            n_seqs = sum(1 for line in f if line.startswith(">"))
-                        msg = f"Downloaded {n_seqs} unique sequences → `{dest.name}`"
-                        if n_subtype_removed > 0:
-                            msg += f" ({n_subtype_removed} filtered by subtype '{subtype}')"
-                        if n_deduped > 0:
-                            msg += f" ({n_deduped} duplicates removed)"
-                        st.success(msg)
-                        detail_area.empty()
+            try:
+                all_fasta_parts = []
+                multi = len(geo_locations) > 1
+
+                for loc_idx, geo_loc in enumerate(geo_locations):
+                    loc_label = f"Fetching {loc_idx + 1}/{len(geo_locations)}: {geo_loc}" if multi else ""
+                    # Use a sub-tmp dir per location for multi-country
+                    if multi:
+                        sub_tmp = gget_tmp / f"loc_{loc_idx}"
+                        sub_tmp.mkdir(parents=True, exist_ok=True)
+                        validated_out_dir = os.path.realpath(str(sub_tmp))
                     else:
-                        st.warning("No FASTA output found. The query may have returned no results.")
+                        validated_out_dir = os.path.realpath(str(gget_tmp))
+
+                    loc_params = dict(fetch_params, geo_location=geo_loc)
+                    cmd = _build_fetch_command(gget_bin, taxid, validated_out_dir, loc_params)
+                    if not cmd:
+                        st.error("TaxID must be numeric.")
+                        return
+
+                    ok = _run_single_fetch(cmd, loc_label=loc_label)
+                    if not ok:
+                        if not multi:
+                            st.error("gget fetch failed.")
+                            return
+                        st.warning(f"Fetch failed for {geo_loc}, skipping.")
+                        continue
+
+                    out_dir_path = Path(validated_out_dir)
+                    fastas = list(out_dir_path.glob("*.fa")) + list(out_dir_path.glob("*.fasta"))
+                    all_fasta_parts.extend(fastas)
+
+                if not all_fasta_parts:
+                    st.warning("No FASTA output found. The query may have returned no results.")
+                else:
+                    dest = _safe_path_under(FASTA_DIR, f"{target_name}.fa")
+                    if not dest:
+                        st.error("Invalid target name. Please use letters, numbers, '.', '_' or '-'.")
+                        detail_area.empty()
+                        return
+                    # Merge all FASTA parts into one file
+                    with open(dest, "w") as fout:
+                        for fa in all_fasta_parts:
+                            with open(fa) as fin:
+                                content = fin.read()
+                                fout.write(content)
+                                if not content.endswith("\n"):
+                                    fout.write("\n")
+                    # Filter by subtype if specified
+                    from qprimer_designer.adapt_cli import _filter_fasta_by_subtype, _deduplicate_fasta
+                    subtype = st.session_state.get(f"{prefix}_subtype_filter", "").strip()
+                    n_subtype_removed = 0
+                    if subtype:
+                        n_subtype_removed = _filter_fasta_by_subtype(dest, subtype)
+                    n_deduped = _deduplicate_fasta(dest)
+                    with open(dest) as f:
+                        n_seqs = sum(1 for line in f if line.startswith(">"))
+                    msg = f"Downloaded {n_seqs} unique sequences → `{dest.name}`"
+                    if multi:
+                        msg += f" (from {len(geo_locations)} locations)"
+                    if n_subtype_removed > 0:
+                        msg += f" ({n_subtype_removed} filtered by subtype '{subtype}')"
+                    if n_deduped > 0:
+                        msg += f" ({n_deduped} duplicates removed)"
+                    st.success(msg)
+                    detail_area.empty()
             except Exception as exc:
                 st.error(f"Fetch error: {exc}")
             finally:
@@ -3571,6 +4027,8 @@ def main():
 
     if page == "home":
         _page_home()
+    elif page == "virus_map":
+        _page_virus_map()
     elif page == "select_target":
         _page_select_target()
     elif page == "select_offtarget":
