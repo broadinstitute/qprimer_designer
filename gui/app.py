@@ -1157,6 +1157,8 @@ def _page_virus_map():
             st.session_state["virus_map_selected_countries"] = []
             st.session_state["_virus_map_prev_clicks"] = []
             st.session_state.pop("virus_map_country_multiselect", None)
+            st.session_state.pop("virus_map_chart", None)
+            st.session_state["_virus_map_sync"] = True
             st.rerun()
     # Sync multiselect back to accumulated state
     st.session_state["virus_map_selected_countries"] = list(selected_countries)
@@ -2106,6 +2108,456 @@ def _tab_run():
 
 
 # ---------------------------------------------------------------------------
+# Delphy phylogenetic tree helpers
+# ---------------------------------------------------------------------------
+
+DELPHY_CACHE_DIR = PROJECT_ROOT / ".delphy_cache"
+DELPHY_VERSION = "1.3.4"
+
+import platform as _platform
+_DELPHY_PLATFORM = (
+    "macos-arm64" if _platform.system() == "Darwin" and _platform.machine() == "arm64"
+    else "linux-x86_64" if _platform.system() == "Linux" and _platform.machine() == "x86_64"
+    else "linux-arm64" if _platform.system() == "Linux" and _platform.machine() == "aarch64"
+    else None
+)
+
+
+def _get_delphy_binary() -> Path | None:
+    """Return path to Delphy binary, downloading if needed. Returns None if unsupported platform."""
+    if _DELPHY_PLATFORM is None:
+        return None
+
+    DELPHY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    binary = DELPHY_CACHE_DIR / "delphy"
+
+    if binary.exists():
+        return binary
+
+    tarball_name = f"delphy-{_DELPHY_PLATFORM}.tar.gz"
+    url = f"https://github.com/broadinstitute/delphy/releases/download/{DELPHY_VERSION}/{tarball_name}"
+    tarball = DELPHY_CACHE_DIR / tarball_name
+
+    import urllib.request
+    urllib.request.urlretrieve(url, tarball)
+
+    import tarfile
+    with tarfile.open(tarball, "r:gz") as tf:
+        # Find the delphy binary inside the tarball
+        for member in tf.getmembers():
+            if member.name.endswith("/delphy") or member.name == "delphy":
+                member.name = "delphy"
+                tf.extract(member, DELPHY_CACHE_DIR)
+                break
+
+    tarball.unlink(missing_ok=True)
+    binary.chmod(binary.stat().st_mode | 0o755)
+    return binary
+
+
+def _extract_and_format_date(date_string: str) -> str | None:
+    """Return YYYY-MM-DD date or None if not a complete date."""
+    if not date_string or date_string != date_string:  # NaN check
+        return None
+    date_string = str(date_string).strip()
+    date_string = re.sub(r"[/.]", "-", date_string)
+    # Strict YYYY-MM-DD
+    if re.match(r"^\d{4}-\d{1,2}-\d{1,2}$", date_string):
+        return date_string
+    # Try flexible formats
+    for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%b %d %Y", "%Y/%m/%d"):
+        try:
+            dt = datetime.strptime(date_string, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except Exception:
+            continue
+    return None
+
+
+def _country_to_alpha2(country_name: str) -> str:
+    """Convert country name to 2-letter ISO code. Returns '' on failure."""
+    try:
+        import pycountry
+        results = pycountry.countries.search_fuzzy(country_name)
+        if results:
+            return results[0].alpha_2
+    except (LookupError, Exception):
+        pass
+    return ""
+
+
+def _reformat_msa_for_delphy(msa_path: Path, metadata_csv: Path, output_path: Path) -> dict:
+    """Rewrite MSA headers to 'accession|YYYY-MM-DD' (with optional country code) using metadata CSV.
+
+    If sequences come from 2+ countries, headers become 'accession|YYYY-MM-DD|CC'.
+    Returns {"included": N, "excluded_no_date": N}.
+    """
+    import pandas as pd
+    from Bio import SeqIO
+
+    meta = pd.read_csv(metadata_csv, dtype=str)
+    # Find relevant columns
+    acc_col = None
+    for col in meta.columns:
+        if re.search(r"^accession$", col, flags=re.I):
+            acc_col = col
+            break
+    date_col = None
+    for col in meta.columns:
+        if re.search(r"collection.?date", col, flags=re.I):
+            date_col = col
+            break
+    release_col = None
+    for col in meta.columns:
+        if re.search(r"release.?date", col, flags=re.I):
+            release_col = col
+            break
+    geo_col = None
+    for col in meta.columns:
+        if re.search(r"geographic.?location", col, flags=re.I):
+            geo_col = col
+            break
+
+    if not acc_col or (not date_col and not release_col):
+        return {"included": 0, "excluded_no_date": 0, "error": "Missing accession/date columns"}
+
+    # Build accession -> date and accession -> country_code mappings
+    acc_to_date = {}
+    acc_to_cc = {}
+    for _, row in meta.iterrows():
+        acc = str(row[acc_col]).strip()
+        # Date: prefer Collection Date, fallback to Release date
+        formatted = None
+        if date_col:
+            formatted = _extract_and_format_date(row.get(date_col, ""))
+        if not formatted and release_col:
+            formatted = _extract_and_format_date(row.get(release_col, ""))
+        if formatted:
+            acc_to_date[acc] = formatted
+        # Country code
+        if geo_col:
+            loc = str(row.get(geo_col, "")).strip()
+            country = loc.split(":")[0].strip() if loc else ""
+            if country and country != "nan":
+                cc = _country_to_alpha2(country)
+                if cc:
+                    acc_to_cc[acc] = cc
+
+    # Only include country codes if 2+ distinct countries
+    unique_countries = set(acc_to_cc.values())
+    include_cc = len(unique_countries) >= 2
+
+    included = 0
+    excluded = 0
+    records_out = []
+
+    for record in SeqIO.parse(str(msa_path), "fasta"):
+        acc = record.id.split()[0]
+        # Try with and without version suffix
+        d = acc_to_date.get(acc) or acc_to_date.get(acc.split(".")[0])
+        if d:
+            header = f"{acc}|{d}"
+            if include_cc:
+                cc = acc_to_cc.get(acc) or acc_to_cc.get(acc.split(".")[0], "")
+                if cc:
+                    header += f"|{cc}"
+            record.id = header
+            record.description = ""
+            records_out.append(record)
+            included += 1
+        else:
+            excluded += 1
+
+    with open(output_path, "w") as fh:
+        SeqIO.write(records_out, fh, "fasta")
+
+    return {"included": included, "excluded_no_date": excluded}
+
+
+def _run_delphy(delphy_bin: Path, delphy_fasta: Path, output_dir: Path,
+                num_seqs: int, progress_placeholder=None) -> dict | None:
+    """Run Delphy inference. Returns dict of output file paths or None on failure."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = delphy_fasta.stem.replace("_delphy", "")
+
+    log_file = output_dir / f"{stem}_delphy.log"
+    trees_file = output_dir / f"{stem}_delphy.trees"
+    dphy_file = output_dir / f"{stem}_delphy.dphy"
+
+    steps = 500_000 * max(1, num_seqs)
+    samples = 200
+    log_every = max(1, steps // samples)
+    tree_every = log_every
+
+    cmd = [
+        str(delphy_bin),
+        "--v0-in-fasta", str(delphy_fasta),
+        "--v0-steps", str(steps),
+        "--v0-out-log-file", str(log_file),
+        "--v0-out-trees-file", str(trees_file),
+        "--v0-out-delphy-file", str(dphy_file),
+        "--v0-log-every", str(log_every),
+        "--v0-tree-every", str(tree_every),
+    ]
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    output_lines = []
+    for line in proc.stdout:
+        output_lines.append(line.rstrip())
+        if progress_placeholder:
+            # Show last few lines
+            progress_placeholder.code("\n".join(output_lines[-5:]))
+
+    ret = proc.wait()
+    if ret != 0:
+        return None
+
+    return {
+        "log": log_file,
+        "trees": trees_file,
+        "dphy": dphy_file,
+    }
+
+
+def _parse_beast_trees(trees_path: Path):
+    """Parse BEAST2 .trees (Nexus) file and return the last tree.
+
+    Delphy's Nexus output contains [&mutations=...] annotations that
+    Bio.Phylo's Nexus parser can't handle. We extract the last Newick
+    string, strip annotations, build a taxon label map from the
+    'translate' block, and parse as plain Newick.
+    """
+    from Bio import Phylo
+    import io
+
+    text = trees_path.read_text()
+
+    # Build translate table: number -> taxon label
+    translate_map = {}
+    in_translate = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("translate"):
+            in_translate = True
+            continue
+        if in_translate:
+            if stripped == ";":
+                in_translate = False
+                continue
+            # e.g. "1 PV549935.1|2025-04-27,"
+            parts = stripped.rstrip(",;").split(None, 1)
+            if len(parts) == 2:
+                translate_map[parts[0]] = parts[1]
+
+    # Find the last "tree STATE_xxx = ..." line
+    last_tree_line = None
+    for line in text.splitlines():
+        if line.strip().startswith("tree "):
+            last_tree_line = line.strip()
+
+    if not last_tree_line:
+        return None
+
+    # Extract Newick part after "= "
+    eq_idx = last_tree_line.index("= ")
+    newick_str = last_tree_line[eq_idx + 2:]
+
+    # Strip [&...] annotations
+    newick_clean = re.sub(r"\[&[^\]]*\]", "", newick_str)
+
+    # Replace numeric taxon IDs with actual labels
+    if translate_map:
+        def _replace_taxon(m):
+            num = m.group(1)
+            return translate_map.get(num, num)
+        # Match numbers that appear as leaf labels (preceded by '(' or ',' and followed by ':')
+        newick_clean = re.sub(r"(?<=[(,])(\d+)(?=:)", _replace_taxon, newick_clean)
+
+    tree = Phylo.read(io.StringIO(newick_clean), "newick")
+    return tree
+
+
+def _plot_phylo_tree(tree, covered_ids: set[str] | None = None):
+    """Convert Bio.Phylo tree to a Plotly figure with optional coverage coloring."""
+    import plotly.graph_objects as go
+
+    # Compute x (distance from root) and y (leaf ordering) coordinates
+    # Using a simple recursive layout
+    tip_count = tree.count_terminals()
+    y_counter = [0]  # mutable counter
+
+    node_coords = {}  # clade -> (x, y)
+
+    def _assign_coords(clade, x_start=0):
+        branch_len = clade.branch_length or 0
+        x = x_start + branch_len
+
+        if clade.is_terminal():
+            y = y_counter[0]
+            y_counter[0] += 1
+            node_coords[id(clade)] = (x, y)
+        else:
+            child_ys = []
+            for child in clade.clades:
+                _assign_coords(child, x)
+                child_ys.append(node_coords[id(child)][1])
+            y = sum(child_ys) / len(child_ys)
+            node_coords[id(clade)] = (x, y)
+
+    _assign_coords(tree.root)
+
+    # Build line segments (horizontal + vertical branches)
+    line_x = []
+    line_y = []
+
+    def _draw_branches(clade):
+        cx, cy = node_coords[id(clade)]
+        for child in clade.clades:
+            ccx, ccy = node_coords[id(child)]
+            # Horizontal line from parent x to child x at child y
+            line_x.extend([cx, ccx, None])
+            line_y.extend([ccy, ccy, None])
+            # Vertical line at parent x connecting children
+            line_x.extend([cx, cx, None])
+            line_y.extend([cy, ccy, None])
+            _draw_branches(child)
+
+    _draw_branches(tree.root)
+
+    # Tip markers and labels
+    tip_x, tip_y, tip_text, tip_color = [], [], [], []
+    tip_labels = []
+    for tip in tree.get_terminals():
+        x, y = node_coords[id(tip)]
+        tip_x.append(x)
+        tip_y.append(y)
+        name = tip.name or ""
+        # Parse accession, date, and optional country code from "accession|date|CC"
+        parts = name.split("|")
+        acc = parts[0] if parts else name
+        date_str = parts[1] if len(parts) > 1 else ""
+        cc = parts[2] if len(parts) > 2 else ""
+        label = acc
+        if date_str:
+            label += f"  {date_str}"
+        if cc:
+            label += f"  {cc}"
+        tip_labels.append(f"  {label}")
+
+        if covered_ids is not None:
+            is_covered = acc in covered_ids
+            tip_color.append("#2ecc71" if is_covered else "#e74c3c")
+            status = "Covered" if is_covered else "Not covered"
+            tip_text.append(f"{acc}<br>{date_str}<br>{status}")
+        else:
+            tip_color.append("#3498db")
+            tip_text.append(f"{acc}<br>{date_str}" if date_str else acc)
+
+    # Compute x range for label offset
+    all_tip_x = [v for v in tip_x if v is not None]
+    x_range = max(all_tip_x) - min(all_tip_x) if all_tip_x else 1
+    label_offset = x_range * 0.02
+
+    fig = go.Figure()
+
+    # Branch lines — rectangular cladogram style
+    fig.add_trace(go.Scatter(
+        x=line_x, y=line_y,
+        mode="lines",
+        line=dict(color="#555", width=1.5),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+
+    # Tip markers
+    fig.add_trace(go.Scatter(
+        x=tip_x, y=tip_y,
+        mode="markers",
+        marker=dict(
+            size=7,
+            color=tip_color,
+            line=dict(width=0.5, color="white"),
+        ),
+        text=tip_text,
+        hoverinfo="text",
+        showlegend=False,
+    ))
+
+    # Tip labels (right of markers)
+    fig.add_trace(go.Scatter(
+        x=[x + label_offset for x in tip_x],
+        y=tip_y,
+        mode="text",
+        text=tip_labels,
+        textposition="middle right",
+        textfont=dict(size=10, color="#333"),
+        hoverinfo="skip",
+        showlegend=False,
+        cliponaxis=False,
+    ))
+
+    # Add legend entries for coverage
+    if covered_ids is not None:
+        n_covered = sum(1 for c in tip_color if c == "#2ecc71")
+        n_uncovered = sum(1 for c in tip_color if c == "#e74c3c")
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=10, color="#2ecc71"),
+            name=f"Covered ({n_covered})",
+        ))
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=10, color="#e74c3c"),
+            name=f"Not covered ({n_uncovered})",
+        ))
+
+    height = max(400, tip_count * 18)
+    # Right margin for tip labels that overflow the plot area
+    max_label_len = max((len(l) for l in tip_labels), default=0)
+    right_margin = max(20, max_label_len * 5)
+
+    fig.update_layout(
+        title=dict(text="Phylogenetic Tree (Delphy)", font=dict(size=16)),
+        xaxis_title="Evolutionary distance",
+        yaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
+        xaxis=dict(showgrid=False, zeroline=False),
+        height=height,
+        margin=dict(l=20, r=right_margin, t=60, b=40),
+        plot_bgcolor="white",
+        legend=dict(orientation="h", yanchor="bottom", y=0.1, font=dict(size=13)),
+    )
+
+    return fig
+
+
+def _get_activity_scores_from_eval(eval_re_path: Path, pname_f: str,
+                                   pname_r: str) -> dict[str, float]:
+    """Extract per-sequence activity scores from .eval.re file for a primer pair.
+
+    The .eval.re file is a matrix: rows are primer pairs (pname_f, pname_r),
+    columns are accession IDs, values are regressor activity scores.
+
+    Returns {accession: score}.
+    """
+    import pandas as pd
+
+    df = pd.read_csv(eval_re_path)
+    pair_row = df[(df["pname_f"] == pname_f) & (df["pname_r"] == pname_r)]
+    if pair_row.empty:
+        return {}
+
+    row = pair_row.iloc[0]
+    scores = {}
+    for acc in df.columns[2:]:
+        try:
+            scores[acc] = float(row[acc])
+        except (ValueError, KeyError):
+            pass
+    return scores
+
+
+# ---------------------------------------------------------------------------
 # Tab 5: Results
 # ---------------------------------------------------------------------------
 
@@ -2169,19 +2621,172 @@ def _tab_results():
         else:
             st.info("No CSV results for this run yet.")
 
+        # --- Phylogenetic Tree (Delphy) ---
+        st.divider()
+        st.subheader("Phylogenetic Tree")
+
+        # Check prerequisites: MSA file and metadata
+        MSA_DIR = PROJECT_ROOT / "target_seqs" / "msa"
+        target_names = st.session_state.get("targets", [])
+
+        if not target_names:
+            st.info("No target sequences available for tree generation.")
+        else:
+            tree_target = st.selectbox(
+                "Select target for phylogenetic tree",
+                options=target_names,
+                key="delphy_target",
+            )
+
+            if tree_target:
+                msa_path = MSA_DIR / f"{tree_target}.aln"
+                meta_path = FASTA_DIR / f"{tree_target}_metadata.csv"
+                tree_dir = FINAL_DIR / run_id / "trees" if run_id else None
+
+                if not msa_path.exists():
+                    st.warning(f"MSA file not found: `{msa_path.name}`. Run the pipeline first.")
+                elif not meta_path.exists():
+                    st.warning(
+                        f"Metadata file not found: `{meta_path.name}`. "
+                        "Re-fetch sequences to generate metadata for Delphy."
+                    )
+                else:
+                    # Check if tree already exists
+                    dphy_file = tree_dir / f"{tree_target}_delphy.dphy" if tree_dir else None
+                    trees_file = tree_dir / f"{tree_target}_delphy.trees" if tree_dir else None
+                    tree_exists = trees_file and trees_file.exists()
+
+                    if not tree_exists:
+                        st.markdown(
+                            "Generate a phylogenetic tree using [Delphy](https://github.com/broadinstitute/delphy) "
+                            "to visualize primer coverage across the evolutionary tree."
+                        )
+                        if st.button("Generate Phylogenetic Tree", type="primary"):
+                            delphy_bin = _get_delphy_binary()
+                            if delphy_bin is None:
+                                st.error(
+                                    f"Delphy is not available for this platform "
+                                    f"({_platform.system()} {_platform.machine()})."
+                                )
+                            else:
+                                with st.spinner("Reformatting MSA headers for Delphy..."):
+                                    delphy_fasta = MSA_DIR / f"{tree_target}_delphy.afa"
+                                    stats = _reformat_msa_for_delphy(msa_path, meta_path, delphy_fasta)
+
+                                if stats.get("error"):
+                                    st.error(f"Header reformat error: {stats['error']}")
+                                elif stats["included"] == 0:
+                                    st.error(
+                                        "No sequences with valid collection dates (YYYY-MM-DD). "
+                                        "Delphy requires complete dates."
+                                    )
+                                else:
+                                    st.info(
+                                        f"Reformatted: {stats['included']} sequences included, "
+                                        f"{stats['excluded_no_date']} excluded (missing dates)."
+                                    )
+                                    progress_area = st.empty()
+                                    with st.spinner("Running Delphy inference... This may take a while."):
+                                        result = _run_delphy(
+                                            delphy_bin, delphy_fasta, tree_dir,
+                                            stats["included"], progress_area,
+                                        )
+
+                                    if result is None:
+                                        st.error("Delphy inference failed. Check logs.")
+                                    else:
+                                        st.success("Delphy inference complete!")
+                                        st.rerun()
+
+                    if tree_exists:
+                        # Parse and display tree
+                        try:
+                            tree = _parse_beast_trees(trees_file)
+                            if tree is None:
+                                st.warning("Could not parse tree from Delphy output.")
+                            else:
+                                # Two-column layout: controls (left) | tree (right)
+                                ctrl_col, tree_col = st.columns([1, 3])
+
+                                covered_ids = None
+                                with ctrl_col:
+                                    # Find eval.re files for this target
+                                    outputs_dir = PROJECT_ROOT / "outputs"
+                                    eval_re_files = sorted(outputs_dir.glob(
+                                        f"*{tree_target}*.eval.re"
+                                    )) if outputs_dir.exists() else []
+
+                                    if eval_re_files and csvs:
+                                        import pandas as pd
+                                        csv_path = FINAL_DIR / run_id / csv_labels[0]
+                                        final_df = pd.read_csv(csv_path)
+                                        if len(final_df) > 0:
+                                            pair_options = [
+                                                f"{r['pname_f']} / {r['pname_r']}"
+                                                for _, r in final_df.iterrows()
+                                                if "pname_f" in r and "pname_r" in r
+                                            ]
+                                            if pair_options:
+                                                selected_pair = st.selectbox(
+                                                    "Primer pair",
+                                                    options=["(none)"] + pair_options,
+                                                    key="delphy_primer_pair",
+                                                )
+                                                if selected_pair != "(none)":
+                                                    parts = selected_pair.split(" / ")
+                                                    pf, pr = parts[0], parts[1]
+                                                    scores = _get_activity_scores_from_eval(
+                                                        eval_re_files[0], pf, pr,
+                                                    )
+                                                    if scores:
+                                                        cutoff = st.slider(
+                                                            "Activity score cutoff",
+                                                            min_value=0.0,
+                                                            max_value=1.1,
+                                                            value=0.5,
+                                                            step=0.05,
+                                                            key="delphy_activity_cutoff",
+                                                            help="Sequences with activity ≥ cutoff are considered covered.",
+                                                        )
+                                                        covered_ids = {
+                                                            acc for acc, s in scores.items()
+                                                            if s >= cutoff
+                                                        }
+                                                        n_total = len(scores)
+                                                        st.metric(
+                                                            "Coverage",
+                                                            f"{len(covered_ids)} / {n_total}",
+                                                        )
+
+                                    # Download .dphy for Delphy web viewer
+                                    if dphy_file and dphy_file.exists():
+                                        st.download_button(
+                                            "Download .dphy (for delphy.fathom.info)",
+                                            data=dphy_file.read_bytes(),
+                                            file_name=dphy_file.name,
+                                            mime="application/octet-stream",
+                                        )
+
+                                with tree_col:
+                                    fig = _plot_phylo_tree(tree, covered_ids)
+                                    st.plotly_chart(fig, use_container_width=True)
+                        except Exception as exc:
+                            st.error(f"Error displaying tree: {exc}")
+
         st.divider()
 
-    # --- Evaluate reports ---
-    st.subheader("Evaluation reports")
+    # --- Evaluate reports (evaluate/monitor workflows only) ---
+    if workflow in ("evaluate", "monitor"):
+        st.subheader("Evaluation reports")
 
-    if workflow == "monitor" and run_id and (MONITOR_DIR / run_id).exists():
-        xlsx_files = sorted((MONITOR_DIR / run_id).glob("*.xlsx"), reverse=True)
-    elif run_id and (EVALUATE_DIR / run_id).exists():
-        xlsx_files = sorted((EVALUATE_DIR / run_id).rglob("*.xlsx"), reverse=True)
-    else:
-        xlsx_files = []
+        if workflow == "monitor" and run_id and (MONITOR_DIR / run_id).exists():
+            xlsx_files = sorted((MONITOR_DIR / run_id).glob("*.xlsx"), reverse=True)
+        elif run_id and (EVALUATE_DIR / run_id).exists():
+            xlsx_files = sorted((EVALUATE_DIR / run_id).rglob("*.xlsx"), reverse=True)
+        else:
+            xlsx_files = []
 
-    if xlsx_files:
+    if workflow in ("evaluate", "monitor") and xlsx_files:
         from openpyxl import load_workbook
 
         # Prepare zip for "download all" (built once, used below)
@@ -2284,7 +2889,7 @@ def _tab_results():
                         key="dl_all_xlsx",
                         use_container_width=True,
                     )
-    else:
+    elif workflow in ("evaluate", "monitor"):
         st.info("No evaluation reports for this run.")
 
     st.divider()
@@ -2656,6 +3261,7 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
 
             try:
                 all_fasta_parts = []
+                all_meta_parts = []
                 multi = len(geo_locations) > 1
 
                 for loc_idx, geo_loc in enumerate(geo_locations):
@@ -2685,6 +3291,9 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                     out_dir_path = Path(validated_out_dir)
                     fastas = list(out_dir_path.glob("*.fa")) + list(out_dir_path.glob("*.fasta"))
                     all_fasta_parts.extend(fastas)
+                    # Collect metadata CSVs for Delphy integration
+                    meta_csvs = list(out_dir_path.glob("*_metadata.csv"))
+                    all_meta_parts.extend(meta_csvs)
 
                 if not all_fasta_parts:
                     st.warning("No FASTA output found. The query may have returned no results.")
@@ -2702,6 +3311,13 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                                 fout.write(content)
                                 if not content.endswith("\n"):
                                     fout.write("\n")
+                    # Merge metadata CSVs for Delphy integration
+                    if all_meta_parts:
+                        import pandas as pd
+                        meta_dest = FASTA_DIR / f"{target_name}_metadata.csv"
+                        meta_dfs = [pd.read_csv(m) for m in all_meta_parts]
+                        pd.concat(meta_dfs, ignore_index=True).to_csv(meta_dest, index=False)
+
                     # Filter by subtype if specified
                     from qprimer_designer.adapt_cli import _filter_fasta_by_subtype, _deduplicate_fasta
                     subtype = st.session_state.get(f"{prefix}_subtype_filter", "").strip()
@@ -2720,6 +3336,7 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
                         msg += f" ({n_deduped} duplicates removed)"
                     st.success(msg)
                     detail_area.empty()
+                    st.rerun()
             except Exception as exc:
                 st.error(f"Fetch error: {exc}")
             finally:
