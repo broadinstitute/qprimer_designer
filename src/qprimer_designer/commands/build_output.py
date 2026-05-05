@@ -155,6 +155,8 @@ def extract_amplicon_sequences(final, eval_full_path, ref_path):
         full_df = full_df[full_df['classifier'] >= 0.5]
 
     amplicon_seqs = {}
+    fwd_positions = {}
+    rev_positions = {}
     for pair_key in final.index:
         pname_f, pname_r = pair_key
         # Find rows matching this primer pair
@@ -164,13 +166,16 @@ def extract_amplicon_sequences(final, eval_full_path, ref_path):
 
         if pair_rows.empty:
             amplicon_seqs[pair_key] = ""
+            fwd_positions[pair_key] = ""
+            rev_positions[pair_key] = ""
             continue
 
-        # Use the first valid hit
+        # Use the first valid hit for amplicon extraction
         row = pair_rows.iloc[0]
         targets = ast.literal_eval(row['targets'])
         starts = ast.literal_eval(row['starts'])
         prod_len = int(row['prod_len'])
+        len_r = int(row['len_r'])
 
         # Find first target with a valid reference sequence
         amplicon = ""
@@ -180,9 +185,21 @@ def extract_amplicon_sequences(final, eval_full_path, ref_path):
                 amplicon = ref_seqs[target_id][start - 1: start - 1 + prod_len]
                 break
 
+        # Approximate positions: median across all targets
+        valid_starts = [s for s in starts if s > 0]
+        if valid_starts:
+            median_start = int(sorted(valid_starts)[len(valid_starts) // 2])
+            fwd_positions[pair_key] = median_start
+            rev_positions[pair_key] = median_start + prod_len - len_r
+        else:
+            fwd_positions[pair_key] = ""
+            rev_positions[pair_key] = ""
+
         amplicon_seqs[pair_key] = amplicon
 
-    return pd.Series(amplicon_seqs)
+    return (pd.Series(amplicon_seqs),
+            pd.Series(fwd_positions),
+            pd.Series(rev_positions))
 
 
 def register(subparsers):
@@ -342,7 +359,10 @@ def run(args):
     # Extract amplicon sequences if reference provided
     if args.ref:
         eval_full_path = f"{args.eval_on}.full"
-        final['amplicon_seq'] = extract_amplicon_sequences(final, eval_full_path, args.ref)
+        amp_seqs, fwd_pos, rev_pos = extract_amplicon_sequences(final, eval_full_path, args.ref)
+        final['amplicon_seq'] = amp_seqs
+        final['approx_fwd_start'] = fwd_pos
+        final['approx_rev_start'] = rev_pos
         n_with_amplicon = (final['amplicon_seq'].str.len() > 0).sum()
         print(f"Extracted amplicon sequences for {n_with_amplicon}/{len(final)} pairs")
 
