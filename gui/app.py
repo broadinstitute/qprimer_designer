@@ -470,11 +470,15 @@ def _render_sidebar():
         if st.button(":material/public: Global Virus Distribution", key="sidebar_virus_map", type="tertiary"):
             _navigate("virus_map")
             st.rerun()
+        if FINAL_DIR.exists() and any(FINAL_DIR.iterdir()):
+            if st.button(":material/stacks: Past Results", key="sidebar_results", type="tertiary"):
+                _navigate("results")
+                st.rerun()
         if st.button(":material/mail: Contact", key="sidebar_contact", type="tertiary"):
             _navigate("contact")
             st.rerun()
 
-        if page not in ("home", "virus_map", "contact"):
+        if page not in ("home", "virus_map", "contact", "results"):
             st.divider()
 
             workflow = st.session_state.get("workflow", "design")
@@ -2576,6 +2580,36 @@ def _tab_results():
     run_id = st.session_state.get("run_id", "")
     workflow = st.session_state.get("workflow", "design")
 
+    # Allow browsing past runs
+    past_runs = []
+    if workflow == "design" and FINAL_DIR.exists():
+        past_runs = sorted(
+            [d.name for d in FINAL_DIR.iterdir() if d.is_dir()],
+            reverse=True,
+        )
+    elif workflow in ("evaluate", "monitor"):
+        browse_dir = MONITOR_DIR if workflow == "monitor" else EVALUATE_DIR
+        if browse_dir.exists():
+            past_runs = sorted(
+                [d.name for d in browse_dir.iterdir() if d.is_dir()],
+                reverse=True,
+            )
+
+    if past_runs:
+        # Default to current run_id if it exists in the list
+        default_idx = 0
+        if run_id in past_runs:
+            default_idx = past_runs.index(run_id)
+        selected_run = st.selectbox(
+            "Select run",
+            options=past_runs,
+            index=default_idx,
+            key="results_run_selector",
+        )
+        if selected_run:
+            run_id = selected_run
+            st.session_state["run_id"] = run_id
+
     # --- Final CSV files (design workflow) ---
     if workflow == "design":
         st.subheader("Final output files")
@@ -2628,6 +2662,12 @@ def _tab_results():
         # Check prerequisites: MSA file and metadata
         MSA_DIR = PROJECT_ROOT / "target_seqs" / "msa"
         target_names = st.session_state.get("targets", [])
+        # Fallback: discover targets from MSA directory
+        if not target_names and MSA_DIR.exists():
+            target_names = sorted(
+                p.stem for p in MSA_DIR.glob("*.aln")
+                if not p.stem.endswith("_delphy")
+            )
 
         if not target_names:
             st.info("No target sequences available for tree generation.")
@@ -2773,7 +2813,6 @@ def _tab_results():
                         except Exception as exc:
                             st.error(f"Error displaying tree: {exc}")
 
-        st.divider()
 
     # --- Evaluate reports (evaluate/monitor workflows only) ---
     if workflow in ("evaluate", "monitor"):
