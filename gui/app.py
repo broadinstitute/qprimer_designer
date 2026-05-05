@@ -273,47 +273,64 @@ def _render_workflow_progress(current_step_key: str):
 
 # Common virus presets: (display name, TaxID)
 VIRUS_PRESETS: list[tuple[str, int]] = [
+    # --- Coronaviruses ---
     ("SARS-CoV-2", 2697049),
     ("SARS-CoV", 694009),
     ("MERS-CoV", 1335626),
+    ("Human coronavirus 229E", 11137),
+    ("Human coronavirus OC43", 31631),
+    ("Human coronavirus NL63", 277944),
+    ("Human coronavirus HKU1", 290028),
+    # --- Influenza ---
     ("Influenza A", 11320),
     ("Influenza B", 11520),
+    # --- Respiratory ---
     ("RSV-A (Respiratory Syncytial Virus A)", 208893),
     ("RSV-B (Respiratory Syncytial Virus B)", 208895),
-    ("MPOX (Monkeypox virus)", 10244),
+    ("Human metapneumovirus", 162145),
+    ("Human parainfluenza virus 1", 12730),
+    ("Human parainfluenza virus 3", 11216),
+    ("Human bocavirus 1", 329641),
+    ("Human rhinovirus A", 147711),
+    ("Adenovirus (Human mastadenovirus C)", 129951),
+    ("Measles virus", 11234),
+    ("Mumps virus", 2560602),
+    ("Rubella virus", 11041),
+    # --- Hemorrhagic fever ---
     ("Ebola virus (Zaire)", 186538),
     ("Marburg virus", 3052505),
+    ("Lassa virus", 3052310),
+    ("Crimean-Congo hemorrhagic fever virus", 3052518),
+    ("Rift Valley Fever virus", 11588),
+    ("Hantaan virus", 3052480),
+    ("SFTS virus", 1003835),
+    # --- Mosquito/tick-borne ---
     ("Dengue virus 1", 11053),
     ("Dengue virus 2", 11060),
     ("Dengue virus 3", 11069),
     ("Dengue virus 4", 11070),
     ("Zika virus", 64320),
     ("Chikungunya virus", 37124),
-    ("HIV-1", 11676),
-    ("HIV-2", 11709),
-    ("Hepatitis B virus", 10407),
-    ("Hepatitis C virus", 3052230),
-    ("Human metapneumovirus", 162145),
-    ("Measles virus", 11234),
-    ("Mumps virus", 2560602),
-    ("Rubella virus", 11041),
-    ("Norovirus GII", 142786),
-    ("Rotavirus A", 28875),
-    ("Adenovirus (Human mastadenovirus C)", 129951),
-    ("Enterovirus D68", 42789),
+    ("Oropouche virus", 118655),
     ("West Nile virus", 11082),
     ("Yellow Fever virus", 11089),
     ("Japanese Encephalitis virus", 11072),
-    ("Lassa virus", 3052310),
-    ("Crimean-Congo hemorrhagic fever virus", 3052518),
+    ("Tick-borne encephalitis virus", 11084),
+    # --- Blood-borne / hepatitis ---
+    ("HIV-1", 11676),
+    ("HIV-2", 11709),
+    ("Hepatitis A virus", 12092),
+    ("Hepatitis B virus", 10407),
+    ("Hepatitis C virus", 3052230),
+    ("Hepatitis E virus", 1678143),
+    # --- Other ---
+    ("MPOX (Monkeypox virus)", 10244),
     ("Nipah virus", 3052225),
-    ("Hendra virus", 3052223),
     ("Rabies virus", 11292),
-    ("Variola virus (Smallpox)", 10255),
-    ("Human parainfluenza virus 1", 12730),
-    ("Human parainfluenza virus 3", 11216),
-    ("Human bocavirus 1", 329641),
-    ("Human rhinovirus A", 147711),
+    ("Enterovirus A71", 39054),
+    ("Enterovirus D68", 42789),
+    ("Norovirus GII", 142786),
+    ("Rotavirus A", 28875),
 ]
 
 
@@ -379,8 +396,11 @@ DEFAULT_PARAMS: dict = {
     "PROBE_LEN_MAX": 28,
     "PROBE_TM_MIN": 65,
     "PROBE_TM_MAX": 70,
+    "PROBE_GC_MAX": 60,
+    "PROBE_DG_MIN": -8,
     "PROBE_HOMOPOLYMER_MAX": 3,
     "PROBE_AVOID_5PRIME_G": True,
+    "PROBE_CONSERVATION_THRESHOLD": 0.8,
     "PROBE_MAX_MISMATCHES": 2,
     "PROBE_AMPLICON_BUFFER": 20,
     "MIN_PROBES_PER_PAIR": 1,
@@ -427,27 +447,34 @@ def _render_sidebar():
 
         page = _current_page()
 
-        if page == "home":
-            st.markdown("**Home**")
-            if st.button(":material/public: Start from Map", use_container_width=True, key="sidebar_virus_map"):
-                _navigate("virus_map")
-                st.rerun()
-        elif page == "virus_map":
-            if st.button("< Back to Home", use_container_width=True, key="sidebar_back_from_map"):
+        # Reduce vertical spacing for sidebar nav buttons
+        st.markdown(
+            "<style>"
+            "section[data-testid='stSidebar'] .stElementContainer:has(button[kind='tertiary']), "
+            "section[data-testid='stSidebar'] .stMarkdown "
+            "{ margin-bottom: -1rem; }"
+            "</style>",
+            unsafe_allow_html=True,
+        )
+
+        # Global nav buttons — always visible
+        if st.button(":material/home: Home", key="sidebar_home", type="tertiary"):
+            _reset_workflow_state()
+            if page == "virus_map":
                 for k in ("virus_map_selected_countries", "_virus_map_prev_clicks",
                            "virus_map_country_multiselect", "virus_map_chart",
                            "virus_map_select", "virus_map_date_range"):
                     st.session_state.pop(k, None)
-                _navigate("home")
-                st.rerun()
-            st.divider()
-            st.markdown("**Virus Map**")
-        else:
-            if st.button("< Back to Home", use_container_width=True):
-                _reset_workflow_state()
-                _navigate("home")
-                st.rerun()
+            _navigate("home")
+            st.rerun()
+        if st.button(":material/public: Global Virus Distribution", key="sidebar_virus_map", type="tertiary"):
+            _navigate("virus_map")
+            st.rerun()
+        if st.button(":material/mail: Contact", key="sidebar_contact", type="tertiary"):
+            _navigate("contact")
+            st.rerun()
 
+        if page not in ("home", "virus_map", "contact"):
             st.divider()
 
             workflow = st.session_state.get("workflow", "design")
@@ -460,20 +487,28 @@ def _render_sidebar():
                     n_rows = len(sheet_data["data_rows"])
                     st.markdown(f"**Spreadsheet:** {n_rows} row(s)")
             else:
-                st.markdown(f"**Mode:** {mode}")
+                # Targets
+                targets = st.session_state.get("targets", [])
+                st.markdown(f"**Target:** {', '.join(targets) if targets else '—'}")
 
-                probe = st.session_state.get("probe_enabled", False)
-                st.markdown(f"**Probe mode:** {'On' if probe else 'Off'}")
+                # Off-targets
+                cross = st.session_state.get("cross", [])
+                host = st.session_state.get("host", [])
+                off_targets = cross + host
+                st.markdown(f"**Off-targets:** {', '.join(off_targets) if off_targets else '—'}")
 
-                fastas = _available_fasta()
-                st.markdown(f"**FASTA files:** {len(fastas)}")
+                # Probe
+                if "probe_enabled" in st.session_state:
+                    probe = st.session_state["probe_enabled"]
+                    st.markdown(f"**Probe:** {'On' if probe else 'Off'}")
+                else:
+                    st.markdown("**Probe:** —")
 
-                if mode == "Singleplex":
-                    targets = st.session_state.get("targets", [])
-                    st.markdown(f"**Targets:** {', '.join(targets) if targets else 'none'}")
-                elif mode == "Multiplex":
-                    panel = st.session_state.get("panel", [])
-                    st.markdown(f"**Panel:** {', '.join(panel) if panel else 'none'}")
+                # Mode
+                if "design_mode" in st.session_state or "mode" in st.session_state:
+                    st.markdown(f"**Mode:** {mode}")
+                else:
+                    st.markdown("**Mode:** —")
 
         # --- Scheduled monitor (always visible) ---
         active_cron = _get_active_cron_monitor()
@@ -730,17 +765,6 @@ via email reports.
 """
     )
 
-    st.divider()
-
-    # Contact
-    st.markdown(
-        "<div style='text-align: center; color: gray; font-size: 0.9em;'>"
-        "<strong>Contact</strong><br>"
-        "S Chan Baek (<a href='mailto:baekseun@broadinstitute.org'>baekseun@broadinstitute.org</a>) · "
-        "Kenneth B Hsu (<a href='mailto:khsu@broadinstitute.org'>khsu@broadinstitute.org</a>)"
-        "</div>",
-        unsafe_allow_html=True,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +852,7 @@ def _download_virus_map_data():
             for rec in raw:
                 parsed = extract_record(rec)
                 if parsed:
+                    parsed["continent"] = continent
                     records.append(parsed)
 
         countries = set(r["country"] for r in records)
@@ -894,7 +919,6 @@ def _page_virus_map():
             format_func=lambda x: x.replace("_", " "),
             key="virus_map_select",
         )
-
         if not selected:
             return
 
@@ -992,6 +1016,16 @@ def _page_virus_map():
     if "virus_map_selected_countries" not in st.session_state:
         st.session_state["virus_map_selected_countries"] = []
 
+    # Build continent -> country mapping from filtered data
+    _continent_countries: dict[str, list[str]] = {}
+    if has_records and df is not None:
+        for _, row in filtered.iterrows():
+            cont = row.get("continent", "")
+            country = row.get("country", "")
+            if cont and country and country in display_df["country"].values:
+                _continent_countries.setdefault(cont, set()).add(country)
+        _continent_countries = {k: sorted(v) for k, v in _continent_countries.items()}
+
     with col_right:
         if df is not None and not df.empty:
             # Highlight already-selected countries
@@ -1025,7 +1059,7 @@ def _page_virus_map():
                     projection_type="natural earth",
                 ),
                 margin=dict(l=0, r=0, t=0, b=0),
-                height=450,
+                height=335,
                 uirevision=selected,  # preserve zoom per virus, reset on virus change
             )
             event = st.plotly_chart(
@@ -1058,6 +1092,31 @@ def _page_virus_map():
                 # Clear plotly selection state to allow re-clicking same country
                 st.session_state.pop("virus_map_chart", None)
                 st.rerun()
+
+            # Continent toggle buttons — directly below map
+            if _continent_countries:
+                # Pad with empty columns to compress buttons toward center
+                n = len(_continent_countries)
+                cont_cols_all = st.columns([0.5] + [1] * n + [0.5], gap="small")
+                cont_cols = cont_cols_all[1:-1]
+                for i, cont in enumerate(_continent_countries):
+                    with cont_cols[i]:
+                        cont_set = set(_continent_countries[cont])
+                        all_selected = cont_set.issubset(set(st.session_state.get("virus_map_selected_countries", [])))
+                        btn_type = "primary" if all_selected else "secondary"
+                        short = cont
+                        if st.button(short, key=f"cont_{cont}", use_container_width=True, type=btn_type):
+                            current = list(st.session_state["virus_map_selected_countries"])
+                            if all_selected:
+                                current = [c for c in current if c not in cont_set]
+                            else:
+                                for c in cont_set:
+                                    if c not in current:
+                                        current.append(c)
+                            st.session_state["virus_map_selected_countries"] = current
+                            st.session_state["_virus_map_sync"] = True
+                            st.session_state.pop("virus_map_chart", None)
+                            st.rerun()
         else:
             # Show empty world map
             import plotly.graph_objects as go
@@ -1124,10 +1183,27 @@ def _page_virus_map():
             virus_name = virus_display.split("  (TaxID:")[0]
             sanitized = re.sub(r"[^\w\-]", "_", virus_name)
             sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+            # Pass subtype filter if present (e.g., H1N1 from Influenza A map data)
+            subtype = data.get("subtype_filter", "")
+            if subtype:
+                st.session_state[f"{prefix}_subtype_filter"] = subtype
+                subtype_clean = re.sub(r"[^\w\-]", "_", subtype)
+                sanitized = f"{sanitized}_{subtype_clean}"
             st.session_state[f"{prefix}_target_name"] = sanitized
             st.session_state[f"_prev_auto_{prefix}"] = virus_name
         if selected_countries:
-            st.session_state[f"{prefix}_geo_location"] = ", ".join(selected_countries)
+            # If all countries of a continent are selected, use the continent name
+            # instead of individual country names (much faster for gget fetch)
+            geo_parts = []
+            remaining = set(selected_countries)
+            for cont, cont_countries in _continent_countries.items():
+                cont_set = set(cont_countries)
+                if cont_set.issubset(remaining):
+                    geo_parts.append(cont)
+                    remaining -= cont_set
+            # Add any individually selected countries
+            geo_parts.extend(sorted(remaining))
+            st.session_state[f"{prefix}_geo_location"] = ", ".join(geo_parts)
         # Pass date range as collection date filters
         st.session_state[f"{prefix}_min_collection_date"] = filter_start
         st.session_state[f"{prefix}_max_collection_date"] = filter_end
@@ -1156,6 +1232,8 @@ def _page_virus_map():
             _prefill_virus("monitor_fetch")
             _navigate("monitor_target")
             st.rerun()
+
+    st.caption("SARS-CoV-2, Influenza A, and HIV-1 are excluded from the map due to excessive NCBI dataset size.")
 
 
 # ---------------------------------------------------------------------------
@@ -1435,6 +1513,15 @@ def _tab_parameters(mode: str = "design"):
             if p["PROBE_TM_MIN"] >= p["PROBE_TM_MAX"]:
                 st.warning("PROBE_TM_MIN should be less than PROBE_TM_MAX")
 
+            p["PROBE_GC_MAX"] = st.number_input(
+                "PROBE_GC_MAX (%)", value=float(p["PROBE_GC_MAX"]),
+                step=1.0, key="p_probe_gc_max",
+            )
+            p["PROBE_DG_MIN"] = st.number_input(
+                "PROBE_DG_MIN (kcal/mol)", value=float(p["PROBE_DG_MIN"]),
+                step=0.5, key="p_probe_dg_min",
+            )
+
             p["PROBE_HOMOPOLYMER_MAX"] = st.number_input(
                 "PROBE_HOMOPOLYMER_MAX", value=int(p["PROBE_HOMOPOLYMER_MAX"]),
                 min_value=1, max_value=10, key="p_probe_hp",
@@ -1445,6 +1532,12 @@ def _tab_parameters(mode: str = "design"):
             )
 
         with st.expander("Probe mode configuration", expanded=False):
+            p["PROBE_CONSERVATION_THRESHOLD"] = st.number_input(
+                "PROBE_CONSERVATION_THRESHOLD",
+                value=float(p["PROBE_CONSERVATION_THRESHOLD"]),
+                min_value=0.0, max_value=1.0, step=0.05, key="p_probe_cons",
+                help="Minimum fraction of sequences sharing the same base at a column for it to be considered conserved.",
+            )
             p["PROBE_MAX_MISMATCHES"] = st.number_input(
                 "PROBE_MAX_MISMATCHES", value=int(p["PROBE_MAX_MISMATCHES"]),
                 min_value=0, max_value=10, key="p_probe_mm",
@@ -2330,7 +2423,7 @@ def _page_select_target():
 def _render_fetch_ui(prefix: str, monitor: bool = False):
     """Render fetch-from-NCBI UI. prefix is used to namespace session state keys."""
     _OTHER_OPTION = "Other (enter TaxID manually)"
-    virus_options = [f"{name}  (TaxID: {tid})" for name, tid in VIRUS_PRESETS]
+    virus_options = sorted([f"{name}  (TaxID: {tid})" for name, tid in VIRUS_PRESETS])
     virus_options.append(_OTHER_OPTION)
 
     selected_virus = st.selectbox(
@@ -2814,18 +2907,6 @@ def _config_design():
     st.markdown(
         "Configure design mode and parameters for primer generation."
     )
-
-    # Summary of selections from previous steps
-    targets = st.session_state.get("targets", [])
-    cross = st.session_state.get("cross", [])
-    host = st.session_state.get("host", [])
-    st.markdown(f"**Target:** {', '.join(targets) if targets else 'none'}")
-    if cross:
-        st.markdown(f"**Cross-reactivity:** {', '.join(cross)}")
-    if host:
-        st.markdown(f"**Host:** {', '.join(host)}")
-
-    st.divider()
 
     # Design mode
     st.subheader("Design mode")
@@ -4029,6 +4110,12 @@ def main():
         _page_home()
     elif page == "virus_map":
         _page_virus_map()
+    elif page == "contact":
+        st.subheader("Contact")
+        st.markdown(
+            "**S Chan Baek** — [baekseun@broadinstitute.org](mailto:baekseun@broadinstitute.org)  \n"
+            "**Kenneth B Hsu** — [khsu@broadinstitute.org](mailto:khsu@broadinstitute.org)"
+        )
     elif page == "select_target":
         _page_select_target()
     elif page == "select_offtarget":
