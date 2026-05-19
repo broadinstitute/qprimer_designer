@@ -2284,7 +2284,7 @@ def _country_to_alpha2(country_name: str) -> str:
 def _reformat_msa_for_delphy(msa_path: Path, metadata_csv: Path, output_path: Path) -> dict:
     """Rewrite MSA headers to 'accession|YYYY-MM-DD' (with optional country code) using metadata CSV.
 
-    If sequences come from 2+ countries, headers become 'accession|YYYY-MM-DD|CC'.
+    If sequences come from 2+ countries, headers become 'accession|CC|YYYY-MM-DD'.
     Returns {"included": N, "excluded_no_date": N}.
     """
     import pandas as pd
@@ -2351,11 +2351,11 @@ def _reformat_msa_for_delphy(msa_path: Path, metadata_csv: Path, output_path: Pa
         # Try with and without version suffix
         d = acc_to_date.get(acc) or acc_to_date.get(acc.split(".")[0])
         if d:
-            header = f"{acc}|{d}"
             if include_cc:
                 cc = acc_to_cc.get(acc) or acc_to_cc.get(acc.split(".")[0], "")
-                if cc:
-                    header += f"|{cc}"
+                header = f"{acc}|{cc}|{d}" if cc else f"{acc}|{d}"
+            else:
+                header = f"{acc}|{d}"
             record.id = header
             record.description = ""
             records_out.append(record)
@@ -2542,11 +2542,18 @@ def _plot_phylo_tree(tree, covered_ids: set[str] | None = None):
         tip_x.append(x)
         tip_y.append(y)
         name = tip.name or ""
-        # Parse accession, date, and optional country code from "accession|date|CC"
+        # Parse accession, optional country code, and date from "accession|CC|date" or "accession|date"
         parts = name.split("|")
         acc = parts[0] if parts else name
-        date_str = parts[1] if len(parts) > 1 else ""
-        cc = parts[2] if len(parts) > 2 else ""
+        if len(parts) == 3:
+            cc = parts[1]
+            date_str = parts[2]
+        elif len(parts) == 2:
+            date_str = parts[1]
+            cc = ""
+        else:
+            date_str = ""
+            cc = ""
         label = acc
         if date_str:
             label += f"  {date_str}"
