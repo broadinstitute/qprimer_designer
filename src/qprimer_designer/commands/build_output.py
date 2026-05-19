@@ -237,6 +237,11 @@ def run(args):
     start_time = time.time()
 
     # Load ON-target evaluation
+    if os.path.getsize(args.eval_on) == 0:
+        print(f"Warning: ON-target eval file {args.eval_on} is empty — no primers passed filters.")
+        # Write empty output
+        pd.DataFrame().to_csv(args.out, index=False)
+        return
     teval = pd.read_csv(args.eval_on, index_col=[0, 1]).iloc[:num_select].copy()
     teval.columns = ["cov_target", "act_target", "sco_target"]
 
