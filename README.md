@@ -26,12 +26,24 @@ docker pull ghcr.io/broadinstitute/qprimer_designer:latest
 docker run --rm ghcr.io/broadinstitute/qprimer_designer qprimer --help
 ```
 
+## Web GUI
+
+A Streamlit-based GUI is available as an alternative to the CLI. See the [GUI Getting Started Guide](docs/gui_getting_started.md) for detailed setup instructions.
+
+```bash
+pip install -e ".[gui]"
+streamlit run gui/app.py
+```
+
+The GUI uses a multi-page workflow with sidebar navigation:
+
+- **Home** — Entry point with getting started guide
+- **Global Virus Distribution** — Interactive choropleth map of virus sequence geographic distribution, with date filtering and country selection
+- **Design / Evaluate / Monitor** — Step-by-step workflows: select targets, configure parameters, run, and view results
+- **Past Results** — Browse and download outputs from previous runs
+- **Phylogenetic Tree** — Delphy tree with primer coverage overlay (tips colored by coverage status) and `.dphy` export
+
 ## Quick Start
-
-There are two CLIs:
-
-- **`qprimer`** — Low-level subcommands used internally by the Snakemake pipeline
-- **`adapt`** — User-facing CLI for designing, evaluating, fetching, and monitoring primers
 
 ```bash
 adapt --help
@@ -213,58 +225,7 @@ monitor/
 
 The full fetched FASTA is removed after extracting the new-only subset and saving the accession list, to conserve disk space. Previous accession lists are used to diff against future fetches.
 
-## Web GUI
-
-A Streamlit-based GUI is available as an alternative to the CLI workflow. It lets you upload FASTA files, configure all parameters, and run the pipeline from a browser.
-
-### Install
-
-```bash
-pip install -e ".[gui]"
-```
-
-### Launch
-
-```bash
-streamlit run gui/app.py
-```
-
-The GUI provides five tabs:
-
-- **Files** - Upload, view, and delete FASTA files
-- **Configuration** - Select design mode (Singleplex/Multiplex/Evaluate), enable probe mode, and choose targets
-- **Parameters** - Adjust all `params.txt` values with validation, or load from an existing file
-- **Run** - Set CPU cores, preview the snakemake command, and execute with real-time log output
-- **Results** - View and download output CSVs and evaluation reports
-
-## CLI Commands
-
-### `adapt` CLI (user-facing)
-
-| Command | Description |
-|---------|-------------|
-| `adapt design` | Design primers for target sequences |
-| `adapt evaluate` | Evaluate existing primer/probe sequences against targets |
-| `adapt fetch` | Fetch virus sequences from NCBI via Google Sheets config |
-| `adapt monitor` | Periodic fetch, evaluate, and email alert pipeline |
-
-### `qprimer` CLI (internal)
-
-Low-level subcommands used by the Snakemake workflow:
-
-| Command | Description |
-|---------|-------------|
-| `qprimer generate` | Generate primer candidates from target sequences |
-| `qprimer prepare-features` | Compute features (Tm, GC%, dG) for existing primers |
-| `qprimer pick-representatives` | Select representative sequences from MSA |
-| `qprimer prepare-input` | Prepare input data for ML evaluation |
-| `qprimer evaluate` | Run ML model to score primer candidates |
-| `qprimer filter` | Filter primers based on evaluation scores |
-| `qprimer build-output` | Build final output CSV with scores |
-| `qprimer select-multiplex` | Select best multiplex primer set |
-| `qprimer export-report` | Export evaluation results to Excel reports |
-| `qprimer generate-probe` | Generate probe candidates for TaqMan assays |
-| `qprimer parse-probe-mapping` | Parse probe SAM alignments into mapping table |
+The pipeline also uses internal `qprimer` subcommands via Snakemake. See [docs/qprimer_cli.md](docs/qprimer_cli.md) for details.
 
 ## GPU Support
 
