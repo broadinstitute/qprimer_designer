@@ -759,28 +759,8 @@ rule check_coverage:
         mapped=f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.mapped.temp"
     output:
         f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.mapped"
-    params:
-        min_cov=lambda wc: int(count_seqs(wc.target) * 0.95)
     run:
-        if wildcards.virus != wildcards.target:
-            shell("mv '{input.mapped}' '{output}'")
-        else:
-            cov_file = str(input.mapped) + ".cov"
-            key_file = str(input.mapped) + ".key"
-            shell(
-                f"awk '{{{{print $1, $3}}}}' {shlex.quote(str(input.mapped))} | sort -u | "
-                f"awk '{{{{count[$1]++}}}} END {{{{for (i in count) print i, count[i]}}}}' "
-                f"> {shlex.quote(cov_file)}"
-            )
-            shell(
-                f"awk '$2 >= {params.min_cov} {{{{print $1}}}}' "
-                f"{shlex.quote(cov_file)} > {shlex.quote(key_file)}"
-            )
-            shell(
-                f"awk 'NR==FNR {{{{keys[$1]; next}}}} ($1 in keys)' "
-                f"{shlex.quote(key_file)} {shlex.quote(str(input.mapped))} > {shlex.quote(str(output[0]))}"
-            )
-            shell(f"rm -f {shlex.quote(cov_file)} {shlex.quote(key_file)}")
+        shell("mv '{input.mapped}' '{output}'")
 
 
 ############################################

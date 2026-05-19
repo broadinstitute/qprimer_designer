@@ -10,6 +10,7 @@ dependencies:
   - bowtie2>=2.5
   - sam2pairwise
   - mafft>=7.5
+  - ncbi-datasets-cli>=16
   # Workflow
   - snakemake>=9.0
   # ML dependencies (moved from pip for better Docker layer caching)

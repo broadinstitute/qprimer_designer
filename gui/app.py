@@ -861,42 +861,60 @@ def _download_virus_map_data():
     extract_record = _mod.extract_record
 
     st.subheader("Downloading virus geographic data...")
-    st.caption("This is a one-time download from NCBI. It may take 10–20 minutes.")
+    st.caption("This is a one-time download from NCBI. It may take a few minutes.")
 
     VIRUS_MAP_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     progress = st.progress(0.0)
     status = st.empty()
-    total = len(DEFAULT_VIRUSES)
 
-    for i, (name, taxid, *_rest) in enumerate(DEFAULT_VIRUSES):
+    # Filter to viruses that still need downloading
+    to_fetch = []
+    for name, taxid, *_rest in DEFAULT_VIRUSES:
         out_path = VIRUS_MAP_DATA_DIR / f"{name}.json"
-        if out_path.exists():
-            progress.progress((i + 1) / total)
-            continue
+        if not out_path.exists():
+            to_fetch.append((name, taxid))
 
-        status.text(f"Fetching {name.replace('_', ' ')} ({i + 1}/{total})...")
-        records = []
-        for continent in CONTINENTS:
-            raw = fetch_continent(taxid, continent)
-            for rec in raw:
-                parsed = extract_record(rec)
-                if parsed:
-                    parsed["continent"] = continent
-                    records.append(parsed)
+    total = len(DEFAULT_VIRUSES)
+    done = total - len(to_fetch)
+    progress.progress(done / total if total else 1.0)
 
-        countries = set(r["country"] for r in records)
-        data = {
-            "name": name,
-            "taxid": taxid,
-            "total_sequences": len(records),
-            "num_countries": len(countries),
-            "records": records,
-        }
-        with open(out_path, "w") as f:
-            json.dump(data, f)
+    if to_fetch:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        progress.progress((i + 1) / total)
+        def _fetch_one_virus(name, taxid):
+            records = []
+            for continent in CONTINENTS:
+                raw = fetch_continent(taxid, continent)
+                for rec in raw:
+                    parsed = extract_record(rec)
+                    if parsed:
+                        parsed["continent"] = continent
+                        records.append(parsed)
+            countries = set(r["country"] for r in records)
+            data = {
+                "name": name,
+                "taxid": taxid,
+                "total_sequences": len(records),
+                "num_countries": len(countries),
+                "records": records,
+            }
+            out_path = VIRUS_MAP_DATA_DIR / f"{name}.json"
+            with open(out_path, "w") as f:
+                json.dump(data, f)
+            return name
+
+        max_workers = min(8, len(to_fetch))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_fetch_one_virus, name, taxid): name
+                for name, taxid in to_fetch
+            }
+            for future in as_completed(futures):
+                done += 1
+                name = future.result()
+                status.text(f"Fetched {name.replace('_', ' ')} ({done}/{total})")
+                progress.progress(done / total)
 
     # Save index
     index = []
@@ -2266,7 +2284,7 @@ def _country_to_alpha2(country_name: str) -> str:
 def _reformat_msa_for_delphy(msa_path: Path, metadata_csv: Path, output_path: Path) -> dict:
     """Rewrite MSA headers to 'accession|YYYY-MM-DD' (with optional country code) using metadata CSV.
 
-    If sequences come from 2+ countries, headers become 'accession|YYYY-MM-DD|CC'.
+    If sequences come from 2+ countries, headers become 'accession|CC|YYYY-MM-DD'.
     Returns {"included": N, "excluded_no_date": N}.
     """
     import pandas as pd
@@ -2333,11 +2351,11 @@ def _reformat_msa_for_delphy(msa_path: Path, metadata_csv: Path, output_path: Pa
         # Try with and without version suffix
         d = acc_to_date.get(acc) or acc_to_date.get(acc.split(".")[0])
         if d:
-            header = f"{acc}|{d}"
             if include_cc:
                 cc = acc_to_cc.get(acc) or acc_to_cc.get(acc.split(".")[0], "")
-                if cc:
-                    header += f"|{cc}"
+                header = f"{acc}|{cc}|{d}" if cc else f"{acc}|{d}"
+            else:
+                header = f"{acc}|{d}"
             record.id = header
             record.description = ""
             records_out.append(record)
@@ -2380,11 +2398,20 @@ def _run_delphy(delphy_bin: Path, delphy_fasta: Path, output_dir: Path,
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1)
     output_lines = []
+    progress_bar = None
+    if progress_placeholder:
+        progress_bar = progress_placeholder.progress(0.0, text="Starting Delphy...")
     for line in proc.stdout:
         output_lines.append(line.rstrip())
-        if progress_placeholder:
-            # Show last few lines
-            progress_placeholder.code("\n".join(output_lines[-5:]))
+        if progress_bar:
+            # Parse step number from Delphy output (e.g., "... Step 165300000, ...")
+            m = re.search(r"Step\s+(\d+)", line)
+            if m:
+                current_step = int(m.group(1))
+                pct = min(current_step / steps, 1.0)
+                progress_bar.progress(pct, text=f"Step {current_step:,} / {steps:,} ({pct:.0%}) — t_MRCA: {tm}"
+                    if (tm := re.search(r"t_MRCA\s*=\s*([\d-]+)", line)) and (tm := tm.group(1))
+                    else f"Step {current_step:,} / {steps:,} ({pct:.0%})")
 
     ret = proc.wait()
     if ret != 0:
@@ -2505,16 +2532,28 @@ def _plot_phylo_tree(tree, covered_ids: set[str] | None = None):
     # Tip markers and labels
     tip_x, tip_y, tip_text, tip_color = [], [], [], []
     tip_labels = []
+    # Pre-build version-stripped lookup for covered_ids
+    if covered_ids is not None:
+        _covered_stripped = {c.split(".")[0] for c in covered_ids} | covered_ids
+    else:
+        _covered_stripped = set()
     for tip in tree.get_terminals():
         x, y = node_coords[id(tip)]
         tip_x.append(x)
         tip_y.append(y)
         name = tip.name or ""
-        # Parse accession, date, and optional country code from "accession|date|CC"
+        # Parse accession, optional country code, and date from "accession|CC|date" or "accession|date"
         parts = name.split("|")
         acc = parts[0] if parts else name
-        date_str = parts[1] if len(parts) > 1 else ""
-        cc = parts[2] if len(parts) > 2 else ""
+        if len(parts) == 3:
+            cc = parts[1]
+            date_str = parts[2]
+        elif len(parts) == 2:
+            date_str = parts[1]
+            cc = ""
+        else:
+            date_str = ""
+            cc = ""
         label = acc
         if date_str:
             label += f"  {date_str}"
@@ -2523,7 +2562,7 @@ def _plot_phylo_tree(tree, covered_ids: set[str] | None = None):
         tip_labels.append(f"  {label}")
 
         if covered_ids is not None:
-            is_covered = acc in covered_ids
+            is_covered = acc in _covered_stripped or acc.split(".")[0] in _covered_stripped
             tip_color.append("#2ecc71" if is_covered else "#e74c3c")
             status = "Covered" if is_covered else "Not covered"
             tip_text.append(f"{acc}<br>{date_str}<br>{status}")
@@ -2826,7 +2865,7 @@ def _tab_results():
                                 with ctrl_col:
                                     # Find eval.re files for this target
                                     eval_re_files = sorted(run_dir.glob(
-                                        f"*{tree_target}*.eval.re"
+                                        f"**/*{tree_target}*.eval.re"
                                     )) if run_dir and run_dir.exists() else []
 
                                     if eval_re_files and csvs:
@@ -3206,7 +3245,8 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
 
     nuc_completeness = st.selectbox(
         "Nucleotide completeness",
-        options=["complete", "partial"],
+        options=["", "complete", "partial"],
+        format_func=lambda x: "Any" if x == "" else x,
         key=f"{prefix}_nuc_completeness",
     )
 
@@ -3231,15 +3271,15 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
     col_d1, col_d2 = st.columns(2)
     _date_min = date(1900, 1, 1)
     with col_d1:
-        st.date_input("Min collection date", value=None, min_value=_date_min,
-                       key=f"{prefix}_min_collection_date")
+        st.date_input("Min release date", value=None, min_value=_date_min,
+                       key=f"{prefix}_min_release_date")
     with col_d2:
         if monitor:
-            st.date_input("Max collection date", value=date.today(), min_value=_date_min,
-                          disabled=True, key=f"{prefix}_max_collection_date")
+            st.date_input("Max release date", value=date.today(), min_value=_date_min,
+                          disabled=True, key=f"{prefix}_max_release_date")
         else:
-            st.date_input("Max collection date", value=None, min_value=_date_min,
-                           key=f"{prefix}_max_collection_date")
+            st.date_input("Max release date", value=None, min_value=_date_min,
+                           key=f"{prefix}_max_release_date")
 
     st.text_input("Geographic location", placeholder="e.g., USA, Africa, Nigeria",
                    key=f"{prefix}_geo_location")
@@ -3248,13 +3288,13 @@ def _render_fetch_ui(prefix: str, monitor: bool = False):
     with st.expander("Additional parameters"):
         st.number_input("Max sequences", min_value=1, max_value=100000, value=None,
                         step=100, key=f"{prefix}_limit")
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            st.date_input("Min release date", value=None, min_value=_date_min,
-                           key=f"{prefix}_min_release_date")
-        with col_r2:
-            st.date_input("Max release date", value=None, min_value=_date_min,
-                           key=f"{prefix}_max_release_date")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            st.date_input("Min collection date", value=None, min_value=_date_min,
+                           key=f"{prefix}_min_collection_date")
+        with col_c2:
+            st.date_input("Max collection date", value=None, min_value=_date_min,
+                           key=f"{prefix}_max_collection_date")
         st.number_input("Max ambiguous characters", min_value=0, value=10, step=1,
                         key=f"{prefix}_max_ambiguous_chars")
         st.checkbox("RefSeq only", key=f"{prefix}_refseq_only")
