@@ -136,7 +136,7 @@ class TestGetPrimerParams:
         }
         result = get_primer_params(params)
         assert result["max_num"] == 500
-        assert result["step"] == 3
+        assert result["step"] == 1  # always 1, TILING_STEP param removed
         assert result["min_pri_len"] == 18
         assert result["max_pri_len"] == 25
         assert result["min_amp_len"] == 100

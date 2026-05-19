@@ -12,7 +12,7 @@ from Bio import SeqIO
 from Bio.SeqUtils import gc_fraction
 
 from qprimer_designer.utils import reverse_complement_dna, get_tm, parse_params, get_primer_params, sanitize_iupac
-from qprimer_designer.external import compute_self_dimer_dg
+from qprimer_designer.external import compute_batch_dimer_dg
 
 
 def register(subparsers):
@@ -81,10 +81,21 @@ def generate_primers_multi(
     max_gc: float,
     min_dg: float,
 ):
-    """Generate and filter primer candidates across multiple target sequences."""
+    """Generate and filter primer candidates across multiple target sequences.
+
+    Returns (for_filt, rev_filt, features) where features[seq] includes
+    a 'rep_count' key indicating how many input sequences produced that primer.
+    """
     forps, revps = {}, {}
+    # Track how many target sequences each primer appears in
+    fwd_counts = defaultdict(int)
+    rev_counts = defaultdict(int)
     for tseq in target_seqs:
         flist, rlist = generate_primers_single(tseq, step, min_pri_len, max_pri_len, min_amp_len)
+        for seq in flist:
+            fwd_counts[seq] += 1
+        for seq in rlist:
+            rev_counts[seq] += 1
         forps.update(flist)
         revps.update(rlist)
 
@@ -94,22 +105,30 @@ def generate_primers_multi(
     for_filt, rev_filt = {}, {}
     features = defaultdict(dict)
 
-    for unfilt, filt in zip([forps, revps], [for_filt, rev_filt]):
+    for unfilt, filt, counts in zip([forps, revps], [for_filt, rev_filt], [fwd_counts, rev_counts]):
+        # First pass: filter by Tm and GC (fast)
+        tm_gc_passed = {}
         for pseq in unfilt:
-            # Calculate features
+            if len(pseq) < 2:
+                continue
             tm = get_tm(pseq)
             gc = gc_fraction(pseq)
-
-            # Filter by Tm and GC
             if min_tm <= tm <= max_tm and gc <= max_gc / 100.0:
-                dG = compute_self_dimer_dg(pseq)
+                tm_gc_passed[pseq] = (tm, gc)
 
-                # Only add features if all filters pass
+        # Batch dG computation (single subprocess call)
+        if tm_gc_passed:
+            pairs = [(pseq, pseq) for pseq in tm_gc_passed]
+            dg_values = compute_batch_dimer_dg(pairs)
+
+            for (pseq, _), dG in zip(pairs, dg_values):
                 if dG >= min_dg:
+                    tm, gc = tm_gc_passed[pseq]
                     features[pseq]["Tm"] = round(tm, 1)
                     features[pseq]["GC"] = round(gc, 2)
                     features[pseq]["len"] = len(pseq)
                     features[pseq]["dG"] = round(dG, 1)
+                    features[pseq]["rep_count"] = counts.get(pseq, 1)
                     filt[pseq] = unfilt[pseq]
 
     valid_pairs = count_primer_pairs(for_filt, rev_filt, min_amp_len, max_amp_len)

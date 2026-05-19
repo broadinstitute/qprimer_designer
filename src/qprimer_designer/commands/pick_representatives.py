@@ -36,6 +36,8 @@ for downstream primer design using MinHash-based approximate clustering.
     parser.add_argument("--name", required=True, help="Target name")
     parser.add_argument("--probe-regions", dest="probe_regions", default=None,
                        help="Output TSV of conserved probe regions (optional)")
+    parser.add_argument("--window-seqs", dest="window_seqs", default=None,
+                       help="Output FASTA of ALL sequences trimmed to the design window (optional)")
     parser.set_defaults(func=run)
 
 
@@ -196,27 +198,112 @@ class NearNeighborLookup:
 
 # --- Clustering logic ---
 
-def find_low_gap_window(seqs, window_size=200):
-    """Find window position with minimum gap content."""
+def _column_entropy(seqs, col_idx):
+    """Compute Shannon entropy for a single MSA column (ignoring gaps)."""
+    bases = [s[col_idx].upper() for s in seqs if s[col_idx] != '-']
+    if not bases:
+        return 0.0
+    n = len(bases)
+    counts = {}
+    for b in bases:
+        counts[b] = counts.get(b, 0) + 1
+    ent = 0.0
+    for c in counts.values():
+        p = c / n
+        if p > 0:
+            ent -= p * np.log2(p)
+    return ent
+
+
+def find_best_design_window(seqs, window_size=500, primer_len=20, min_gc=0.35):
+    """Find window position that maximizes conservation-weighted primer coverage.
+
+    For each column, compute: gap-free fraction × identity fraction.
+    This rewards positions where many sequences are gap-free AND share the
+    same base. For each primer position (primer_len bp), the score is the
+    mean of these per-column scores. The design window score is the sum
+    across all primer positions in the window.
+
+    Only considers windows where the consensus GC content >= min_gc.
+    Falls back to no GC filter if no window passes.
+    """
     if not seqs:
         return 0
 
     seq_len = len(seqs[0])
-    best_pos = 0
-    min_gaps = float('inf')
+    n_seqs = len(seqs)
 
-    # BUG FIX: Off-by-one error - original code missed the last valid window position.
-    # For a 30bp sequence with window_size=20, last valid position is 10 (0-indexed).
-    # Original range(0, 10) checked 0-9, missing position 10.
-    # Fixed range(0, 11) checks 0-10 (all valid positions).
-    # Original:
-    # for pos in range(0, max(1, seq_len - window_size)):
-    for pos in range(0, max(1, seq_len - window_size + 1)):
-        gaps = sum(s[pos:pos + window_size].count('-') for s in seqs)
-        if gaps < min_gaps:
-            min_gaps = gaps
-            best_pos = pos
+    # Pre-compute per-column gap/N flags as numpy array (n_seqs x seq_len)
+    gap_matrix = np.array([[c in ('-', 'N', 'n') for c in s] for s in seqs], dtype=np.int8)
 
+    # Per-column conservation-weighted score:
+    # gap_free_frac × identity_frac (both relative to n_seqs)
+    from collections import Counter as _Counter
+    col_scores = np.zeros(seq_len, dtype=np.float64)
+    consensus = []
+    for col in range(seq_len):
+        col_bases = [s[col].upper() for s in seqs if s[col] not in ('-', 'N', 'n')]
+        if col_bases:
+            cnt = _Counter(col_bases)
+            most_common_count = cnt.most_common(1)[0][1]
+            consensus.append(cnt.most_common(1)[0][0])
+            gap_free_frac = len(col_bases) / n_seqs
+            identity_frac = most_common_count / len(col_bases)
+            col_scores[col] = gap_free_frac * identity_frac
+        else:
+            consensus.append('N')
+            col_scores[col] = 0.0
+
+    # For each primer position, compute mean col_score across primer_len columns
+    max_primer_start = seq_len - primer_len + 1
+    if max_primer_start <= 0:
+        return 0
+
+    cum_col = np.concatenate([[0.0], np.cumsum(col_scores)])
+    primer_scores = (cum_col[primer_len:max_primer_start + primer_len] -
+                     cum_col[:max_primer_start]) / primer_len  # shape: (max_primer_start,)
+
+    # Score each design window by sum of primer_scores
+    n_primer_positions = window_size - primer_len + 1
+    if n_primer_positions <= 0:
+        return 0
+
+    cum_ps = np.concatenate([[0.0], np.cumsum(primer_scores)])
+    max_window_start = min(max_primer_start - n_primer_positions + 1, seq_len - window_size + 1)
+    if max_window_start <= 0:
+        return 0
+
+    window_scores = cum_ps[n_primer_positions:max_window_start + n_primer_positions] - cum_ps[:max_window_start]
+
+    # GC filtering
+    gc_arr = np.array([1.0 if b in 'GC' else 0.0 for b in consensus])
+    cum_gc = np.concatenate([[0.0], np.cumsum(gc_arr)])
+
+    # Find best window with GC filter
+    best_score = -1.0
+    best_pos = -1
+    best_gc = 0.0
+    for w in range(max_window_start):
+        gc = (cum_gc[w + window_size] - cum_gc[w]) / window_size
+        if gc < min_gc:
+            continue
+        score = window_scores[w]
+        if score > best_score:
+            best_score = score
+            best_pos = w
+            best_gc = gc
+
+    max_possible = n_primer_positions  # each primer position can score at most 1.0
+    if best_pos >= 0:
+        print(f"  Design window: pos {best_pos}, conservation score {best_score:.1f}/{max_possible}, GC={best_gc:.3f}")
+        return best_pos
+
+    # Fallback: no GC filter
+    best_pos = int(np.argmax(window_scores))
+    best_score = window_scores[best_pos]
+    fb_gc = (cum_gc[best_pos + window_size] - cum_gc[best_pos]) / window_size
+    print(f"  WARNING: No window with GC>={min_gc}. Fallback: pos {best_pos}, "
+          f"conservation score {best_score:.1f}/{max_possible}, GC={fb_gc:.3f}")
     return best_pos
 
 
@@ -375,8 +462,8 @@ def select_medoids(seqs, clusters, signatures, family):
 def run(args):
     """Run the pick-representatives command."""
     params = parse_params(args.param_file)
-    num_reps = int(params.get("NUM_REPRESENTATIVE_SEQS", 5))
-    window_size = int(params.get("DESIGN_WINDOW", 200))
+    min_cluster_frac = float(params.get("MIN_CLUSTER_FRAC", 0.05))
+    window_size = int(params.get("DESIGN_WINDOW", 500))
     kmer_size = int(params.get("MINHASH_KMER_SIZE", 10))
 
     print(f"Selecting representative sequences from {args.input}...")
@@ -387,30 +474,44 @@ def run(args):
     seqs = [str(r.seq) for r in records]
     names = [r.id for r in records]
 
-    if len(seqs) <= num_reps:
-        # Fewer sequences than requested representatives - return all
+    primer_len = int(params.get("PRIMER_LEN_MIN", 20))
+
+    if len(seqs) <= 2:
+        # Fewer sequences than requested representatives - return all (window-trimmed)
+        window_start = find_best_design_window(seqs, window_size, primer_len)
+        trimmed = trim_to_window(seqs, window_start, window_size)
         with open(args.output, "w") as out:
-            for r in records:
-                out.write(f">{r.id}\n{str(r.seq).replace('-', '')}\n")
+            for r, t in zip(records, trimmed):
+                out.write(f">{r.id}\n{t}\n")
         # Write empty probe regions (no MSA-based filtering needed)
         if getattr(args, 'probe_regions', None):
             with open(args.probe_regions, "w") as f:
                 f.write("start\tend\tnum_variable_sites\n")
-        print(f"Wrote {len(seqs)} sequences (all) to {args.output}")
+        # Window seqs = same as output when all seqs are representatives
+        if getattr(args, 'window_seqs', None):
+            with open(args.window_seqs, "w") as out:
+                for r, t in zip(records, trimmed):
+                    out.write(f">{r.id}\n{t}\n")
+        print(f"Wrote {len(seqs)} sequences (all, window-trimmed) to {args.output}")
         return
 
-    # Find low-gap window and trim
-    window_start = find_low_gap_window(seqs, window_size)
+    # Find best design window and trim
+    window_start = find_best_design_window(seqs, window_size, primer_len)
     trimmed = trim_to_window(seqs, window_start, window_size)
 
-    # Filter out empty sequences
-    valid_indices = [i for i, s in enumerate(trimmed) if len(s) >= kmer_size]
+    # Filter out empty sequences and N-rich sequences (>10% N)
+    def _is_valid_trimmed(s):
+        if len(s) < kmer_size:
+            return False
+        n_count = s.upper().count('N')
+        return n_count / len(s) <= 0.1
+    valid_indices = [i for i, s in enumerate(trimmed) if _is_valid_trimmed(s)]
     if not valid_indices:
-        # Fall back to first num_reps sequences
+        # Fall back to first num_reps sequences (window-trimmed)
         with open(args.output, "w") as out:
             for i in range(min(num_reps, len(records))):
                 r = records[i]
-                out.write(f">{r.id}\n{str(r.seq).replace('-', '')}\n")
+                out.write(f">{r.id}\n{trimmed[i]}\n")
         if getattr(args, 'probe_regions', None):
             with open(args.probe_regions, "w") as f:
                 f.write("start\tend\tnum_variable_sites\n")
@@ -419,26 +520,107 @@ def run(args):
 
     valid_trimmed = [trimmed[i] for i in valid_indices]
 
+    # Subsample if too many sequences for O(n²) clustering
+    MAX_CLUSTER_SEQS = 500
+    if len(valid_trimmed) > MAX_CLUSTER_SEQS:
+        rng = random.Random(42)
+        sample_local = sorted(rng.sample(range(len(valid_trimmed)), MAX_CLUSTER_SEQS))
+        sampled_trimmed = [valid_trimmed[i] for i in sample_local]
+        sampled_valid_indices = [valid_indices[i] for i in sample_local]
+        print(f"  Subsampled {len(valid_trimmed)} -> {MAX_CLUSTER_SEQS} sequences for clustering")
+    else:
+        sampled_trimmed = valid_trimmed
+        sampled_valid_indices = valid_indices
+
     # Cluster and select medoids
     family = MinHashFamily(kmer_size=kmer_size, N=100)
     h = family.make_h()
-    signatures = [h(s) for s in valid_trimmed]
+    signatures = [h(s) for s in sampled_trimmed]
 
-    clusters = cluster_sequences(valid_trimmed, kmer_size=kmer_size)
-    medoid_local = select_medoids(valid_trimmed, clusters, signatures, family)
+    clusters = cluster_sequences(sampled_trimmed, kmer_size=kmer_size)
+    medoid_local = select_medoids(sampled_trimmed, clusters, signatures, family)
+
+    # Compute cluster sizes and fractions
+    from collections import Counter as _Counter
+    cluster_sizes = _Counter(clusters)
+    total_seqs_clustered = len(clusters)
+
+    # Map medoid local index → cluster label → fraction
+    medoid_cluster_frac = {}
+    for ml in medoid_local:
+        cluster_label = clusters[ml]
+        frac = cluster_sizes[cluster_label] / total_seqs_clustered
+        medoid_cluster_frac[ml] = round(frac, 4)
 
     # Map back to original indices
-    medoid_indices = [valid_indices[i] for i in medoid_local]
+    medoid_indices = [sampled_valid_indices[i] for i in medoid_local]
 
-    # Limit to num_reps
-    if len(medoid_indices) > num_reps:
-        medoid_indices = medoid_indices[:num_reps]
+    # Sort medoids by cluster size (largest first)
+    sorted_pairs = sorted(
+        zip(medoid_local, medoid_indices),
+        key=lambda pair: medoid_cluster_frac[pair[0]],
+        reverse=True,
+    )
+    medoid_local = [p[0] for p in sorted_pairs]
+    medoid_indices = [p[1] for p in sorted_pairs]
 
-    # Write output
+    # Select medoids whose cluster represents >= min_cluster_frac of sequences
+    selected_ml = []
+    selected_idx = []
+    excluded = []
+    for ml, oi in zip(medoid_local, medoid_indices):
+        frac = medoid_cluster_frac[ml]
+        if frac >= min_cluster_frac:
+            selected_ml.append(ml)
+            selected_idx.append(oi)
+        else:
+            excluded.append((records[oi].id, frac))
+    # Always keep at least 1 medoid (the largest cluster)
+    if not selected_ml:
+        selected_ml = [medoid_local[0]]
+        selected_idx = [medoid_indices[0]]
+    medoid_local = selected_ml
+    medoid_indices = selected_idx
+
+    total_coverage = sum(medoid_cluster_frac[ml] for ml in medoid_local)
+
+    # Print cluster info
+    print(f"  Clusters: {len(cluster_sizes)}, selected {len(medoid_indices)} medoids "
+          f"(coverage={total_coverage:.4f}, threshold={min_cluster_frac})")
+    for ml, oi in zip(medoid_local, medoid_indices):
+        print(f"    {records[oi].id}: cluster_frac={medoid_cluster_frac[ml]:.4f}")
+    if excluded:
+        print(f"  Excluded {len(excluded)} small clusters (<{min_cluster_frac}):")
+        for name, frac in excluded:
+            print(f"    {name}: cluster_frac={frac:.4f}")
+
+    # Build consensus from design window (majority-rule, non-gap bases)
+    consensus_seq = []
+    for col in range(window_start, min(window_start + window_size, len(seqs[0]))):
+        bases = [s[col].upper() for s in seqs if s[col] not in ('-', 'N', 'n')]
+        if bases:
+            consensus_seq.append(_Counter(bases).most_common(1)[0][0])
+    consensus_seq = ''.join(consensus_seq)
+
+    # Write output (window-trimmed sequences, not full length)
+    # Medoids + consensus, with cluster_frac in header
     with open(args.output, "w") as out:
-        for i in medoid_indices:
+        for ml, i in zip(medoid_local, medoid_indices):
             r = records[i]
-            out.write(f">{r.id}\n{str(r.seq).replace('-', '')}\n")
+            frac = medoid_cluster_frac[ml]
+            out.write(f">{r.id} cluster_frac={frac}\n{trimmed[i]}\n")
+        out.write(f">{args.name}_consensus cluster_frac=0\n{consensus_seq}\n")
+
+    # Write ALL sequences trimmed to window (for bowtie2 indexing in quick mode)
+    # Include all non-empty sequences, not just valid_indices (no N% or length filter)
+    if getattr(args, 'window_seqs', None):
+        with open(args.window_seqs, "w") as out:
+            count = 0
+            for i, r in enumerate(records):
+                if len(trimmed[i]) > 0:
+                    out.write(f">{r.id}\n{trimmed[i]}\n")
+                    count += 1
+        print(f"Wrote {count} window-trimmed sequences to {args.window_seqs}")
 
     # Compute conserved probe regions if requested
     if getattr(args, 'probe_regions', None):
@@ -460,14 +642,15 @@ def run(args):
             print(f"Found {len(regions)} conserved probe region(s) covering {total_bp} bp")
         else:
             print(
-                f"[ERROR] No conserved probe regions found with current settings:\n"
+                f"[WARNING] No conserved probe regions found with current settings:\n"
                 f"  PROBE_CONSERVATION_THRESHOLD = {probe_params['conservation_threshold']}\n"
                 f"  PROBE_MAX_MISMATCHES = {probe_params['max_mismatches']}\n"
-                f"  Try lowering PROBE_CONSERVATION_THRESHOLD (e.g. 0.6) or "
+                f"  Probe design will be skipped for this target.\n"
+                f"  To enable probes, try lowering PROBE_CONSERVATION_THRESHOLD (e.g. 0.6) or "
                 f"increasing PROBE_MAX_MISMATCHES (e.g. 3-4) in params.txt.",
                 file=sys.stderr,
             )
-            sys.exit(1)
 
     runtime = time.time() - start_time
-    print(f"Wrote {len(medoid_indices)} representative sequences to {args.output} ({runtime:.1f} sec)")
+    n_written = len(medoid_indices) + 1  # medoids + consensus
+    print(f"Wrote {n_written} representative sequences ({len(medoid_indices)} medoids + 1 consensus) to {args.output} ({runtime:.1f} sec)")

@@ -195,13 +195,13 @@ def run(args):
             r_starts_arr, r_ids_arr, r_lens_arr = rev_data
 
             # Binary search for candidate reverse primers
-            # amplicon_len = r_start + r_len - st_f + 1
+            # amplicon_len = r_start + r_len - st_f
             # Need: minl <= amplicon_len <= maxl
             # Use conservative bounds (min/max r_len) then exact-filter
             min_r_len = r_lens_arr[0] if len(r_lens_arr) == 1 else r_lens_arr.min()
             max_r_len = r_lens_arr[0] if len(r_lens_arr) == 1 else r_lens_arr.max()
-            lo_bound = st_f - 1 + minl - max_r_len
-            hi_bound = st_f - 1 + maxl - min_r_len
+            lo_bound = st_f + minl - max_r_len
+            hi_bound = st_f + maxl - min_r_len
 
             lo_idx = int(np.searchsorted(r_starts_arr, lo_bound, side='left'))
             hi_idx = int(np.searchsorted(r_starts_arr, hi_bound, side='right'))
@@ -213,7 +213,7 @@ def run(args):
             cand_starts = r_starts_arr[lo_idx:hi_idx]
             cand_ids = r_ids_arr[lo_idx:hi_idx]
             cand_lens = r_lens_arr[lo_idx:hi_idx]
-            amp_lens = cand_starts + cand_lens - st_f + 1
+            amp_lens = cand_starts + cand_lens - st_f
             valid_mask = (amp_lens >= minl) & (amp_lens <= maxl)
 
             if not valid_mask.any():

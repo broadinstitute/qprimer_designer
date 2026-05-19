@@ -86,8 +86,7 @@ def _build_fetch_command(
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FASTA_DIR = PROJECT_ROOT / "target_seqs" / "original"
-FINAL_DIR = PROJECT_ROOT / "final"
-EVALUATE_DIR = PROJECT_ROOT / "evaluate"
+RUNS_DIR = PROJECT_ROOT / "runs"
 SCHEMATIC_PATH = PROJECT_ROOT / "schematic.png"
 
 # Ensure the upload directory exists
@@ -155,7 +154,7 @@ def _reset_workflow_state():
                 "eval_method", "eval_for", "eval_rev", "eval_pro",
                 "_eval_for_saved", "_eval_rev_saved", "_eval_pro_saved",
                 "eval_pset_path", "eval_pset_upload",
-                "mode", "design_mode", "probe_enabled",
+                "mode", "design_mode", "probe_enabled", "_probe_enabled_saved",
                 "run_id", "design_run_id",
                 "monitor_spreadsheet_url", "monitor_spreadsheet_data",
                 "monitor_query_ids", "monitor_email_recipients",
@@ -167,6 +166,29 @@ def _reset_workflow_state():
                 "monitor_resume_run"):
         st.session_state.pop(key, None)
     _clear_pipeline_state()
+
+
+def _save_fasta_bytes(path: Path, data: bytes) -> None:
+    """Write FASTA bytes ensuring the file ends with a newline.
+
+    Some tools (e.g. bowtie2) silently drop the last base of the last
+    sequence when a FASTA file does not end with a newline character.
+    """
+    if data and not data.endswith(b"\n"):
+        data += b"\n"
+    path.write_bytes(data)
+
+
+def _pset_has_probe(fasta_path: str) -> bool:
+    """Check if a FASTA file contains probe entries (*_pro)."""
+    try:
+        with open(fasta_path) as f:
+            for line in f:
+                if line.startswith(">") and line.strip().endswith("_pro"):
+                    return True
+    except (FileNotFoundError, OSError):
+        pass
+    return False
 
 
 def _current_page() -> str:
@@ -384,25 +406,28 @@ def _format_size(nbytes: int) -> str:
 # Default parameter values (matches params.txt.template)
 DEFAULT_PARAMS: dict = {
     "DESIGN_WINDOW": 500,
-    "MAX_PRIMER_CANDIDATES": 10000,
     "TM_MIN": 55,
     "TM_MAX": 60,
     "GC_MAX": 60,
     "DG_MIN": -6,
     "PRIMER_LEN_MIN": 19,
     "PRIMER_LEN_MAX": 21,
-    "TILING_STEP": 5,
+    "QUICK_N_POSITIONS": 100,
+    "QUICK_N_VARIANTS": 10,
+    "QUICK_COV_MIN": 1.0,
+    "QUICK_ACT_MIN": 1.0,
     "PROBE_LEN_MIN": 24,
-    "PROBE_LEN_MAX": 28,
+    "PROBE_LEN_MAX": 26,
     "PROBE_TM_MIN": 65,
-    "PROBE_TM_MAX": 70,
+    "PROBE_TM_MAX": 75,
     "PROBE_GC_MAX": 60,
     "PROBE_DG_MIN": -8,
-    "PROBE_HOMOPOLYMER_MAX": 3,
-    "PROBE_AVOID_5PRIME_G": True,
+    "PROBE_HOMOPOLYMER_MAX": 4,
+    "PROBE_AVOID_5PRIME_G": False,
     "PROBE_CONSERVATION_THRESHOLD": 0.8,
     "PROBE_MAX_MISMATCHES": 2,
-    "PROBE_AMPLICON_BUFFER": 20,
+    "PROBE_MAX_INDELS": 0,
+    "PROBE_AMPLICON_BUFFER": 15,
     "MIN_PROBES_PER_PAIR": 1,
     "MAX_PROBES_PER_PAIR": 5,
     "AMPLEN_MIN": 60,
@@ -470,7 +495,7 @@ def _render_sidebar():
         if st.button(":material/public: Global Virus Distribution", key="sidebar_virus_map", type="tertiary"):
             _navigate("virus_map")
             st.rerun()
-        if FINAL_DIR.exists() and any(FINAL_DIR.iterdir()):
+        if RUNS_DIR.exists() and any(RUNS_DIR.iterdir()):
             if st.button(":material/stacks: Past Results", key="sidebar_results", type="tertiary"):
                 _navigate("results")
                 st.rerun()
@@ -502,8 +527,9 @@ def _render_sidebar():
                 st.markdown(f"**Off-targets:** {', '.join(off_targets) if off_targets else '—'}")
 
                 # Probe
-                if "probe_enabled" in st.session_state:
-                    probe = st.session_state["probe_enabled"]
+                if "probe_enabled" in st.session_state or "_probe_enabled_saved" in st.session_state:
+                    probe = st.session_state.get("probe_enabled",
+                                                  st.session_state.get("_probe_enabled_saved", False))
                     st.markdown(f"**Probe:** {'On' if probe else 'Off'}")
                 else:
                     st.markdown("**Probe:** —")
@@ -1273,7 +1299,7 @@ def _tab_files():
                 if not dest:
                     st.error(f"Invalid filename: {f.name}")
                     continue
-                dest.write_bytes(_bz2.decompress(f.getvalue()))
+                _save_fasta_bytes(dest, _bz2.decompress(f.getvalue()))
             elif p.suffix.lower() not in (".fa", ".fasta", ".fna"):
                 st.error(f"Unsupported extension: {p.suffix}")
                 continue
@@ -1283,7 +1309,7 @@ def _tab_files():
                 if not dest:
                     st.error(f"Invalid filename: {f.name}")
                     continue
-                dest.write_bytes(f.getvalue())
+                _save_fasta_bytes(dest, f.getvalue())
             # Remove any leftover files with other FASTA extensions
             for ext in (".fasta", ".fna"):
                 old = FASTA_DIR / (p.stem + ext)
@@ -1396,7 +1422,7 @@ def _tab_configuration():
                     pset_dir = PROJECT_ROOT / "evaluate"
                     pset_dir.mkdir(parents=True, exist_ok=True)
                     pset_path = pset_dir / pset_upload.name
-                    pset_path.write_bytes(pset_upload.getvalue())
+                    _save_fasta_bytes(pset_path, pset_upload.getvalue())
                     st.session_state["eval_pset_path"] = str(pset_path)
                     st.session_state["_eval_pset_saved"] = fid
                 st.success(f"Saved {pset_upload.name}")
@@ -1444,19 +1470,54 @@ def _tab_parameters(mode: str = "design"):
                 "OFFLEN_MAX", value=int(p["OFFLEN_MAX"]),
                 min_value=30, step=100, key="p_off_max",
             )
+
+        # Show probe cutoffs when a probe sequence is provided
+        eval_pro = st.session_state.get("_eval_pro_saved", "") or st.session_state.get("eval_pro", "")
+        eval_pset = st.session_state.get("eval_pset_path", "")
+        has_probe_seq = bool(eval_pro) or (bool(eval_pset) and _pset_has_probe(eval_pset))
+        if has_probe_seq:
+            with st.expander("Probe filtering", expanded=True):
+                c15, c16 = st.columns(2)
+                p["PROBE_MAX_MISMATCHES"] = c15.number_input(
+                    "PROBE_MAX_MISMATCHES", value=int(p["PROBE_MAX_MISMATCHES"]),
+                    min_value=0, max_value=10, key="p_eval_probe_mm",
+                    help="Maximum mismatches for probe to count as matched",
+                )
+                p["PROBE_MAX_INDELS"] = c16.number_input(
+                    "PROBE_MAX_INDELS", value=int(p["PROBE_MAX_INDELS"]),
+                    min_value=0, max_value=5, key="p_eval_probe_indel",
+                    help="Maximum indels for probe to count as matched",
+                )
         return
+
+    # Check if any selected target has >1 sequence (quick mode)
+    selected_targets = st.session_state.get("targets", [])
+    is_quick = any(
+        _fasta_info(t).get("seqs", 0) > 1 for t in selected_targets
+    ) if selected_targets else False
 
     # --- Primer generation ---
     with st.expander("Primer generation", expanded=True):
-        p["DESIGN_WINDOW"] = st.number_input(
-            "Alignment window size (bp)", value=int(p["DESIGN_WINDOW"]),
-            min_value=50, step=50, key="p_design_window",
-            help="Window size for dividing the MSA when selecting representative sequences.",
-        )
-        p["MAX_PRIMER_CANDIDATES"] = st.number_input(
-            "MAX_PRIMER_CANDIDATES", value=int(p["MAX_PRIMER_CANDIDATES"]),
-            min_value=100, step=1000, key="p_max_cand",
-        )
+        if is_quick:
+            st.caption("Multi-sequence target detected — using quick design mode.")
+            c_q1, c_q2 = st.columns(2)
+            p["QUICK_N_POSITIONS"] = c_q1.number_input(
+                "MSA sites to explore", value=int(p["QUICK_N_POSITIONS"]),
+                min_value=10, max_value=1000, step=10, key="p_quick_n_pos",
+                help="Number of top conserved amplicon positions to evaluate across the MSA.",
+            )
+            p["QUICK_N_VARIANTS"] = c_q2.number_input(
+                "Primer variants per site", value=int(p["QUICK_N_VARIANTS"]),
+                min_value=1, max_value=50, step=1, key="p_quick_n_var",
+                help="Number of wobble-optimized primer variants per position per direction.",
+            )
+        else:
+            p["DESIGN_WINDOW"] = st.number_input(
+                "Alignment window size (bp)", value=int(p["DESIGN_WINDOW"]),
+                min_value=50, step=50, key="p_design_window",
+                help="Window size for dividing the MSA when selecting representative sequences.",
+            )
+
         c1, c2 = st.columns(2)
         p["TM_MIN"] = c1.number_input(
             "TM_MIN", value=float(p["TM_MIN"]), step=0.5, key="p_tm_min",
@@ -1486,10 +1547,6 @@ def _tab_parameters(mode: str = "design"):
         if p["PRIMER_LEN_MIN"] > p["PRIMER_LEN_MAX"]:
             st.warning("PRIMER_LEN_MIN should be <= PRIMER_LEN_MAX")
 
-        p["TILING_STEP"] = st.number_input(
-            "TILING_STEP", value=int(p["TILING_STEP"]),
-            min_value=1, max_value=50, key="p_tiling",
-        )
 
     # --- Probe generation ---
     probe_enabled = st.session_state.get("probe_enabled", False)
@@ -1538,19 +1595,9 @@ def _tab_parameters(mode: str = "design"):
             )
 
         with st.expander("Probe mode configuration", expanded=False):
-            p["PROBE_CONSERVATION_THRESHOLD"] = st.number_input(
-                "PROBE_CONSERVATION_THRESHOLD",
-                value=float(p["PROBE_CONSERVATION_THRESHOLD"]),
-                min_value=0.0, max_value=1.0, step=0.05, key="p_probe_cons",
-                help="Minimum fraction of sequences sharing the same base at a column for it to be considered conserved.",
-            )
             p["PROBE_MAX_MISMATCHES"] = st.number_input(
                 "PROBE_MAX_MISMATCHES", value=int(p["PROBE_MAX_MISMATCHES"]),
                 min_value=0, max_value=10, key="p_probe_mm",
-            )
-            p["PROBE_AMPLICON_BUFFER"] = st.number_input(
-                "PROBE_AMPLICON_BUFFER (nt)", value=int(p["PROBE_AMPLICON_BUFFER"]),
-                min_value=0, max_value=100, key="p_probe_buf",
             )
             c9, c10 = st.columns(2)
             p["MIN_PROBES_PER_PAIR"] = c9.number_input(
@@ -1592,6 +1639,18 @@ def _tab_parameters(mode: str = "design"):
             "NUM_TOP_SENSITIVITY", value=int(p["NUM_TOP_SENSITIVITY"]),
             min_value=10, step=10, key="p_num_top",
         )
+        if is_quick:
+            c_ev1, c_ev2 = st.columns(2)
+            p["QUICK_COV_MIN"] = c_ev1.number_input(
+                "Coverage goal", value=float(p.get("QUICK_COV_MIN", 1.0)),
+                min_value=0.0, max_value=1.0, step=0.05, key="p_quick_cov",
+                help="Minimum coverage fraction for early stopping (1.0 = all sequences).",
+            )
+            p["QUICK_ACT_MIN"] = c_ev2.number_input(
+                "Activity goal", value=float(p.get("QUICK_ACT_MIN", 1.0)),
+                min_value=0.0, max_value=1.0, step=0.05, key="p_quick_act",
+                help="Minimum activity fraction for early stopping (1.0 = all sequences).",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1601,7 +1660,8 @@ def _tab_parameters(mode: str = "design"):
 def _build_command() -> list[str]:
     """Build the snakemake command list from current session state."""
     mode = st.session_state.get("mode", "Singleplex")
-    probe = st.session_state.get("probe_enabled", False)
+    probe = st.session_state.get("probe_enabled",
+                                  st.session_state.get("_probe_enabled_saved", False))
     cores = st.session_state.get("cores", 1)
     dry_run = st.session_state.get("dry_run", False)
 
@@ -1671,7 +1731,8 @@ def _preflight_checks() -> list[str]:
 def _write_pipeline_files():
     """Write Snakefile and params.txt to project root."""
     mode = st.session_state.get("mode", "Singleplex")
-    probe = st.session_state.get("probe_enabled", False)
+    probe = st.session_state.get("probe_enabled",
+                                  st.session_state.get("_probe_enabled_saved", False))
 
     targets = st.session_state.get("targets", [])
     cross = st.session_state.get("cross", [])
@@ -1702,7 +1763,7 @@ def _write_pipeline_files():
 
 
 # Pipeline rule steps grouped for progress display
-_PIPELINE_RULES_DESIGN = [
+_PIPELINE_RULES_DESIGN_STANDARD = [
     ("make_MSA", "Building multiple sequence alignment"),
     ("pick_representative_seqs", "Selecting representative sequences"),
     ("generate_primers", "Generating primer candidates"),
@@ -1715,6 +1776,12 @@ _PIPELINE_RULES_DESIGN = [
     ("rescue_evaluate", "Rescue evaluation"),
     ("filter_primer_list", "Filtering and ranking primers"),
     ("check_coverage", "Checking primer coverage"),
+]
+
+_PIPELINE_RULES_DESIGN_QUICK = [
+    ("make_MSA", "Building multiple sequence alignment"),
+    ("quick_design_on_target", "Designing with AI"),
+    ("filter_primer_list", "Filtering and ranking primers"),
 ]
 
 _PIPELINE_RULES_EVALUATE = [
@@ -1731,7 +1798,12 @@ def _get_pipeline_rules() -> list[tuple[str, str]]:
     mode = st.session_state.get("mode", "Singleplex")
     if mode == "Evaluate":
         return _PIPELINE_RULES_EVALUATE
-    return _PIPELINE_RULES_DESIGN
+    # Check if any target has >1 sequence (quick mode)
+    targets = st.session_state.get("targets", [])
+    is_quick = any(_fasta_info(t).get("seqs", 0) > 1 for t in targets) if targets else False
+    if is_quick:
+        return _PIPELINE_RULES_DESIGN_QUICK
+    return _PIPELINE_RULES_DESIGN_STANDARD
 
 
 def _get_all_targets() -> list[str]:
@@ -1747,8 +1819,8 @@ _PER_TARGET_RULES = {
     "build_index", "align", "align_probes", "parse_map", "parse_probe_mapping",
     "process_map", "check_coverage", "prepare_input", "evaluate",
     "make_MSA", "pick_representative_seqs", "generate_primers",
-    "resolve_target_seq", "choose_target_seq", "generate_probes",
-    "filter_primer_list", "build_final_output",
+    "resolve_target_seq", "generate_probes",
+    "filter_primer_list", "build_final_output", "quick_design_on_target",
 }
 
 
@@ -1769,7 +1841,8 @@ def _save_run_config():
         "targets": st.session_state.get("targets", []),
         "cross_reactivity": st.session_state.get("cross", []),
         "host": st.session_state.get("host", []),
-        "probe_enabled": st.session_state.get("probe_enabled", False),
+        "probe_enabled": st.session_state.get("probe_enabled",
+                                              st.session_state.get("_probe_enabled_saved", False)),
         "cores": st.session_state.get("cores", 1),
     }
 
@@ -1805,10 +1878,7 @@ def _save_run_config():
     config["parameters"] = dict(st.session_state.get("params", {}))
 
     # Determine output directory
-    if mode == "Evaluate":
-        out_dir = PROJECT_ROOT / "evaluate" / run_id
-    else:
-        out_dir = PROJECT_ROOT / "final" / run_id
+    out_dir = RUNS_DIR / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Custom JSON serializer for dates
@@ -1902,9 +1972,17 @@ def _tab_run():
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        # Ensure the conda env bin dir is on PATH (for sam2pairwise, bowtie2, etc.)
+        # Use snakemake's location to find the correct env bin dir, since
+        # CONDA_PREFIX may point to the base env rather than qprimer-designer.
+        snakemake_path = _find_tool("snakemake")
         env_bin = str(Path(sys.executable).parent)
-        if env_bin not in env.get("PATH", ""):
-            env["PATH"] = env_bin + os.pathsep + env.get("PATH", "")
+        extra_dirs = [env_bin]
+        if snakemake_path:
+            extra_dirs.append(str(Path(snakemake_path).parent))
+        for d in extra_dirs:
+            if d and d not in env.get("PATH", ""):
+                env["PATH"] = d + os.pathsep + env.get("PATH", "")
 
         cmd = _build_command()
 
@@ -2582,13 +2660,13 @@ def _tab_results():
 
     # Allow browsing past runs
     past_runs = []
-    if workflow == "design" and FINAL_DIR.exists():
+    if workflow == "design" and RUNS_DIR.exists():
         past_runs = sorted(
-            [d.name for d in FINAL_DIR.iterdir() if d.is_dir()],
+            [d.name for d in RUNS_DIR.iterdir() if d.is_dir()],
             reverse=True,
         )
     elif workflow in ("evaluate", "monitor"):
-        browse_dir = MONITOR_DIR if workflow == "monitor" else EVALUATE_DIR
+        browse_dir = MONITOR_DIR if workflow == "monitor" else RUNS_DIR
         if browse_dir.exists():
             past_runs = sorted(
                 [d.name for d in browse_dir.iterdir() if d.is_dir()],
@@ -2614,13 +2692,14 @@ def _tab_results():
     if workflow == "design":
         st.subheader("Final output files")
 
-        if run_id and (FINAL_DIR / run_id).exists():
-            csvs = sorted((FINAL_DIR / run_id).glob("**/*.csv"), reverse=True)
+        run_dir = RUNS_DIR / run_id if run_id else None
+        if run_dir and run_dir.exists():
+            csvs = sorted(run_dir.glob("*_final.csv"), reverse=True)
         else:
             csvs = []
 
         if csvs:
-            csv_labels = [str(c.relative_to(FINAL_DIR / run_id)) for c in csvs]
+            csv_labels = [c.name for c in csvs]
 
             selected_csv_label = st.selectbox(
                 "Select CSV to view",
@@ -2630,7 +2709,7 @@ def _tab_results():
             if selected_csv_label:
                 import pandas as pd
 
-                csv_path = FINAL_DIR / run_id / selected_csv_label
+                csv_path = run_dir / selected_csv_label
                 try:
                     df = pd.read_csv(csv_path)
                     st.write(f"**{len(df)} primer pairs**")
@@ -2681,7 +2760,7 @@ def _tab_results():
             if tree_target:
                 msa_path = MSA_DIR / f"{tree_target}.aln"
                 meta_path = FASTA_DIR / f"{tree_target}_metadata.csv"
-                tree_dir = FINAL_DIR / run_id / "trees" if run_id else None
+                tree_dir = run_dir / "trees" if run_dir else None
 
                 if not msa_path.exists():
                     st.warning(f"MSA file not found: `{msa_path.name}`. Run the pipeline first.")
@@ -2751,14 +2830,13 @@ def _tab_results():
                                 covered_ids = None
                                 with ctrl_col:
                                     # Find eval.re files for this target
-                                    outputs_dir = PROJECT_ROOT / "outputs"
-                                    eval_re_files = sorted(outputs_dir.glob(
+                                    eval_re_files = sorted(run_dir.glob(
                                         f"*{tree_target}*.eval.re"
-                                    )) if outputs_dir.exists() else []
+                                    )) if run_dir and run_dir.exists() else []
 
                                     if eval_re_files and csvs:
                                         import pandas as pd
-                                        csv_path = FINAL_DIR / run_id / csv_labels[0]
+                                        csv_path = run_dir / csv_labels[0]
                                         final_df = pd.read_csv(csv_path)
                                         if len(final_df) > 0:
                                             pair_options = [
@@ -2820,8 +2898,8 @@ def _tab_results():
 
         if workflow == "monitor" and run_id and (MONITOR_DIR / run_id).exists():
             xlsx_files = sorted((MONITOR_DIR / run_id).glob("*.xlsx"), reverse=True)
-        elif run_id and (EVALUATE_DIR / run_id).exists():
-            xlsx_files = sorted((EVALUATE_DIR / run_id).rglob("*.xlsx"), reverse=True)
+        elif run_id and (RUNS_DIR / run_id).exists():
+            xlsx_files = sorted((RUNS_DIR / run_id).rglob("*.xlsx"), reverse=True)
         else:
             xlsx_files = []
 
@@ -3032,7 +3110,7 @@ def _page_select_target():
                 if not dest:
                     st.error(f"Invalid filename: {f.name}")
                     continue
-                dest.write_bytes(f.getvalue())
+                _save_fasta_bytes(dest, f.getvalue())
                 for ext in (".fasta", ".fna"):
                     old = FASTA_DIR / (p.stem + ext)
                     if old.exists():
@@ -3458,7 +3536,7 @@ def _page_select_offtarget():
                     if not dest:
                         st.error(f"Invalid filename: {f.name}")
                         continue
-                    dest.write_bytes(f.getvalue())
+                    _save_fasta_bytes(dest, f.getvalue())
                     for ext in (".fasta", ".fna"):
                         old = FASTA_DIR / (p.stem + ext)
                         if old.exists():
@@ -3527,7 +3605,7 @@ def _page_select_offtarget():
                 if not dest:
                     st.error(f"Invalid filename: {f.name}")
                     continue
-                dest.write_bytes(f.getvalue())
+                _save_fasta_bytes(dest, f.getvalue())
                 for ext in (".fasta", ".fna"):
                     old = FASTA_DIR / (p.stem + ext)
                     if old.exists():
@@ -3593,7 +3671,9 @@ def _config_design():
 
     st.divider()
 
-    # Probe design
+    # Probe design — restore saved value if widget key was cleared by navigation
+    if "probe_enabled" not in st.session_state and "_probe_enabled_saved" in st.session_state:
+        st.session_state["probe_enabled"] = st.session_state["_probe_enabled_saved"]
     st.checkbox("Enable probe design", key="probe_enabled")
 
     # Parameters
@@ -3608,6 +3688,9 @@ def _config_design():
             st.rerun()
     with col_cont:
         if st.button("Continue →", type="primary", use_container_width=True, key="design_cont"):
+            # Persist widget value before navigating — Streamlit clears
+            # widget-bound keys when the widget is no longer rendered.
+            st.session_state["_probe_enabled_saved"] = st.session_state.get("probe_enabled", False)
             st.session_state._run_page_fresh = True
             _navigate("run")
             st.rerun()
@@ -3651,7 +3734,7 @@ def _page_eval_primer():
             pset_dir = PROJECT_ROOT / "evaluate"
             pset_dir.mkdir(parents=True, exist_ok=True)
             pset_path = pset_dir / pset_upload.name
-            pset_path.write_bytes(pset_upload.getvalue())
+            _save_fasta_bytes(pset_path, pset_upload.getvalue())
             st.session_state["eval_pset_path"] = str(pset_path)
             st.success(f"Saved {pset_upload.name}")
 
@@ -4008,7 +4091,7 @@ def _page_monitor_primer():
             if _id not in saved:
                 pset_path = PROJECT_ROOT / "evaluate" / uploaded.name
                 pset_path.parent.mkdir(parents=True, exist_ok=True)
-                pset_path.write_bytes(uploaded.getvalue())
+                _save_fasta_bytes(pset_path, uploaded.getvalue())
                 st.session_state["monitor_pset_path"] = str(pset_path)
                 saved.add(_id)
             st.success(f"Uploaded: {uploaded.name}")
@@ -4432,9 +4515,14 @@ def _run_monitor():
 
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
+            snakemake_path = _find_tool("snakemake")
             env_bin = str(Path(sys.executable).parent)
-            if env_bin not in env.get("PATH", ""):
-                env["PATH"] = env_bin + os.pathsep + env.get("PATH", "")
+            extra_dirs = [env_bin]
+            if snakemake_path:
+                extra_dirs.append(str(Path(snakemake_path).parent))
+            for d in extra_dirs:
+                if d and d not in env.get("PATH", ""):
+                    env["PATH"] = d + os.pathsep + env.get("PATH", "")
 
             proc = subprocess.run(
                 eval_cmd,

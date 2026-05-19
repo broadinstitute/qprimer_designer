@@ -55,7 +55,7 @@ def get_primer_params(params: dict) -> dict:
     """Extract primer generation parameters from parsed params dict."""
     return {
         "max_num": int(params.get("MAX_PRIMER_CANDIDATES", 10000)),
-        "step": int(params.get("TILING_STEP", 1)),
+        "step": 1,
         "min_pri_len": int(params.get("PRIMER_LEN_MIN", 20)),
         "max_pri_len": int(params.get("PRIMER_LEN_MAX", 20)),
         "min_amp_len": int(params.get("AMPLEN_MIN", 60)),
