@@ -38,10 +38,8 @@ streamlit run gui/app.py
 The GUI uses a multi-page workflow with sidebar navigation:
 
 - **Home** — Entry point with getting started guide
-- **Global Virus Distribution** — Interactive choropleth map of virus sequence geographic distribution, with date filtering and country selection
 - **Design / Evaluate / Monitor** — Step-by-step workflows: select targets, configure parameters, run, and view results
 - **Past Results** — Browse and download outputs from previous runs
-- **Phylogenetic Tree** — Delphy tree with primer coverage overlay (tips colored by coverage status) and `.dphy` export
 
 ## Quick Start
 
@@ -101,9 +99,9 @@ adapt design --params params.txt --multiplex --probe
 adapt design --params params.txt --dry-run
 ```
 
-Output will be in a timestamped directory (or use `--runid` to specify) containing:
-- `final/` — CSV with primer candidates, scores, and coverage
-- For probe mode: probe sequences and mapping results
+Output will be in `runs/{run_id}/` (timestamped by default, or use `--runid` to specify):
+- `{target}_final.csv` — Primer candidates with scores and coverage
+- For probe mode: `{target}_probe.fa` and mapping results
 
 ### Evaluate Custom Primer Set
 
