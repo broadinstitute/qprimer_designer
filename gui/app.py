@@ -869,7 +869,7 @@ def _download_virus_map_data():
     status = st.empty()
     total = len(DEFAULT_VIRUSES)
 
-    for i, (name, taxid) in enumerate(DEFAULT_VIRUSES):
+    for i, (name, taxid, *_rest) in enumerate(DEFAULT_VIRUSES):
         out_path = VIRUS_MAP_DATA_DIR / f"{name}.json"
         if out_path.exists():
             progress.progress((i + 1) / total)
@@ -1551,7 +1551,7 @@ def _tab_parameters(mode: str = "design"):
     # --- Probe generation ---
     probe_enabled = st.session_state.get("probe_enabled", False)
     if probe_enabled:
-        with st.expander("Probe generation", expanded=True):
+        with st.expander("Probe", expanded=True):
             c5, c6 = st.columns(2)
             p["PROBE_LEN_MIN"] = c5.number_input(
                 "PROBE_LEN_MIN", value=int(p["PROBE_LEN_MIN"]),
@@ -1594,19 +1594,14 @@ def _tab_parameters(mode: str = "design"):
                 key="p_probe_5g",
             )
 
-        with st.expander("Probe mode configuration", expanded=False):
-            p["PROBE_MAX_MISMATCHES"] = st.number_input(
+            c9, c10 = st.columns(2)
+            p["PROBE_MAX_MISMATCHES"] = c9.number_input(
                 "PROBE_MAX_MISMATCHES", value=int(p["PROBE_MAX_MISMATCHES"]),
                 min_value=0, max_value=10, key="p_probe_mm",
             )
-            c9, c10 = st.columns(2)
-            p["MIN_PROBES_PER_PAIR"] = c9.number_input(
-                "MIN_PROBES_PER_PAIR", value=int(p["MIN_PROBES_PER_PAIR"]),
-                min_value=0, max_value=20, key="p_probe_min_pp",
-            )
-            p["MAX_PROBES_PER_PAIR"] = c10.number_input(
-                "MAX_PROBES_PER_PAIR", value=int(p["MAX_PROBES_PER_PAIR"]),
-                min_value=1, max_value=50, key="p_probe_max_pp",
+            p["PROBE_MAX_INDELS"] = c10.number_input(
+                "PROBE_MAX_INDELS", value=int(p["PROBE_MAX_INDELS"]),
+                min_value=0, max_value=10, key="p_probe_indels",
             )
 
     # --- Input preparation ---
