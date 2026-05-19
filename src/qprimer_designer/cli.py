@@ -51,6 +51,7 @@ For more information on a specific command:
         build_output,
         select_multiplex,
         export_report,
+        quick_design,
     )
 
     generate.register(subparsers)
@@ -65,6 +66,7 @@ For more information on a specific command:
     build_output.register(subparsers)
     select_multiplex.register(subparsers)
     export_report.register(subparsers)
+    quick_design.register(subparsers)
 
     args = parser.parse_args()
 

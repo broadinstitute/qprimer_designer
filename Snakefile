@@ -5,14 +5,14 @@
 ############################################
 
 # SINGLEPLEX REQUIRED: user must fill these for singleplex, ignored if not multiplex
-TARGETS = ['test space file']
-CROSS   = []
+TARGETS = ['Bundibugyo_seqs']
+CROSS   = ['EBOVZ_from2022', 'EBOV_S_all']
 
 # shared option for multiplex and singleplex
 HOST    = []
 
 # MULTIPLEX REQUIRED: Multiplex targets, will be ignored if not multiplex
-PANEL = ['TEST', 'TEST_2']
+PANEL = []
 
 # Derived sets
 OFF_TARGETS = CROSS + HOST
@@ -28,7 +28,7 @@ TARGET_DIR = "target_seqs/original"
 PARAMS = "params.txt"
 
 # Run ID for unique output directories (set automatically or override)
-RUN_ID = ""
+RUN_ID = "20260519_000816"
 
 # Pipeline Design Options
 MULTIPLEX = bool(int(config.get("multiplex", 0)))
@@ -588,6 +588,7 @@ rule evaluate_pset:
         eval_on=f"{RUN_DIR}/_{PRIMARY_TARGET}/{{filename}}.{PRIMARY_TARGET}.eval",
         eval_off=lambda wc: [f"{RUN_DIR}/_{t}/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
         fasta=f"{RUN_DIR}/{{filename}}.fa",
+        off_refs=lambda wc: [f"target_seqs/original/{t}.fa" for t in OFF_TARGETS],
         mapped_on=lambda wc: (
             f"{RUN_DIR}/_{PRIMARY_TARGET}/{wc.filename}.{PRIMARY_TARGET}.mapped"
             if EVAL_HAS_PROBE else []
@@ -605,6 +606,7 @@ rule evaluate_pset:
     params:
         ids=lambda wc: " ".join(shlex.quote(i) for i in check_ids(f"{RUN_DIR}/{wc.filename}.fa")),
         off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
+        off_ref_arg=lambda wc, input: "--off-ref " + " ".join(shlex.quote(str(f)) for f in input.off_refs) if input.off_refs else "",
         probe_args=lambda wc, input: (
             f"--mapped-on {shlex.quote(str(input.mapped_on))} "
             f"--mapped-off {' '.join(shlex.quote(str(f)) for f in input.mapped_off)} "
@@ -617,6 +619,7 @@ rule evaluate_pset:
         "qprimer export-report "
         "--on '{input.eval_on}' "
         "{params.off_arg} "
+        "{params.off_ref_arg} "
         "--out '{output}' "
         "--names {params.ids} "
         "{params.probe_args} "
@@ -686,7 +689,6 @@ rule align_probes:
     params:
         reference=lambda wc: f"{RUN_DIR}/_intermediate/{wc.target}",
         multiMap=lambda wc: min(count_seqs(wc.target) * 2, 50000),
-        # Permissive alignment (6mm/20mer); mismatch filtering done post-alignment
         mapOption="--mp 3,3 --np 2 --rdg 6,4 --rfg 6,4 -L 6 -N 1 --score-min L,-0.6,-0.6"
     shell:
         "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
@@ -823,7 +825,7 @@ rule evaluate:
     resources:
         gpu=1
     params:
-        ref_type=lambda wc: "on" if (wc.virus == wc.target or EVALUATE) else "off"
+        ref_type=lambda wc: "on" if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else "off"
     shell:
         "qprimer evaluate "
         "--in '{input.inp}' --out '{output}' "

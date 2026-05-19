@@ -16,7 +16,7 @@ from qprimer_designer.commands.pick_representatives import (
     MinHashFamily,
     HashConcatenation,
     NearNeighborLookup,
-    find_low_gap_window,
+    find_best_design_window,
     trim_to_window,
     cluster_sequences,
     select_medoids,
@@ -218,27 +218,27 @@ class TestHashConcatenation:
         assert isinstance(result, str)
 
 
-class TestFindLowGapWindow:
-    """Tests for find_low_gap_window."""
+class TestFindBestDesignWindow:
+    """Tests for find_best_design_window."""
 
     def test_no_gaps(self):
         seqs = ["ATCGATCG" * 30]
-        pos = find_low_gap_window(seqs, window_size=20)
+        pos = find_best_design_window(seqs, window_size=20, primer_len=5)
         assert pos >= 0
 
     def test_empty_seqs(self):
-        pos = find_low_gap_window([], window_size=20)
+        pos = find_best_design_window([], window_size=20, primer_len=5)
         assert pos == 0
 
     def test_gaps_at_start(self):
         """Should prefer window without gaps."""
         seqs = ["---ATCGATCGATCG" + "A" * 200]
-        pos = find_low_gap_window(seqs, window_size=10)
+        pos = find_best_design_window(seqs, window_size=10, primer_len=5)
         assert pos >= 3  # Should avoid the gap region
 
     def test_returns_integer(self):
         seqs = ["ATCG" * 100]
-        pos = find_low_gap_window(seqs, window_size=50)
+        pos = find_best_design_window(seqs, window_size=50, primer_len=5)
         assert isinstance(pos, int)
 
 

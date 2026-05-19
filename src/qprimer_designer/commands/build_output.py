@@ -147,7 +147,8 @@ def extract_amplicon_sequences(final, eval_full_path, ref_path):
 
     if not os.path.exists(eval_full_path) or os.path.getsize(eval_full_path) == 0:
         print(f"Warning: {eval_full_path} not found or empty, skipping amplicon extraction")
-        return pd.Series("", index=final.index)
+        empty = pd.Series("", index=final.index)
+        return empty, empty.copy(), empty.copy()
 
     full_df = pd.read_csv(eval_full_path)
     # Filter to high-confidence predictions
@@ -281,6 +282,7 @@ def run(args):
         merged.loc[(fname, rname), "pseq_r"] = rseq
 
     final = merged.copy()
+    probe_seqs_dict = {}
 
     # PROBE MODE: Add probe information and optionally filter by off-target amplicon overlap
     if args.probe_mapping_on and args.probe_seqs:
@@ -348,23 +350,19 @@ def run(args):
                 for pair_key in final.index
             }
 
-        # Add probe information to final DataFrame
-        final['valid_probes'] = final.index.map(lambda p: ','.join(valid_probes_dict.get(p, [])))
-        final['valid_probe_sequences'] = final.index.map(
-            lambda p: ','.join([probe_seqs_dict[pname] for pname in valid_probes_dict.get(p, []) if pname in probe_seqs_dict])
+        # Store all valid probes per pair (greedy assignment happens after sorting)
+        final['_all_valid_probes'] = final.index.map(
+            lambda p: valid_probes_dict.get(p, [])
         )
-
-        print(f"Probe filtering complete. Pairs with valid probes: {(final['valid_probe_sequences'].str.len() > 0).sum()}")
+        n_with_probes = sum(1 for probes in final['_all_valid_probes'] if probes)
+        print(f"Probe filtering complete. Pairs with valid probes: {n_with_probes}")
 
     # Extract amplicon sequences if reference provided
     if args.ref:
         eval_full_path = f"{args.eval_on}.full"
         amp_seqs, fwd_pos, rev_pos = extract_amplicon_sequences(final, eval_full_path, args.ref)
-        final['amplicon_seq'] = amp_seqs
         final['approx_fwd_start'] = fwd_pos
         final['approx_rev_start'] = rev_pos
-        n_with_amplicon = (final['amplicon_seq'].str.len() > 0).sum()
-        print(f"Extracted amplicon sequences for {n_with_amplicon}/{len(final)} pairs")
 
     # Sort by sum of off-target scores (ascending - lower is better)
     offtarget_score_cols = [col for col in final.columns if col.startswith('sco_') and col != 'sco_target']
@@ -373,6 +371,31 @@ def run(args):
         final = final.sort_values('offtarget_score_sum')
         print(f"Sorted by sum of off-target scores")
 
+
+    # Greedy probe assignment: walk pairs in rank order, assign each the
+    # best unclaimed probe, drop pairs with no unclaimed probes left.
+    if '_all_valid_probes' in final.columns:
+        claimed_probes = set()
+        assigned_probe = {}
+        keep_idxs = []
+        for pair_key in final.index:
+            probes = final.at[pair_key, '_all_valid_probes']
+            if not probes:
+                continue
+            for p in probes:
+                if p not in claimed_probes:
+                    assigned_probe[pair_key] = p
+                    claimed_probes.add(p)
+                    keep_idxs.append(pair_key)
+                    break
+        n_before = len(final)
+        final = final.loc[keep_idxs].copy()
+        final['valid_probes'] = final.index.map(lambda p: assigned_probe.get(p, ''))
+        final['valid_probe_sequences'] = final['valid_probes'].map(
+            lambda p: probe_seqs_dict.get(p, '') if p else ''
+        )
+        final = final.drop(columns=['_all_valid_probes'])
+        print(f"Greedy probe assignment: {n_before} → {len(final)} pairs")
 
     # Convert coverage columns from numbers to "N / total" strings
     if args.ref:

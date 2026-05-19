@@ -38,6 +38,12 @@ Creates one Excel file per primer set with:
     parser.add_argument("--ref", default=None, help="On-target reference FASTA (for counting total sequences)")
     parser.add_argument("--probe-max-mismatches", type=int, default=2,
                         help="Maximum mismatches for probe to count as matched (default: 2)")
+    parser.add_argument("--probe-max-indels", type=int, default=0,
+                        help="Maximum indels for probe to count as matched (default: 0)")
+    parser.add_argument("--mapped-on", default=None,
+                        help="On-target .mapped file (for probe alignment display)")
+    parser.add_argument("--mapped-off", nargs="*", default=[],
+                        help="Off-target .mapped files (for probe alignment display)")
     parser.set_defaults(func=run)
 
 
@@ -140,34 +146,53 @@ def eval_to_target_df(eval_path, pid, eval_type="on"):
     return df
 
 
-def annotate_probe(df, probe_mapping_path, pid, max_mismatches=2):
-    """
-    Add probe, mm_p, and indel_p columns to detail dataframe.
+def load_probe_mapped(mapped_path, pid):
+    """Load probe rows from a .mapped file for a given primer set ID.
 
-    probe = 1 if probe aligns within amplicon AND mismatches <= max_mismatches AND indels == 0.
+    Returns a DataFrame with columns:
+        target_id, start_pos, pseq, tseq, match, mismatches, indels
+    """
+    if not mapped_path or not Path(mapped_path).exists():
+        return pd.DataFrame()
+
+    probe_name = f"{pid}_pro"
+    cols = ['pname', 'orientation', 'tname', 'start', 'pseq', 'tseq', 'match']
+    raw = pd.read_table(mapped_path, sep='\t', names=cols)
+    raw = raw[raw['pname'] == probe_name].copy()
+    if raw.empty:
+        return pd.DataFrame()
+
+    # Compute mismatches and indels from alignment strings
+    raw['indels'] = raw['pseq'].str.count('-') + raw['tseq'].str.count('-')
+    raw['mismatches'] = (
+        raw['pseq'].str.len() - raw['match'].str.count(r'\|') - raw['indels']
+    )
+    # Convert to 0-based start position
+    raw['start_pos'] = raw['start'] - 1
+
+    return raw.rename(columns={'tname': 'target_id'})[
+        ['target_id', 'start_pos', 'pseq', 'tseq', 'match', 'mismatches', 'indels']
+    ].reset_index(drop=True)
+
+
+def annotate_probe(df, mapped_path, pid, max_mismatches=2, max_indels=0):
+    """
+    Add probe, mm_p, indel_p, and probe alignment columns to detail dataframe.
+
+    Reads probe rows directly from the .mapped file.
+    probe = 1 if probe aligns within amplicon AND mismatches <= max_mismatches AND indels <= max_indels.
     mm_p = mismatch count (substitutions only, recorded whenever probe is within amplicon).
     indel_p = indel count (recorded whenever probe is within amplicon).
+    align_p = formatted probe-target alignment string.
     """
     df["probe"] = 0
     df["mm_p"] = np.nan
     df["indel_p"] = np.nan
+    df["align_p"] = ""
 
-    if probe_mapping_path is None:
-        return df
-
-    probe_df = pd.read_csv(probe_mapping_path)
+    probe_df = load_probe_mapped(mapped_path, pid)
     if probe_df.empty:
         return df
-
-    # Filter to probes matching this primer set
-    probe_name = f"{pid}_pro"
-    probe_df = probe_df[probe_df["probe_name"] == probe_name]
-    if probe_df.empty:
-        return df
-
-    # Ensure indels column exists (backward compatibility)
-    if "indels" not in probe_df.columns:
-        probe_df["indels"] = 0
 
     # Reset index to avoid duplicate index issues, then restore
     df = df.reset_index()
@@ -181,15 +206,26 @@ def annotate_probe(df, probe_mapping_path, pid, max_mismatches=2):
         hits = probe_df[probe_df["target_id"] == seq_id]
         for _, hit in hits.iterrows():
             probe_start = hit["start_pos"]
-            probe_end = probe_start + len(hit["probe_seq"])
+            probe_end = probe_start + len(hit["pseq"].replace("-", ""))
             # Probe is within amplicon if it's fully contained
             if probe_start >= amp_start and probe_end <= amp_end:
                 mm = hit["mismatches"]
                 indel = hit["indels"]
                 df.at[i, "mm_p"] = mm
                 df.at[i, "indel_p"] = indel
-                if mm <= max_mismatches and indel == 0:
+                if mm <= max_mismatches and indel <= max_indels:
                     df.at[i, "probe"] = 1
+                # Build alignment string
+                pseq = hit["pseq"]
+                tseq = hit["tseq"]
+                match = hit["match"]
+                p_len = len(pseq.replace("-", ""))
+                p_end = probe_start + p_len - 1
+                df.at[i, "align_p"] = (
+                    f"1     {pseq}{str(p_len).rjust(6)}\n"
+                    f"      {match}      \n"
+                    f"{str(probe_start).ljust(6)}{tseq}{str(p_end).rjust(6)}"
+                )
                 break
 
     df["probe"] = df["probe"].astype(int)
@@ -521,9 +557,14 @@ def run(args):
     print(f"Output directory: {outdir}")
     print(f"Primer sets to evaluate: {', '.join(args.names)}")
 
-    has_probe = args.probe_mapping_on is not None
+    has_probe = args.mapped_on is not None or args.probe_mapping_on is not None
+    mapped_on = args.mapped_on
     probe_mapping_on = args.probe_mapping_on
     probe_max_mm = args.probe_max_mismatches
+    probe_max_indel = args.probe_max_indels
+    mapped_off = {
+        get_target_name(p): p for p in args.mapped_off
+    } if args.mapped_off else {}
     probe_mapping_off = {
         get_target_name(p): p for p in args.probe_mapping_off
     } if args.probe_mapping_off else {}
@@ -551,6 +592,9 @@ def run(args):
     ]
 
     if has_probe:
+        # Insert align_p right after align_r
+        idx = cols.index("align_r") + 1
+        cols.insert(idx, "align_p")
         cols += ["probe", "mm_p", "indel_p"]
 
     for pid in args.names:
@@ -567,7 +611,8 @@ def run(args):
             df_on["eval_type"] = "on"
             df_on["target"] = get_target_name(args.on)
             if has_probe:
-                df_on = annotate_probe(df_on, probe_mapping_on, pid, probe_max_mm)
+                probe_src = mapped_on or probe_mapping_on
+                df_on = annotate_probe(df_on, probe_src, pid, probe_max_mm, probe_max_indel)
             # Add unmapped sequences from reference
             df_on = add_unmapped_rows(df_on, ref_seq_ids)
             df_on = add_decision_columns(df_on, has_probe)
@@ -598,8 +643,8 @@ def run(args):
                     df_off["eval_type"] = "off"
                     df_off["target"] = target_name
                     if has_probe:
-                        off_probe_path = probe_mapping_off.get(target_name)
-                        df_off = annotate_probe(df_off, off_probe_path, pid, probe_max_mm)
+                        off_src = mapped_off.get(target_name) or probe_mapping_off.get(target_name)
+                        df_off = annotate_probe(df_off, off_src, pid, probe_max_mm, probe_max_indel)
                     df_off = add_decision_columns(df_off, has_probe)
                     dfs.append(df_off[cols].sort_values("regressor", ascending=False))
                 else:

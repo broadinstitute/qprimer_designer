@@ -62,14 +62,21 @@ def build_params_txt(params: dict) -> str:
         (
             "## Parameters in generating primers",
             [
-                "MAX_PRIMER_CANDIDATES",
                 "TM_MIN",
                 "TM_MAX",
                 "GC_MAX",
                 "DG_MIN",
                 "PRIMER_LEN_MIN",
                 "PRIMER_LEN_MAX",
-                "TILING_STEP",
+                "QUICK_N_POSITIONS",
+                "QUICK_N_VARIANTS",
+            ],
+        ),
+        (
+            "## Target thresholds for early stopping",
+            [
+                "QUICK_COV_MIN",
+                "QUICK_ACT_MIN",
             ],
         ),
         (
@@ -87,6 +94,7 @@ def build_params_txt(params: dict) -> str:
             "## Probe mode configuration (singleplex only)",
             [
                 "PROBE_MAX_MISMATCHES",
+                "PROBE_MAX_INDELS",
                 "PROBE_AMPLICON_BUFFER",
                 "MIN_PROBES_PER_PAIR",
                 "MAX_PROBES_PER_PAIR",

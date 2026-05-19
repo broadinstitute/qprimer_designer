@@ -14,7 +14,7 @@ from qprimer_designer.commands.generate import (
 class TestGeneratePrimersMulti:
     """Tests for generate_primers_multi (with mocked dG)."""
 
-    @patch("qprimer_designer.commands.generate.compute_self_dimer_dg", return_value=0.0)
+    @patch("qprimer_designer.commands.generate.compute_batch_dimer_dg", side_effect=lambda pairs: [0.0] * len(pairs))
     def test_basic_multi(self, mock_dg):
         """Test multi-target primer generation."""
         targets = ["ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"]
@@ -32,7 +32,7 @@ class TestGeneratePrimersMulti:
             assert "len" in features[seq]
             assert "dG" in features[seq]
 
-    @patch("qprimer_designer.commands.generate.compute_self_dimer_dg", return_value=-100.0)
+    @patch("qprimer_designer.commands.generate.compute_batch_dimer_dg", side_effect=lambda pairs: [-100.0] * len(pairs))
     def test_dg_filter_removes_all(self, mock_dg):
         """All primers filtered when dG is below threshold."""
         targets = ["ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"]
@@ -44,7 +44,7 @@ class TestGeneratePrimersMulti:
         assert len(for_filt) == 0
         assert len(rev_filt) == 0
 
-    @patch("qprimer_designer.commands.generate.compute_self_dimer_dg", return_value=0.0)
+    @patch("qprimer_designer.commands.generate.compute_batch_dimer_dg", side_effect=lambda pairs: [0.0] * len(pairs))
     def test_tm_filter(self, mock_dg):
         """Very narrow Tm range should filter out most primers."""
         targets = ["ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"]
@@ -57,7 +57,7 @@ class TestGeneratePrimersMulti:
         # With Tm range [0, 0], almost no 20-mers will pass
         assert len(for_filt) == 0
 
-    @patch("qprimer_designer.commands.generate.compute_self_dimer_dg", return_value=0.0)
+    @patch("qprimer_designer.commands.generate.compute_batch_dimer_dg", side_effect=lambda pairs: [0.0] * len(pairs))
     def test_multiple_targets(self, mock_dg):
         """Test with multiple target sequences."""
         targets = [

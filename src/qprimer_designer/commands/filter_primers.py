@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import os
 from collections import defaultdict
 
 import pandas as pd
@@ -13,7 +14,17 @@ from qprimer_designer.external import compute_batch_dimer_dg
 
 def load_probe_data(probe_mapping_path, probe_seqs_path):
     """Load probe mapping table and sequences, with pre-built indexes."""
-    mapping_df = pd.read_csv(probe_mapping_path)
+    import os
+    # Handle empty probe files (e.g., no probes passed filters)
+    if (os.path.getsize(probe_mapping_path) == 0 or
+            os.path.getsize(probe_seqs_path) == 0):
+        return {}, {}, {}, {}, {}
+    try:
+        mapping_df = pd.read_csv(probe_mapping_path)
+    except pd.errors.EmptyDataError:
+        return {}, {}, {}, {}, {}
+    if mapping_df.empty:
+        return {}, {}, {}, {}, {}
     probe_seqs = {rec.id: str(rec.seq) for rec in SeqIO.parse(probe_seqs_path, "fasta")}
 
     # Build dict indexes for O(1) lookups instead of repeated DataFrame filtering
@@ -178,6 +189,22 @@ def run(args):
     # Load primer sequences
     primer_seqs = {rec.id: str(rec.seq) for rec in SeqIO.parse(args.init, "fasta")}
 
+    # Filter out pairs with very low coverage before any further processing
+    min_coverage = float(params.get("COVERAGE_MIN", 0.5))
+    n_before = len(res)
+    res = res[res['coverage'] >= min_coverage].reset_index(drop=True)
+    if len(res) < n_before:
+        print(f"Filtered {n_before - len(res)}/{n_before} pairs below coverage threshold ({min_coverage})")
+
+    if res.empty:
+        print(f"Warning: No pairs above coverage threshold ({min_coverage}), writing empty output")
+        open(args.out, "w").close()
+        csv_out = args.out.replace(".fa", ".csv")
+        open(csv_out, "w").close()
+        if args.probe_out:
+            open(args.probe_out, "w").close()
+        return
+
     # PROBE MODE
     if args.probe_mapping and args.probe_seqs:
         print("Probe mode enabled - filtering by probe compatibility...")
@@ -194,20 +221,30 @@ def run(args):
         max_mismatches = int(params.get("PROBE_MAX_MISMATCHES", 2))
 
         # Load .full file for ALL pairs (probe compatibility checked first)
+        # Quick design writes .eval.full but positions use windowed coordinates
+        # that don't match probe mapping positions — skip position validation
+        # (probe-primer compatibility was already checked during quick design)
         eval_full_path = f"{args.scores}.full"
+        is_quick_design = os.path.exists(f"{args.scores}.quick")
+        has_full_file = (
+            os.path.exists(eval_full_path)
+            and os.path.getsize(eval_full_path) > 0
+            and not is_quick_design
+        )
 
         all_pairs_set = set(zip(res['pname_f'], res['pname_r']))
 
         pair_full_data = {}
-        for chunk in pd.read_csv(eval_full_path, chunksize=10000):
-            for _, row in chunk.iterrows():
-                pair_key = (row['pname_f'], row['pname_r'])
-                if row.get('classifier', 1.0) < 0.5:
-                    continue
-                if pair_key in all_pairs_set:
-                    if pair_key not in pair_full_data:
-                        pair_full_data[pair_key] = []
-                    pair_full_data[pair_key].append(row)
+        if has_full_file:
+            for chunk in pd.read_csv(eval_full_path, chunksize=10000):
+                for _, row in chunk.iterrows():
+                    pair_key = (row['pname_f'], row['pname_r'])
+                    if row.get('classifier', 1.0) < 0.5:
+                        continue
+                    if pair_key in all_pairs_set:
+                        if pair_key not in pair_full_data:
+                            pair_full_data[pair_key] = []
+                        pair_full_data[pair_key].append(row)
 
         print(f"Checking {len(res)} pairs for probe compatibility (before top-N selection)...")
 
@@ -221,19 +258,25 @@ def run(args):
             pname_r = row['pname_r']
             pair_key = (pname_f, pname_r)
 
-            if pair_key not in pair_full_data:
-                continue
+            if has_full_file:
+                # Standard mode: validate probe positions within amplicons
+                if pair_key not in pair_full_data:
+                    continue
 
-            candidates = _find_position_valid_probes(
-                pair_full_data[pair_key],
-                probes_by_target,
-                probe_positions,
-                probe_mismatches,
-                probe_indels,
-                probe_seqs_dict,
-                buffer,
-                max_mismatches,
-            )
+                candidates = _find_position_valid_probes(
+                    pair_full_data[pair_key],
+                    probes_by_target,
+                    probe_positions,
+                    probe_mismatches,
+                    probe_indels,
+                    probe_seqs_dict,
+                    buffer,
+                    max_mismatches,
+                )
+            else:
+                # Quick design mode: all mapped probes are candidates
+                # (position validation was done during quick design)
+                candidates = list(probe_seqs_dict.keys())
 
             if not candidates:
                 continue
@@ -258,7 +301,8 @@ def run(args):
                 all_dg = compute_batch_dimer_dg(all_dimer_pairs)
             except Exception as e:
                 print(f"Warning: Batch dimer computation failed: {e}")
-                all_dg = [None] * len(all_dimer_pairs)
+                print("  Skipping dimer filter — all probes will be kept.")
+                all_dg = [0.0] * len(all_dimer_pairs)
 
         # Phase 3: distribute results and filter by ΔG threshold
         valid_pairs = []
@@ -301,7 +345,7 @@ def run(args):
                 axis=1
             )
             top['probe_names'] = top.apply(
-                lambda r: ','.join(valid_probes_per_pair.get((r['pname_f'], r['pname_r']), [])[:max_probes]),
+                lambda r: ','.join(valid_probes_per_pair.get((r['pname_f'], r['pname_r']), [])),
                 axis=1
             )
 
@@ -314,7 +358,7 @@ def run(args):
                     continue
                 pname_f, pname_r = pair_key
                 pair_probes = valid_probes_per_pair[pair_key]
-                for probe_name in pair_probes[:max_probes]:
+                for probe_name in pair_probes:
                     probe_assignments.append({
                         'pname_f': pname_f,
                         'pname_r': pname_r,
@@ -324,7 +368,7 @@ def run(args):
 
             probe_df = pd.DataFrame(probe_assignments)
             probe_df.to_csv(args.probe_out, index=False)
-            print(f"Wrote {len(probe_df)} probe assignments to {args.probe_out} (max {max_probes} per pair)")
+            print(f"Wrote {len(probe_df)} probe assignments to {args.probe_out}")
 
             # Write probe FASTA with unique probes from limited set
             probe_fasta_out = args.probe_out.replace(".csv", ".fa")

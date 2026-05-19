@@ -9,7 +9,7 @@ from qprimer_designer.commands.generate_probe import generate_probes
 class TestGenerateProbes:
     """Tests for generate_probes (with mocked dG computation)."""
 
-    @patch("qprimer_designer.commands.generate_probe.compute_self_dimer_dg", return_value=0.0)
+    @patch("qprimer_designer.commands.generate_probe.compute_batch_dimer_dg", side_effect=lambda pairs: [0.0] * len(pairs))
     def test_basic_generation(self, mock_dg):
         """Test basic probe generation from a target sequence."""
         target_seqs = ["ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"]
@@ -27,7 +27,7 @@ class TestGenerateProbes:
             assert 8 <= len(seq) <= 10
             assert "N" not in seq
 
-    @patch("qprimer_designer.commands.generate_probe.compute_self_dimer_dg", return_value=0.0)
+    @patch("qprimer_designer.commands.generate_probe.compute_batch_dimer_dg", side_effect=lambda pairs: [0.0] * len(pairs))
     def test_avoids_n_probes(self, mock_dg):
         """Probes with N should be excluded."""
         target_seqs = ["ATCGNNNATCGATCGATCGATCGATCGATCG"]
@@ -43,7 +43,7 @@ class TestGenerateProbes:
         for seq in filtered:
             assert "N" not in seq
 
-    @patch("qprimer_designer.commands.generate_probe.compute_self_dimer_dg", return_value=0.0)
+    @patch("qprimer_designer.commands.generate_probe.compute_batch_dimer_dg", side_effect=lambda pairs: [0.0] * len(pairs))
     def test_avoid_5prime_g(self, mock_dg):
         """Probes starting with G should be excluded when avoid_5prime_G=True."""
         target_seqs = ["ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"]
@@ -59,7 +59,7 @@ class TestGenerateProbes:
         for seq in filtered:
             assert seq[0] != 'G'
 
-    @patch("qprimer_designer.commands.generate_probe.compute_self_dimer_dg", return_value=0.0)
+    @patch("qprimer_designer.commands.generate_probe.compute_batch_dimer_dg", side_effect=lambda pairs: [0.0] * len(pairs))
     def test_homopolymer_filter(self, mock_dg):
         """Probes with long homopolymer runs should be excluded."""
         # Create a target with a long run of A's
@@ -78,7 +78,7 @@ class TestGenerateProbes:
         for seq in filtered:
             assert not has_homopolymer(seq, 3)
 
-    @patch("qprimer_designer.commands.generate_probe.compute_self_dimer_dg", return_value=0.0)
+    @patch("qprimer_designer.commands.generate_probe.compute_batch_dimer_dg", side_effect=lambda pairs: [0.0] * len(pairs))
     def test_max_num_subsampling(self, mock_dg):
         """Output should be limited to max_num probes."""
         target_seqs = ["ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"]
@@ -93,7 +93,7 @@ class TestGenerateProbes:
         )
         assert len(filtered) <= 5
 
-    @patch("qprimer_designer.commands.generate_probe.compute_self_dimer_dg", return_value=-100.0)
+    @patch("qprimer_designer.commands.generate_probe.compute_batch_dimer_dg", side_effect=lambda pairs: [-100.0] * len(pairs))
     def test_dg_filter(self, mock_dg):
         """Probes with dG below threshold should be excluded."""
         target_seqs = ["ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"]
@@ -108,7 +108,7 @@ class TestGenerateProbes:
         )
         assert len(filtered) == 0
 
-    @patch("qprimer_designer.commands.generate_probe.compute_self_dimer_dg", return_value=0.0)
+    @patch("qprimer_designer.commands.generate_probe.compute_batch_dimer_dg", side_effect=lambda pairs: [0.0] * len(pairs))
     def test_features_populated(self, mock_dg):
         """Features dict should have Tm, GC, len, position, dG for each probe."""
         target_seqs = ["ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"]

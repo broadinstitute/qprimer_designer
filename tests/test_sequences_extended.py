@@ -116,7 +116,7 @@ class TestSanitizeIupac:
         assert sanitize_iupac("RYSW") == "NNNN"
 
     def test_lowercase_ambiguity(self):
-        assert sanitize_iupac("arcg") == "aNcg"
+        assert sanitize_iupac("arcg") == "ANCG"
 
     def test_preserves_n(self):
         assert sanitize_iupac("ANCG") == "ANCG"

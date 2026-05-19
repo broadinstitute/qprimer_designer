@@ -11,7 +11,7 @@ from Bio import SeqIO
 from Bio.SeqUtils import gc_fraction
 
 from qprimer_designer.utils import get_tm, parse_params, get_probe_params, reverse_complement_dna, has_homopolymer, sanitize_iupac
-from qprimer_designer.external import compute_self_dimer_dg
+from qprimer_designer.external import compute_batch_dimer_dg
 
 
 def register(subparsers):
@@ -96,25 +96,28 @@ def generate_probes(
     filtered = {}
     features = defaultdict(dict)
 
+    # First pass: fast filters (5' G, homopolymer, Tm, GC)
+    tm_gc_passed = {}
     for pseq in probes:
-        # Check 5' G constraint
         if avoid_5prime_G and pseq[0] == 'G':
             continue
-
-        # Check homopolymer
         if has_homopolymer(pseq, homopolymer_max):
             continue
 
-        # Calculate features
         tm = get_tm(pseq)
         gc = gc_fraction(pseq)
 
-        # Filter by Tm and GC
         if min_tm <= tm <= max_tm and gc <= max_gc / 100.0:
-            dG = compute_self_dimer_dg(pseq)
+            tm_gc_passed[pseq] = (tm, gc)
 
-            # Only add features if all filters pass
+    # Batch dG computation (single subprocess call)
+    if tm_gc_passed:
+        pairs = [(pseq, pseq) for pseq in tm_gc_passed]
+        dg_values = compute_batch_dimer_dg(pairs)
+
+        for (pseq, _), dG in zip(pairs, dg_values):
             if dG >= min_dg:
+                tm, gc = tm_gc_passed[pseq]
                 features[pseq]["Tm"] = round(tm, 1)
                 features[pseq]["GC"] = round(gc, 2)
                 features[pseq]["len"] = len(pseq)

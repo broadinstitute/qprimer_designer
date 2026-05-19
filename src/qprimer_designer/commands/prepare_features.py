@@ -7,7 +7,7 @@ from Bio import SeqIO
 from Bio.SeqUtils import gc_fraction
 
 from qprimer_designer.utils import get_tm
-from qprimer_designer.external import compute_self_dimer_dg
+from qprimer_designer.external import compute_batch_dimer_dg
 
 
 def register(subparsers):
@@ -56,16 +56,21 @@ def run(args):
 
     print(f"Computing features for {len(records)} primers from {args.fa}...")
 
-    rows = []
+    # Compute all features, batch dG in a single subprocess
+    primer_data = []
     for rec in records:
         pname = rec.id
         pseq = str(rec.seq)
-
         forrev = infer_primer_orientation(pname)
         tm = get_tm(pseq)
         gc = gc_fraction(pseq)
-        dg = compute_self_dimer_dg(pseq)
+        primer_data.append((pname, pseq, forrev, tm, gc))
 
+    pairs = [(pseq, pseq) for _, pseq, _, _, _ in primer_data]
+    dg_values = compute_batch_dimer_dg(pairs)
+
+    rows = []
+    for (pname, pseq, forrev, tm, gc), dg in zip(primer_data, dg_values):
         rows.append({
             "pname": pname,
             "pseq": pseq,

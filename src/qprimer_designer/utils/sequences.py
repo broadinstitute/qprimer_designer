@@ -43,7 +43,7 @@ def sanitize_iupac(seq: str) -> str:
     so that primer/probe candidates overlapping those positions are
     filtered out by the existing 'N' checks.
     """
-    return _IUPAC_AMBIGUITY.sub('N', seq)
+    return _IUPAC_AMBIGUITY.sub('N', seq).upper()
 
 
 def has_homopolymer(seq: str, max_len: int) -> bool:

@@ -78,11 +78,35 @@ if os.path.isdir(TARGET_DIR):
             os.rename(_fpath, _new_path)
 
 # Generate RUN_ID if not set
-if not RUN_ID:
+_auto_id = not RUN_ID
+if _auto_id:
     RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-FINAL_DIR = f"final/{RUN_ID}"
-EVAL_DIR = f"evaluate/{RUN_ID}"
+# Avoid overwriting existing runs: only when auto-generated
+# (Snakemake subprocess workers re-parse this file, so a hardcoded
+#  RUN_ID must stay stable even after the directory is created.)
+if _auto_id:
+    _base_id = RUN_ID
+    _suffix = 2
+    while os.path.exists(f"runs/{RUN_ID}"):
+        RUN_ID = f"{_base_id}_{_suffix}"
+        _suffix += 1
+
+RUN_DIR = f"runs/{RUN_ID}"
+
+# Rule priority: resolve ambiguities from flat directory structure.
+# prepare_pset_fasta has a greedy {filename} wildcard; quick_design and
+# generate_primers both produce _init.fa/_init.feat (checkpoint picks one).
+ruleorder: quick_design_on_target > generate_primers > prepare_pset_fasta
+ruleorder: quick_design_on_target > evaluate
+ruleorder: quick_design_on_target > prepare_features
+ruleorder: generate_primers > prepare_features
+ruleorder: filter_primer_list > prepare_pset_fasta
+ruleorder: generate_probes > prepare_pset_fasta
+ruleorder: resolve_target_seq > prepare_pset_fasta
+ruleorder: pick_representative_seqs > prepare_pset_fasta
+ruleorder: filter_primer_list > extract_probe_from_pset > prepare_pset_fasta
+ruleorder: quick_design_on_target > parse_probe_mapping
 
 # Probe mode
 PROBE_MODE = bool(int(config.get("probe", 0)))
@@ -95,21 +119,22 @@ else:
     TARGETS_PATTERN = "|".join(TARGETS) if TARGETS else ".*"
     ALL_TARGETS_PATTERN = "|".join(ALL_TARGETS) if ALL_TARGETS else ".*"
 
-# Read PROBE_MAX_MISMATCHES from params (used for post-alignment filtering)
-def get_probe_max_mismatches():
-    """Read PROBE_MAX_MISMATCHES from params file."""
+# Read probe filtering params (used for post-alignment filtering)
+def _read_probe_param(name, default):
+    """Read a probe parameter from params file."""
     if not os.path.exists(PARAMS):
-        return 2  # Default
+        return default
     with open(PARAMS) as f:
         for line in f:
-            if line.strip().startswith('PROBE_MAX_MISMATCHES'):
+            if line.strip().startswith(name):
                 try:
                     return int(line.split('=')[1].strip().split('#')[0].strip())
                 except:
-                    return 2
-    return 2
+                    return default
+    return default
 
-PROBE_MAX_MISMATCHES = get_probe_max_mismatches()
+PROBE_MAX_MISMATCHES = _read_probe_param('PROBE_MAX_MISMATCHES', 2)
+PROBE_MAX_INDELS = _read_probe_param('PROBE_MAX_INDELS', 0)
 
 ############################################
 # Helper functions
@@ -197,26 +222,62 @@ if EVALUATE:
         PSET_NAME = f"eval_f_{f_tag}_r_{r_tag}"
 
 ############################################
+# Route targets: quick vs standard (computed at parse time)
+############################################
+
+# Quick mode: multi-sequence targets in design mode (including probe mode)
+# Standard mode: single-sequence targets or evaluate mode
+if not EVALUATE:
+    QUICK_TARGETS = [t for t in TARGETS if count_seqs(t) > 1]
+    STANDARD_TARGETS = [t for t in TARGETS if count_seqs(t) <= 1]
+else:
+    QUICK_TARGETS = []
+    STANDARD_TARGETS = list(TARGETS)
+
+# Representative targets: standard targets with >5 sequences (need MSA + selection)
+REPR_TARGETS = set(t for t in STANDARD_TARGETS if count_seqs(t) > 5)
+
+QUICK_PATTERN = "|".join(QUICK_TARGETS) if QUICK_TARGETS else "NEVER_MATCH_QD"
+STANDARD_PATTERN = "|".join(STANDARD_TARGETS) if STANDARD_TARGETS else "NEVER_MATCH_SD"
+QUICK_SET = set(QUICK_TARGETS)
+
+def _eval_path(virus):
+    """Return eval file path inside _{virus}/ subdir."""
+    return f"{RUN_DIR}/_{virus}/{virus}.{virus}.eval"
+
+def _select_init_feat(wc):
+    """Select init features file."""
+    if EVALUATE:
+        return f"{RUN_DIR}/{wc.virus}.feat"
+    return f"{RUN_DIR}/{wc.virus}_init.feat"
+
+def _select_prev_eval(wc):
+    """Select previous eval file for off-target prepare_input."""
+    if wc.virus == wc.target or EVALUATE:
+        return []
+    return [_eval_path(wc.virus)]
+
+############################################
 # Final targets
 ############################################
 
 if EVALUATE:
     rule all:
         input:
-            f"outputs/{PSET_NAME}.{PRIMARY_TARGET}.eval.rescue_done"
+            f"{RUN_DIR}/_{PRIMARY_TARGET}/{PSET_NAME}.{PRIMARY_TARGET}.eval.rescue_done"
 
 elif MULTIPLEX:
     MULTIPLEX_STEM = "_".join(sorted(PANEL))
 
     rule all:
         input:
-            f"{FINAL_DIR}/{MULTIPLEX_STEM}.csv"
+            f"{RUN_DIR}/{MULTIPLEX_STEM}_final.csv"
 
     rule select_best_multiplex:
         input:
-            csvs=expand(f"{FINAL_DIR}/{{on}}.csv", on=PANEL)
+            csvs=expand(f"{RUN_DIR}/{{on}}_final.csv", on=PANEL)
         output:
-            f"{FINAL_DIR}/{MULTIPLEX_STEM}.csv"
+            f"{RUN_DIR}/{MULTIPLEX_STEM}_final.csv"
         params:
             params_arg=f"--params '{PARAMS}'" if PROBE_MODE else ""
         shell:
@@ -228,22 +289,22 @@ elif MULTIPLEX:
         wildcard_constraints:
             on=TARGETS_PATTERN
         input:
-            eval_on="outputs/{on}.{on}.eval",
-            eval_off=lambda wc: [f"outputs/{wc.on}.{t}.eval" for t in off_targets(wc.on)],
-            fa="primer_seqs/{on}_filt.fa",
+            eval_on=lambda wc: _eval_path(wc.on),
+            eval_off=lambda wc: [f"{RUN_DIR}/_{t}/{wc.on}.{t}.eval" for t in off_targets(wc.on)],
+            fa=f"{RUN_DIR}/{{on}}_filt.fa",
             ref="target_seqs/original/{on}.fa",
             probe_mapping_on=lambda wc: (
-                f"alignments/{wc.on}.{wc.on}.probe.csv" if PROBE_MODE else []
+                f"{RUN_DIR}/_{wc.on}/{wc.on}.{wc.on}.probe.csv" if PROBE_MODE else []
             ),
             probe_mapping_off=lambda wc: (
-                [f"alignments/{wc.on}.{t}.probe.csv" for t in off_targets(wc.on)]
+                [f"{RUN_DIR}/_{t}/{wc.on}.{t}.probe.csv" for t in off_targets(wc.on)]
                 if PROBE_MODE else []
             ),
             probe_seqs=lambda wc: (
-                f"primer_seqs/{wc.on}_filt_probes.fa" if PROBE_MODE else []
+                f"{RUN_DIR}/{wc.on}_filt_probes.fa" if PROBE_MODE else []
             )
         output:
-            f"{FINAL_DIR}/{{on}}.csv"
+            f"{RUN_DIR}/{{on}}_final.csv"
         params:
             off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
             probe_args=lambda wc, input: (
@@ -262,28 +323,28 @@ elif MULTIPLEX:
 else:
     rule all:
         input:
-            expand(f"{FINAL_DIR}/{{virus}}.csv", virus=TARGETS)
+            expand(f"{RUN_DIR}/{{virus}}_final.csv", virus=TARGETS)
 
     rule build_final_output:
         wildcard_constraints:
             virus=TARGETS_PATTERN
         input:
-            eval_on="outputs/{virus}.{virus}.eval",
-            eval_off=lambda wc: [f"outputs/{wc.virus}.{t}.eval" for t in OFF_TARGETS],
-            fa="primer_seqs/{virus}_filt.fa",
+            eval_on=lambda wc: _eval_path(wc.virus),
+            eval_off=lambda wc: [f"{RUN_DIR}/_{t}/{wc.virus}.{t}.eval" for t in OFF_TARGETS],
+            fa=f"{RUN_DIR}/{{virus}}_filt.fa",
             ref="target_seqs/original/{virus}.fa",
             probe_mapping_on=lambda wc: (
-                f"alignments/{wc.virus}.{wc.virus}.probe.csv" if PROBE_MODE else []
+                f"{RUN_DIR}/_{wc.virus}/{wc.virus}.{wc.virus}.probe.csv" if PROBE_MODE else []
             ),
             probe_mapping_off=lambda wc: (
-                [f"alignments/{wc.virus}.{t}.probe.csv" for t in OFF_TARGETS]
+                [f"{RUN_DIR}/_{t}/{wc.virus}.{t}.probe.csv" for t in OFF_TARGETS]
                 if PROBE_MODE else []
             ),
             probe_seqs=lambda wc: (
-                f"primer_seqs/{wc.virus}_filt_probes.fa" if PROBE_MODE else []
+                f"{RUN_DIR}/{wc.virus}_filt_probes.fa" if PROBE_MODE else []
             )
         output:
-            f"{FINAL_DIR}/{{virus}}.csv"
+            f"{RUN_DIR}/{{virus}}_final.csv"
         params:
             off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
             probe_args=lambda wc, input: (
@@ -303,25 +364,6 @@ else:
 # MSA + representative selection
 ############################################
 
-checkpoint choose_target_seq:
-    input:
-        "target_seqs/original/{virus}.fa"
-    output:
-        "target_seqs/choice/{virus}.txt"
-    params:
-        max_seqs_to_bypass_msa=5
-    run:
-        n = count_seqs(wildcards.virus)
-        choice = (
-            "original"
-            if n <= params.max_seqs_to_bypass_msa
-            else "representative"
-        )
-
-        os.makedirs(os.path.dirname(output[0]), exist_ok=True)
-        with open(output[0], "w") as out:
-            out.write(choice + "\n")
-
 
 rule make_MSA:
     wildcard_constraints:
@@ -331,9 +373,9 @@ rule make_MSA:
     output:
         "target_seqs/msa/{virus}.aln"
     threads:
-        min(2, MAX_CORES)
+        min(8, MAX_CORES)
     shell:
-        "mafft --auto --quiet --thread {threads} '{input}' > '{output}'"
+        "mafft --retree 1 --6merpair --thread {threads} '{input}' > '{output}' 2>/dev/null"
 
 
 rule pick_representative_seqs:
@@ -342,8 +384,8 @@ rule pick_representative_seqs:
     input:
         "target_seqs/msa/{virus}.aln"
     output:
-        fa="target_seqs/representative/{virus}.fa",
-        probe_regions="target_seqs/representative/{virus}_probe_regions.tsv"
+        fa=f"{RUN_DIR}/{{virus}}_repr.fa",
+        probe_regions=f"{RUN_DIR}/{{virus}}_repr_probe_regions.tsv"
     shell:
         "qprimer pick-representatives "
         "--in '{input}' --out '{output.fa}' "
@@ -351,30 +393,22 @@ rule pick_representative_seqs:
         "--probe-regions '{output.probe_regions}'"
 
 def selected_source_fa(wc):
-    # Ensure the checkpoint has run and we can read its output
-    ckpt = checkpoints.choose_target_seq.get(virus=wc.virus)
-    choice_file = ckpt.output[0]
-    choice = open(choice_file).read().strip()
-    if choice == "representative":
-        return f"target_seqs/representative/{wc.virus}.fa"
-    else:
-        return f"target_seqs/original/{wc.virus}.fa"
+    if wc.virus in REPR_TARGETS:
+        return f"{RUN_DIR}/{wc.virus}_repr.fa"
+    return f"target_seqs/original/{wc.virus}.fa"
 
 def selected_probe_regions(wc):
-    """Return probe regions file if representative path was chosen."""
-    ckpt = checkpoints.choose_target_seq.get(virus=wc.virus)
-    choice = open(ckpt.output[0]).read().strip()
-    if choice == "representative":
-        return f"target_seqs/representative/{wc.virus}_probe_regions.tsv"
+    if wc.virus in REPR_TARGETS:
+        return f"{RUN_DIR}/{wc.virus}_repr_probe_regions.tsv"
     return []
 
 rule resolve_target_seq:
     wildcard_constraints:
-        virus=TARGETS_PATTERN
+        virus=STANDARD_PATTERN
     input:
-        choice=lambda wc: checkpoints.choose_target_seq.get(virus=wc.virus).output[0], src=selected_source_fa
+        src=selected_source_fa
     output:
-        "target_seqs/selected/{virus}.fa"
+        f"{RUN_DIR}/{{virus}}_selected.fa"
     run:
         os.makedirs(os.path.dirname(output[0]), exist_ok=True)
         shell("cp '{input.src}' '{output}'")
@@ -385,12 +419,12 @@ rule resolve_target_seq:
 
 rule generate_primers:
     wildcard_constraints:
-        virus=TARGETS_PATTERN
+        virus=STANDARD_PATTERN
     input:
-        "target_seqs/selected/{virus}.fa"
+        f"{RUN_DIR}/{{virus}}_selected.fa"
     output:
-        fasta="primer_seqs/{virus}_init.fa",
-        features="primer_seqs/{virus}_init.feat"
+        fasta=f"{RUN_DIR}/{{virus}}_init.fa",
+        features=f"{RUN_DIR}/{{virus}}_init.feat"
     shell:
         "qprimer generate "
         "--in '{input}' --out '{output.fasta}' "
@@ -400,13 +434,13 @@ rule generate_primers:
 rule generate_probes:
     """Generate probe candidates from target sequences."""
     wildcard_constraints:
-        virus=TARGETS_PATTERN
+        virus=STANDARD_PATTERN
     input:
-        seqs="target_seqs/selected/{virus}.fa",
+        seqs=f"{RUN_DIR}/{{virus}}_selected.fa",
         regions=selected_probe_regions
     output:
-        fasta="primer_seqs/{virus}_probe.fa",
-        features="primer_seqs/{virus}_probe.feat"
+        fasta=f"{RUN_DIR}/{{virus}}_probe.fa",
+        features=f"{RUN_DIR}/{{virus}}_probe.feat"
     run:
         regions_arg = f"--conserved-regions '{input.regions}'" if input.regions else ""
         shell(
@@ -418,6 +452,59 @@ rule generate_probes:
 
 
 ############################################
+# Quick design mode (multi-sequence targets)
+############################################
+
+if PROBE_MODE:
+    rule quick_design_on_target:
+        """Run quick-design with probe-first mode for on-target sensitivity."""
+        wildcard_constraints:
+            virus=QUICK_PATTERN
+        input:
+            target="target_seqs/original/{virus}.fa",
+            msa="target_seqs/msa/{virus}.aln"
+        output:
+            eval=f"{RUN_DIR}/_{{virus}}/{{virus}}.{{virus}}.eval",
+            fasta=f"{RUN_DIR}/{{virus}}_init.fa",
+            features=f"{RUN_DIR}/{{virus}}_init.feat",
+            probe_fa=f"{RUN_DIR}/{{virus}}_probe.fa",
+            probe_feat=f"{RUN_DIR}/{{virus}}_probe.feat",
+            probe_csv=f"{RUN_DIR}/_{{virus}}/{{virus}}.{{virus}}.probe.csv"
+        threads:
+            min(4, MAX_CORES)
+        shell:
+            "qprimer quick-design "
+            "--target '{input.target}' --msa '{input.msa}' "
+            "--out '{output.eval}' "
+            "--init-fa '{output.fasta}' --init-feat '{output.features}' "
+            "--probe-mode --probe-fa '{output.probe_fa}' --probe-feat '{output.probe_feat}' "
+            "--probe-csv '{output.probe_csv}' "
+            "--params '{PARAMS}' --name '{wildcards.virus}' "
+            "--threads {threads}"
+else:
+    rule quick_design_on_target:
+        """Run quick-design for on-target sensitivity when n > 1 sequences."""
+        wildcard_constraints:
+            virus=QUICK_PATTERN
+        input:
+            target="target_seqs/original/{virus}.fa",
+            msa="target_seqs/msa/{virus}.aln"
+        output:
+            eval=f"{RUN_DIR}/_{{virus}}/{{virus}}.{{virus}}.eval",
+            fasta=f"{RUN_DIR}/{{virus}}_init.fa",
+            features=f"{RUN_DIR}/{{virus}}_init.feat"
+        threads:
+            min(4, MAX_CORES)
+        shell:
+            "qprimer quick-design "
+            "--target '{input.target}' --msa '{input.msa}' "
+            "--out '{output.eval}' "
+            "--init-fa '{output.fasta}' --init-feat '{output.features}' "
+            "--params '{PARAMS}' --name '{wildcards.virus}' "
+            "--threads {threads}"
+
+
+############################################
 # Evaluation of user-defined primers
 ############################################
 
@@ -425,7 +512,7 @@ rule prepare_pset_fasta:
     wildcard_constraints:
         filename="[^./]+"
     output:
-        fasta="evaluate/{filename}.fa"
+        fasta=f"{RUN_DIR}/{{filename}}.fa"
     run:
         out = Path(output.fasta)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -436,13 +523,13 @@ rule prepare_pset_fasta:
             shutil.copyfile(src, out)
 
         # case 2: direct for / rev → generate
-        # The reverse primer must be stored as RC to match the convention
-        # used by the 'generate' command (tiled from the RC of the target).
+        # Store the reverse primer as-is (5'→3').  The user supplies it in
+        # the same convention the 'generate' command produces: tiled from
+        # the RC strand, so bowtie2 will align it with orientation 16,
+        # which is what prepare_input expects for reverse primers.
         else:
             for_seq = config["for"]
             rev_seq = config["rev"]
-            comp = str.maketrans("ACGTacgt", "TGCAtgca")
-            rev_seq_rc = rev_seq.translate(comp)[::-1]
 
             # Use a readable primer pair ID from the sequences
             f_tag = (for_seq[:5] + for_seq[-5:]).upper() if len(for_seq) >= 10 else for_seq.upper()
@@ -450,7 +537,7 @@ rule prepare_pset_fasta:
             pair_id = f"f_{f_tag}_r_{r_tag}"
 
             with open(out, "w") as f:
-                f.write(f">{pair_id}_for\n{for_seq}\n>{pair_id}_rev\n{rev_seq_rc}\n")
+                f.write(f">{pair_id}_for\n{for_seq}\n>{pair_id}_rev\n{rev_seq}\n")
                 # Optionally add probe sequence
                 pro_seq = config.get("pro")
                 if pro_seq:
@@ -462,9 +549,9 @@ rule prepare_features:
     wildcard_constraints:
         filename="[^./]+"
     input:
-        fa="evaluate/{filename}.fa"
+        fa=f"{RUN_DIR}/{{filename}}.fa"
     output:
-        feat="evaluate/{filename}.feat"
+        feat=f"{RUN_DIR}/{{filename}}.feat"
     shell:
         "qprimer prepare-features "
         "--fa '{input.fa}' "
@@ -475,9 +562,9 @@ rule extract_probe_from_pset:
     wildcard_constraints:
         filename="[^./]+"
     input:
-        fasta="evaluate/{filename}.fa"
+        fasta=f"{RUN_DIR}/{{filename}}.fa"
     output:
-        probe_fa="evaluate/probes/{filename}.fa"
+        probe_fa=f"{RUN_DIR}/{{filename}}_probes.fa"
     run:
         from Bio import SeqIO
         probes = [r for r in SeqIO.parse(input.fasta, "fasta") if r.id.endswith("_pro")]
@@ -498,33 +585,34 @@ rule evaluate_pset:
     wildcard_constraints:
         filename="[^./]+"
     input:
-        eval_on=f"outputs/{{filename}}.{PRIMARY_TARGET}.eval",
-        eval_off=lambda wc: [f"outputs/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
-        fasta="evaluate/{filename}.fa",
+        eval_on=f"{RUN_DIR}/_{PRIMARY_TARGET}/{{filename}}.{PRIMARY_TARGET}.eval",
+        eval_off=lambda wc: [f"{RUN_DIR}/_{t}/{wc.filename}.{t}.eval" for t in OFF_TARGETS],
+        fasta=f"{RUN_DIR}/{{filename}}.fa",
         off_refs=lambda wc: [f"target_seqs/original/{t}.fa" for t in OFF_TARGETS],
-        probe_mapping_on=lambda wc: (
-            f"alignments/{wc.filename}.{PRIMARY_TARGET}.probe.csv"
+        mapped_on=lambda wc: (
+            f"{RUN_DIR}/_{PRIMARY_TARGET}/{wc.filename}.{PRIMARY_TARGET}.mapped"
             if EVAL_HAS_PROBE else []
         ),
-        probe_mapping_off=lambda wc: (
-            [f"alignments/{wc.filename}.{t}.probe.csv" for t in OFF_TARGETS]
+        mapped_off=lambda wc: (
+            [f"{RUN_DIR}/_{t}/{wc.filename}.{t}.mapped" for t in OFF_TARGETS]
             if EVAL_HAS_PROBE else []
         ),
         probe_fa=lambda wc: (
-            f"evaluate/probes/{wc.filename}.fa"
+            f"{RUN_DIR}/{wc.filename}_probes.fa"
             if EVAL_HAS_PROBE else []
         )
     output:
-        directory(f"{EVAL_DIR}/{{filename}}")
+        directory(f"{RUN_DIR}/{{filename}}")
     params:
-        ids=lambda wc: " ".join(shlex.quote(i) for i in check_ids(f"evaluate/{wc.filename}.fa")),
+        ids=lambda wc: " ".join(shlex.quote(i) for i in check_ids(f"{RUN_DIR}/{wc.filename}.fa")),
         off_arg=lambda wc, input: "--off " + " ".join(shlex.quote(str(f)) for f in input.eval_off) if input.eval_off else "",
         off_ref_arg=lambda wc, input: "--off-ref " + " ".join(shlex.quote(str(f)) for f in input.off_refs) if input.off_refs else "",
         probe_args=lambda wc, input: (
-            f"--probe-mapping-on {shlex.quote(str(input.probe_mapping_on))} "
-            f"--probe-mapping-off {' '.join(shlex.quote(str(f)) for f in input.probe_mapping_off)} "
+            f"--mapped-on {shlex.quote(str(input.mapped_on))} "
+            f"--mapped-off {' '.join(shlex.quote(str(f)) for f in input.mapped_off)} "
             f"--probe-seqs {shlex.quote(str(input.probe_fa))} "
-            f"--probe-max-mismatches {PROBE_MAX_MISMATCHES}"
+            f"--probe-max-mismatches {PROBE_MAX_MISMATCHES} "
+            f"--probe-max-indels {PROBE_MAX_INDELS}"
             if EVAL_HAS_PROBE else ""
         )
     shell:
@@ -548,11 +636,11 @@ rule build_index:
     input:
         "target_seqs/original/{target}.fa"
     output:
-        "bt2_index/{target}.1.bt2"
+        f"{RUN_DIR}/_intermediate/{{target}}.1.bt2"
     threads:
         lambda wc: min(4, MAX_CORES) if count_seqs(wc.target) > 1000 else 1
     shell:
-        "bowtie2-build --threads {threads} '{input}' 'bt2_index/{wildcards.target}'"
+        "bowtie2-build --threads {threads} '{input}' '" + RUN_DIR + "/_intermediate/{wildcards.target}'"
 
 
 rule align:
@@ -561,20 +649,20 @@ rule align:
         target=ALL_TARGETS_PATTERN
     input:
         fasta=lambda wc: (
-            f"evaluate/{wc.virus}.fa" if EVALUATE
-            else (f"primer_seqs/{wc.virus}_init.fa"
+            f"{RUN_DIR}/{wc.virus}.fa" if EVALUATE
+            else (f"{RUN_DIR}/{wc.virus}_init.fa"
                     if wc.virus == wc.target
-                    else f"primer_seqs/{wc.virus}_filt.fa")
+                    else f"{RUN_DIR}/{wc.virus}_filt.fa")
         ),
-        index="bt2_index/{target}.1.bt2"
+        index=f"{RUN_DIR}/_intermediate/{{target}}.1.bt2"
     output:
-        temp("alignments/{virus}.{target}.sam")
+        temp(f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.sam")
     threads:
         min(2, MAX_CORES)
     params:
-        reference=lambda wc: f"bt2_index/{wc.target}",
+        reference=lambda wc: f"{RUN_DIR}/_intermediate/{wc.target}",
         multiMap=lambda wc: min(count_seqs(wc.target) * 2, 50000),
-        mapOption="--mp 2,2 --np 2 --rdg 4,4 --rfg 4,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
+        mapOption="--mp 2,2 --np 2 --rdg 4,4 --rfg 4,4 -L 6 -N 1 --score-min L,-0.6,-0.6"
     shell:
         "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
@@ -588,20 +676,20 @@ rule align_probes:
         target=ALL_TARGETS_PATTERN
     input:
         fasta=lambda wc: (
-            f"evaluate/probes/{wc.virus}.fa" if EVALUATE
-            else (f"primer_seqs/{wc.virus}_probe.fa"
+            f"{RUN_DIR}/{wc.virus}_probes.fa" if EVALUATE
+            else (f"{RUN_DIR}/{wc.virus}_probe.fa"
                     if wc.virus == wc.target
-                    else f"primer_seqs/{wc.virus}_filt_probes.fa")
+                    else f"{RUN_DIR}/{wc.virus}_filt_probes.fa")
         ),
-        index="bt2_index/{target}.1.bt2"
+        index=f"{RUN_DIR}/_intermediate/{{target}}.1.bt2"
     output:
-        temp("alignments/{virus}.{target}.probe.sam")
+        temp(f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.probe.sam")
     threads:
         min(2, MAX_CORES)
     params:
-        reference=lambda wc: f"bt2_index/{wc.target}",
+        reference=lambda wc: f"{RUN_DIR}/_intermediate/{wc.target}",
         multiMap=lambda wc: min(count_seqs(wc.target) * 2, 50000),
-        mapOption="--mp 3,3 --np 2 --rdg 6,4 --rfg 6,4 -L 8 -N 1 --score-min L,-0.6,-0.6"
+        mapOption="--mp 3,3 --np 2 --rdg 6,4 --rfg 6,4 -L 6 -N 1 --score-min L,-0.6,-0.6"
     shell:
         "bowtie2 -x '{params.reference}' -U '{input.fasta}' -f "
         "-p {threads} -k {params.multiMap} {params.mapOption} "
@@ -614,9 +702,9 @@ rule parse_probe_mapping:
         virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
-        sam="alignments/{virus}.{target}.probe.sam"
+        sam=f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.probe.sam"
     output:
-        "alignments/{virus}.{target}.probe.csv"
+        f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.probe.csv"
     shell:
         "qprimer parse-probe-mapping "
         "--sam '{input.sam}' --out '{output}'"
@@ -627,20 +715,26 @@ rule parse_probe_mapping:
 ############################################
 
 rule parse_map:
+    wildcard_constraints:
+        virus="[^./]+",
+        target=ALL_TARGETS_PATTERN
     input:
-        "alignments/{filename}.sam"
+        f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.sam"
     output:
-        temp("alignments/{filename}.parsed")
+        temp(f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.parsed")
     shell:
         "sam2pairwise < '{input}' > '{output}'"
 
 
 rule process_map:
+    wildcard_constraints:
+        virus="[^./]+",
+        target=ALL_TARGETS_PATTERN
     input:
-        sam="alignments/{filename}.sam",
-        parsed="alignments/{filename}.parsed"
+        sam=f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.sam",
+        parsed=f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.parsed"
     output:
-        temp("alignments/{filename}.mapped.temp")
+        temp(f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.mapped.temp")
     run:
         pseqs = input.parsed + ".pseq"
         tseqs = input.parsed + ".tseq"
@@ -662,9 +756,9 @@ rule check_coverage:
         virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
-        mapped="alignments/{virus}.{target}.mapped.temp"
+        mapped=f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.mapped.temp"
     output:
-        "alignments/{virus}.{target}.mapped"
+        f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.mapped"
     params:
         min_cov=lambda wc: int(count_seqs(wc.target) * 0.95)
     run:
@@ -698,23 +792,17 @@ rule prepare_input:
         virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
-        mapped="alignments/{virus}.{target}.mapped",
-        prev=lambda wc: (
-            [f"outputs/{wc.virus}.{wc.virus}.eval"]
-            if wc.virus != wc.target and not EVALUATE else []
-        ),
+        mapped=f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.mapped",
+        prev=_select_prev_eval,
         ref="target_seqs/original/{target}.fa",
-        features=lambda wc: (
-            "evaluate/{virus}.feat" if EVALUATE
-            else "primer_seqs/{virus}_init.feat"
-        )
+        features=_select_init_feat
     output:
-        "inputs/{virus}.{target}.input"
+        f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.input"
     params:
         ref_type=lambda wc: "on" if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else "off",
-        prev_arg=lambda wc: (
-            f"--prev 'outputs/{wc.virus}.{wc.virus}.eval'"
-            if wc.virus != wc.target and not EVALUATE else ""
+        prev_arg=lambda wc, input: (
+            f"--prev '{input.prev[0]}'"
+            if input.prev else ""
         )
     shell:
         "qprimer prepare-input "
@@ -728,10 +816,10 @@ rule evaluate:
         virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
-        inp="inputs/{virus}.{target}.input",
+        inp=f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.input",
         ref="target_seqs/original/{target}.fa"
     output:
-        "outputs/{virus}.{target}.eval"
+        f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.eval"
     threads:
         min(2, MAX_CORES)
     resources:
@@ -750,26 +838,26 @@ rule rescue_evaluate:
         virus="[^./]+",
         target=ALL_TARGETS_PATTERN
     input:
-        eval="outputs/{virus}.{target}.eval",
+        eval=f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.eval",
         report_dir=lambda wc: (
-            f"{EVAL_DIR}/{wc.virus}" if EVALUATE
+            f"{RUN_DIR}/{wc.virus}" if EVALUATE
             else []
         ),
         fasta=lambda wc: (
-            f"evaluate/{wc.virus}.fa" if EVALUATE
-            else f"primer_seqs/{wc.virus}_init.fa"
+            f"{RUN_DIR}/{wc.virus}.fa" if EVALUATE
+            else f"{RUN_DIR}/{wc.virus}_init.fa"
         ),
         ref="target_seqs/original/{target}.fa",
         features=lambda wc: (
-            f"evaluate/{wc.virus}.feat" if EVALUATE
-            else f"primer_seqs/{wc.virus}_init.feat"
+            f"{RUN_DIR}/{wc.virus}.feat" if EVALUATE
+            else f"{RUN_DIR}/{wc.virus}_init.feat"
         )
     output:
-        touch("outputs/{virus}.{target}.eval.rescue_done")
+        touch(f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.eval.rescue_done")
     params:
         ref_type=lambda wc: "on" if (wc.virus == wc.target or (EVALUATE and wc.target == PRIMARY_TARGET)) else "off",
         report_dir=lambda wc: (
-            f"{EVAL_DIR}/{wc.virus}" if EVALUATE
+            f"{RUN_DIR}/{wc.virus}" if EVALUATE
             else ""
         )
     threads:
@@ -783,32 +871,37 @@ rule rescue_evaluate:
         "--threads {threads}"
 
 
-rule filter_primer_list:
-    wildcard_constraints:
-        virus=TARGETS_PATTERN
-    input:
-        res="outputs/{virus}.{virus}.eval",
-        init="primer_seqs/{virus}_init.fa",
-        probe_mapping=lambda wc: (
-            f"alignments/{wc.virus}.{wc.virus}.probe.csv" if PROBE_MODE else []
-        ),
-        probe_seqs=lambda wc: (
-            f"primer_seqs/{wc.virus}_probe.fa" if PROBE_MODE else []
-        )
-    output:
-        fasta="primer_seqs/{virus}_filt.fa",
-        csv="primer_seqs/{virus}_filt.csv",
-        probe_csv="primer_seqs/{virus}_filt_probes.csv",
-        probe_fasta="primer_seqs/{virus}_filt_probes.fa"
-    params:
-        probe_args=lambda wc: (
-            f"--probe-mapping 'alignments/{wc.virus}.{wc.virus}.probe.csv' "
-            f"--probe-seqs 'primer_seqs/{wc.virus}_probe.fa' "
-            f"--probe-out 'primer_seqs/{wc.virus}_filt_probes.csv'"
-            if PROBE_MODE else ""
-        )
-    shell:
-        """
-        qprimer filter --init '{input.init}' --scores '{input.res}' --out '{output.fasta}' --params '{PARAMS}' {params.probe_args}
-        touch '{output.probe_csv}' '{output.probe_fasta}'
-        """
+if PROBE_MODE:
+    rule filter_primer_list:
+        wildcard_constraints:
+            virus=TARGETS_PATTERN
+        input:
+            res=lambda wc: _eval_path(wc.virus),
+            init=f"{RUN_DIR}/{{virus}}_init.fa",
+            probe_mapping=f"{RUN_DIR}/_{{virus}}/{{virus}}.{{virus}}.probe.csv",
+            probe_seqs=f"{RUN_DIR}/{{virus}}_probe.fa"
+        output:
+            fasta=f"{RUN_DIR}/{{virus}}_filt.fa",
+            csv=f"{RUN_DIR}/{{virus}}_filt.csv",
+            probe_csv=f"{RUN_DIR}/{{virus}}_filt_probes.csv",
+            probe_fasta=f"{RUN_DIR}/{{virus}}_filt_probes.fa"
+        shell:
+            "qprimer filter --init '{input.init}' --scores '{input.res}' "
+            "--out '{output.fasta}' --params '{PARAMS}' "
+            "--probe-mapping '{input.probe_mapping}' "
+            "--probe-seqs '{input.probe_seqs}' "
+            "--probe-out '{output.probe_csv}' && "
+            "touch '{output.probe_fasta}'"
+else:
+    rule filter_primer_list:
+        wildcard_constraints:
+            virus=TARGETS_PATTERN
+        input:
+            res=lambda wc: _eval_path(wc.virus),
+            init=f"{RUN_DIR}/{{virus}}_init.fa"
+        output:
+            fasta=f"{RUN_DIR}/{{virus}}_filt.fa",
+            csv=f"{RUN_DIR}/{{virus}}_filt.csv"
+        shell:
+            "qprimer filter --init '{input.init}' --scores '{input.res}' "
+            "--out '{output.fasta}' --params '{PARAMS}'"
