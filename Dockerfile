@@ -16,7 +16,7 @@ ENV PATH="/opt/conda/bin:$PATH"
 COPY --chown=$MAMBA_USER:$MAMBA_USER pyproject.toml README.md /app/
 COPY --chown=$MAMBA_USER:$MAMBA_USER src/ /app/src/
 WORKDIR /app
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[gui]"
 
 # Layer 3: Copy remaining files (workflows, training, CLAUDE.md, LICENSE, etc.)
 COPY --chown=$MAMBA_USER:$MAMBA_USER . /app
