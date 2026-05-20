@@ -26,6 +26,12 @@ from qprimer_designer.external.mafft import (
     find_mafft,
     align_sequences,
 )
+from qprimer_designer.external.blast import (
+    find_blastn,
+    parse_blast_results,
+    run_blastn_remote,
+    BLAST_OUTFMT_FIELDS,
+)
 
 
 # --- Vienna RNA tests ---
@@ -385,3 +391,156 @@ class TestViennaConstants:
             assert c in _IUPAC_AMBIGUITY_CHARS
         assert 'A' not in _IUPAC_AMBIGUITY_CHARS
         assert 'N' not in _IUPAC_AMBIGUITY_CHARS
+
+
+# --- BLAST tests ---
+
+
+class TestFindBlastn:
+    """Tests for find_blastn."""
+
+    def setup_method(self):
+        find_blastn.cache_clear()
+
+    @patch("qprimer_designer.external.blast.shutil.which", return_value="/usr/bin/blastn")
+    def test_found(self, mock_which):
+        assert find_blastn() == "/usr/bin/blastn"
+        mock_which.assert_called_once_with("blastn")
+
+    @patch("qprimer_designer.external.blast.shutil.which", return_value=None)
+    def test_not_found(self, mock_which):
+        with pytest.raises(FileNotFoundError, match="blastn not found"):
+            find_blastn()
+
+    @patch("qprimer_designer.external.blast.shutil.which", return_value="/usr/bin/blastn")
+    def test_cached(self, mock_which):
+        assert find_blastn() == "/usr/bin/blastn"
+        assert find_blastn() == "/usr/bin/blastn"
+        mock_which.assert_called_once()
+
+
+class TestParseBlastResults:
+    """Tests for parse_blast_results."""
+
+    def test_empty_output(self):
+        assert parse_blast_results("") == []
+
+    def test_whitespace_only(self):
+        assert parse_blast_results("  \n\n  ") == []
+
+    def test_comment_lines_skipped(self):
+        assert parse_blast_results("# BLAST output\n# Fields: ...") == []
+
+    def test_single_hit(self):
+        line = "primer_F\tref123\tSome organism gene\t95.5\t20\t1\t0.001\t40.1\t9606"
+        result = parse_blast_results(line)
+        assert len(result) == 1
+        assert result[0]["qseqid"] == "primer_F"
+        assert result[0]["sseqid"] == "ref123"
+        assert result[0]["stitle"] == "Some organism gene"
+        assert result[0]["pident"] == 95.5
+        assert result[0]["length"] == 20
+        assert result[0]["mismatch"] == 1
+        assert result[0]["evalue"] == 0.001
+        assert result[0]["bitscore"] == 40.1
+        assert result[0]["staxids"] == "9606"
+
+    def test_multiple_hits(self):
+        output = (
+            "p1\tref1\tOrg A\t100.0\t20\t0\t1e-5\t40.1\t1234\n"
+            "p1\tref2\tOrg B\t85.0\t18\t3\t0.5\t30.0\t5678\n"
+        )
+        result = parse_blast_results(output)
+        assert len(result) == 2
+        assert result[0]["sseqid"] == "ref1"
+        assert result[1]["sseqid"] == "ref2"
+
+    def test_wrong_field_count_skipped(self):
+        output = "too\tfew\tfields\n"
+        result = parse_blast_results(output)
+        assert len(result) == 0
+
+    def test_custom_fields(self):
+        result = parse_blast_results("val1\tval2", fields=["a", "b"])
+        assert result == [{"a": "val1", "b": "val2"}]
+
+
+class TestRunBlastnRemote:
+    """Tests for run_blastn_remote."""
+
+    def setup_method(self):
+        find_blastn.cache_clear()
+
+    @patch("qprimer_designer.external.blast.find_blastn", return_value="/usr/bin/blastn")
+    @patch("qprimer_designer.external.blast.subprocess.run")
+    def test_basic_query(self, mock_run, mock_find):
+        mock_run.return_value = MagicMock(
+            stdout="p1\tref1\tOrganism\t100.0\t20\t0\t1e-5\t40.1\t1234\n",
+            stderr="",
+            returncode=0,
+        )
+        result = run_blastn_remote({"p1": "ATCGATCGATCGATCGATCG"})
+        assert len(result) == 1
+        assert result[0]["qseqid"] == "p1"
+        cmd = mock_run.call_args[0][0]
+        assert "-remote" in cmd
+        assert "nt" in cmd
+        assert "blastn-short" in cmd
+
+    @patch("qprimer_designer.external.blast.find_blastn", return_value="/usr/bin/blastn")
+    @patch("qprimer_designer.external.blast.subprocess.run")
+    def test_with_negative_taxids(self, mock_run, mock_find):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        run_blastn_remote({"p1": "ATCGATCG"}, negative_taxids=[11320])
+        cmd = mock_run.call_args[0][0]
+        assert "-entrez_query" in cmd
+        eq_idx = cmd.index("-entrez_query") + 1
+        assert "NOT txid11320[ORGN]" in cmd[eq_idx]
+
+    @patch("qprimer_designer.external.blast.find_blastn", return_value="/usr/bin/blastn")
+    @patch("qprimer_designer.external.blast.subprocess.run")
+    def test_multiple_negative_taxids(self, mock_run, mock_find):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        run_blastn_remote({"p1": "ATCGATCG"}, negative_taxids=[11320, 9606])
+        cmd = mock_run.call_args[0][0]
+        eq_idx = cmd.index("-entrez_query") + 1
+        assert "NOT txid11320[ORGN]" in cmd[eq_idx]
+        assert "NOT txid9606[ORGN]" in cmd[eq_idx]
+
+    @patch("qprimer_designer.external.blast.find_blastn", return_value="/usr/bin/blastn")
+    @patch("qprimer_designer.external.blast.subprocess.run")
+    def test_nonzero_exit_raises(self, mock_run, mock_find):
+        mock_run.return_value = MagicMock(stdout="", stderr="BLAST error", returncode=1)
+        with pytest.raises(RuntimeError, match="blastn exited"):
+            run_blastn_remote({"p1": "ATCGATCG"})
+
+    @patch("qprimer_designer.external.blast.find_blastn", return_value="/usr/bin/blastn")
+    def test_empty_sequences_raises(self, mock_find):
+        with pytest.raises(ValueError, match="non-empty"):
+            run_blastn_remote({})
+
+    @patch("qprimer_designer.external.blast.find_blastn", return_value="/usr/bin/blastn")
+    def test_empty_sequence_value_raises(self, mock_find):
+        with pytest.raises(ValueError, match="Empty sequence"):
+            run_blastn_remote({"p1": ""})
+
+    @patch("qprimer_designer.external.blast.find_blastn", return_value="/usr/bin/blastn")
+    def test_invalid_taxid_raises(self, mock_find):
+        with pytest.raises(ValueError, match="Invalid TaxID"):
+            run_blastn_remote({"p1": "ATCG"}, negative_taxids=[-1])
+
+    @patch("qprimer_designer.external.blast.find_blastn", return_value="/usr/bin/blastn")
+    @patch("qprimer_designer.external.blast.subprocess.run")
+    def test_empty_results(self, mock_run, mock_find):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        result = run_blastn_remote({"p1": "ATCGATCG"})
+        assert result == []
+
+    @patch("qprimer_designer.external.blast.find_blastn", return_value="/usr/bin/blastn")
+    @patch("qprimer_designer.external.blast.subprocess.run")
+    def test_temp_files_cleaned_up(self, mock_run, mock_find):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        run_blastn_remote({"p1": "ATCGATCG"})
+        cmd = mock_run.call_args[0][0]
+        query_idx = cmd.index("-query") + 1
+        assert not Path(cmd[query_idx]).exists()

@@ -2755,7 +2755,26 @@ def _tab_results():
                     if "score" in df.columns:
                         mc3.metric("Best score", f"{df['score'].max():.4f}")
 
-                    st.dataframe(df, use_container_width=True)
+                    has_primer_seqs = "pseq_f" in df.columns and "pseq_r" in df.columns
+
+                    if has_primer_seqs:
+                        display_df = df.copy()
+                        display_df.insert(0, "Select", False)
+                        edited_df = st.data_editor(
+                            display_df,
+                            use_container_width=True,
+                            disabled=[c for c in display_df.columns if c != "Select"],
+                            column_config={
+                                "Select": st.column_config.CheckboxColumn(
+                                    "Select",
+                                    help="Select primer pairs for BLAST specificity check",
+                                    default=False,
+                                ),
+                            },
+                            key=f"blast_editor_{selected_csv_label}",
+                        )
+                    else:
+                        st.dataframe(df, use_container_width=True)
 
                     st.download_button(
                         "Download CSV",
@@ -2763,6 +2782,164 @@ def _tab_results():
                         file_name=csv_path.name,
                         mime="text/csv",
                     )
+
+                    # --- BLAST Specificity Check ---
+                    if has_primer_seqs:
+                        st.divider()
+                        st.subheader("BLAST Specificity Check")
+                        st.caption(
+                            "Run selected primer pairs against the NCBI nucleotide "
+                            "database (remote BLAST) to check for off-target hits."
+                        )
+
+                        # Auto-detect TaxID from run_config.json
+                        auto_taxid = ""
+                        config_path = run_dir / "run_config.json"
+                        if config_path.exists():
+                            try:
+                                run_cfg = json.loads(config_path.read_text())
+                                virus_str = run_cfg.get("fetch_settings", {}).get("virus", "")
+                                if "TaxID:" in virus_str:
+                                    auto_taxid = virus_str.split("TaxID: ")[1].rstrip(")")
+                            except (json.JSONDecodeError, IndexError, KeyError):
+                                pass
+
+                        if auto_taxid:
+                            st.info(
+                                f"Auto-detected target organism TaxID: **{auto_taxid}** "
+                                "(from run config). Hits to this organism will be excluded."
+                            )
+
+                        taxid_input = st.text_input(
+                            "Exclude TaxID (target organism)",
+                            value=auto_taxid,
+                            key="blast_taxid_input",
+                            help=(
+                                "NCBI Taxonomy ID of the target organism. Hits to this "
+                                "organism will be excluded from results. Leave empty to "
+                                "show all hits."
+                            ),
+                        )
+
+                        selected_rows = edited_df[edited_df["Select"]]
+
+                        if len(selected_rows) == 0:
+                            st.caption("Select one or more primer pairs above, then click the button below.")
+                        else:
+                            st.write(f"**{len(selected_rows)} primer pair(s) selected**")
+
+                        blast_disabled = len(selected_rows) == 0
+                        if st.button(
+                            "Run BLAST Specificity Check",
+                            type="primary",
+                            key="blast_run_btn",
+                            disabled=blast_disabled,
+                        ):
+                            # Check blastn availability
+                            try:
+                                from qprimer_designer.external.blast import find_blastn
+                                find_blastn()
+                            except FileNotFoundError as e:
+                                st.error(str(e))
+                                st.stop()
+
+                            # Validate taxid
+                            negative_taxids = None
+                            tid = taxid_input.strip() if taxid_input else ""
+                            if tid:
+                                if re.fullmatch(r"\d+", tid):
+                                    negative_taxids = [int(tid)]
+                                else:
+                                    st.error("TaxID must be a numeric value.")
+                                    st.stop()
+
+                            from concurrent.futures import ThreadPoolExecutor, as_completed
+                            from qprimer_designer.external.blast import run_blastn_remote
+
+                            def _blast_one_pair(pair_label, sequences, negative_taxids):
+                                try:
+                                    hits = run_blastn_remote(
+                                        sequences=sequences,
+                                        negative_taxids=negative_taxids,
+                                    )
+                                    return pair_label, hits
+                                except subprocess.TimeoutExpired:
+                                    return pair_label, "TIMEOUT: BLAST query exceeded 10 minute limit."
+                                except Exception as e:
+                                    return pair_label, f"ERROR: {e}"
+
+                            futures = {}
+                            n_pairs = len(selected_rows)
+                            max_workers = min(n_pairs, 4)
+
+                            with st.spinner(
+                                f"Running remote BLAST for {n_pairs} primer pair(s) "
+                                f"in parallel ({max_workers} at a time)... "
+                                "This may take a few minutes."
+                            ):
+                                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                                    for _, row in selected_rows.iterrows():
+                                        pair_label = f"{row['pname_f']} / {row['pname_r']}"
+                                        sequences = {
+                                            row["pname_f"]: row["pseq_f"],
+                                            row["pname_r"]: row["pseq_r"],
+                                        }
+                                        fut = executor.submit(
+                                            _blast_one_pair, pair_label, sequences, negative_taxids,
+                                        )
+                                        futures[fut] = pair_label
+
+                                    all_results = {}
+                                    for fut in as_completed(futures):
+                                        pair_label, result = fut.result()
+                                        all_results[pair_label] = result
+
+                            st.session_state["blast_results"] = all_results
+                            st.session_state["blast_results_csv"] = selected_csv_label
+                            st.rerun()
+
+                        # Display stored BLAST results (if they match current CSV)
+                        blast_results = st.session_state.get("blast_results")
+                        blast_csv = st.session_state.get("blast_results_csv")
+                        if blast_results and blast_csv == selected_csv_label:
+                            import pandas as _blast_pd
+
+                            st.subheader("BLAST Results")
+                            for pair_label, hits in blast_results.items():
+                                with st.expander(f"**{pair_label}**", expanded=True):
+                                    if isinstance(hits, str):
+                                        st.error(hits)
+                                    elif len(hits) == 0:
+                                        st.success("No off-target hits found.")
+                                    else:
+                                        hits_df = _blast_pd.DataFrame(hits)
+                                        hits_df = hits_df.rename(columns={
+                                            "qseqid": "Query",
+                                            "sseqid": "Subject ID",
+                                            "stitle": "Subject Title",
+                                            "pident": "% Identity",
+                                            "length": "Alignment Length",
+                                            "mismatch": "Mismatches",
+                                            "evalue": "E-value",
+                                            "bitscore": "Bit Score",
+                                            "staxids": "Subject TaxID(s)",
+                                        })
+
+                                        m1, m2, m3 = st.columns(3)
+                                        m1.metric("Total hits", len(hits_df))
+                                        high_ident = hits_df[hits_df["% Identity"] >= 90]
+                                        m2.metric("Hits >= 90% identity", len(high_ident))
+                                        if len(hits_df) > 0:
+                                            m3.metric("Best E-value", f"{hits_df['E-value'].min():.2e}")
+
+                                        if len(high_ident) > 0:
+                                            st.warning(
+                                                f"Found {len(high_ident)} hit(s) with >= 90% identity. "
+                                                "Review these for potential off-target amplification."
+                                            )
+
+                                        st.dataframe(hits_df, use_container_width=True)
+
                 except Exception as exc:
                     st.error(f"Error reading {selected_csv_label}: {exc}")
         else:

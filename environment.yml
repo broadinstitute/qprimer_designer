@@ -10,6 +10,7 @@ dependencies:
   - bowtie2>=2.5
   - sam2pairwise
   - mafft>=7.5
+  - blast>=2.14
   - ncbi-datasets-cli>=16
   # Workflow
   - snakemake>=9.0
