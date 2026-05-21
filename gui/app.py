@@ -2486,10 +2486,12 @@ def _parse_beast_trees(trees_path: Path):
     newick_clean = re.sub(r"\[&[^\]]*\]", "", newick_str)
 
     # Replace numeric taxon IDs with actual labels
+    # Spaces in names break newick parsing, so replace with underscores
     if translate_map:
         def _replace_taxon(m):
             num = m.group(1)
-            return translate_map.get(num, num)
+            name = translate_map.get(num, num)
+            return name.replace(" ", "_")
         # Match numbers that appear as leaf labels (preceded by '(' or ',' and followed by ':')
         newick_clean = re.sub(r"(?<=[(,])(\d+)(?=:)", _replace_taxon, newick_clean)
 
@@ -2547,37 +2549,34 @@ def _plot_phylo_tree(tree, covered_ids: set[str] | None = None):
     # Tip markers and labels
     tip_x, tip_y, tip_text, tip_color = [], [], [], []
     tip_labels = []
-    # Pre-build version-stripped lookup for covered_ids
+    # Pre-build lookup for covered_ids (include version-stripped variants as fallback)
     if covered_ids is not None:
-        _covered_stripped = {c.split(".")[0] for c in covered_ids} | covered_ids
+        _covered_lookup = set(covered_ids)
+        for c in covered_ids:
+            base = c.rsplit(".", 1)[0] if "." in c else c
+            _covered_lookup.add(base)
     else:
-        _covered_stripped = set()
+        _covered_lookup = set()
     for tip in tree.get_terminals():
         x, y = node_coords[id(tip)]
         tip_x.append(x)
         tip_y.append(y)
         name = tip.name or ""
-        # Parse accession, optional country code, and date from "accession|CC|date" or "accession|date"
+        # Parse accession and date from "acc|date" or "acc|geo|date"
         parts = name.split("|")
         acc = parts[0] if parts else name
-        if len(parts) == 3:
-            cc = parts[1]
-            date_str = parts[2]
-        elif len(parts) == 2:
-            date_str = parts[1]
-            cc = ""
-        else:
-            date_str = ""
-            cc = ""
+        # Date is always the last field (YYYY-MM-DD)
+        date_str = parts[-1] if len(parts) > 1 else ""
+        geo = parts[1].replace("_", " ") if len(parts) > 2 else ""
         label = acc
+        if geo:
+            label += f"  {geo}"
         if date_str:
             label += f"  {date_str}"
-        if cc:
-            label += f"  {cc}"
         tip_labels.append(f"  {label}")
 
         if covered_ids is not None:
-            is_covered = acc in _covered_stripped or acc.split(".")[0] in _covered_stripped
+            is_covered = acc in _covered_lookup or acc.rsplit(".", 1)[0] in _covered_lookup
             tip_color.append("#2ecc71" if is_covered else "#e74c3c")
             status = "Covered" if is_covered else "Not covered"
             tip_text.append(f"{acc}<br>{date_str}<br>{status}")
@@ -2680,9 +2679,10 @@ def _get_activity_scores_from_eval(eval_re_path: Path, pname_f: str,
 
     row = pair_row.iloc[0]
     scores = {}
-    for acc in df.columns[2:]:
+    for col in df.columns[2:]:
         try:
-            scores[acc] = float(row[acc])
+            acc = col.split("|")[0]  # extract accession from "acc|geo|date" or "acc|truncated"
+            scores[acc] = float(row[col])
         except (ValueError, KeyError):
             pass
     return scores
@@ -2935,10 +2935,11 @@ def _tab_results():
                                                                 acc for acc, s in scores.items()
                                                                 if s >= cutoff
                                                             }
-                                                            n_total = len(scores)
+                                                            # Count from tree tips for accurate total
+                                                            n_tree_tips = len(tree.get_terminals())
                                                             st.metric(
                                                                 "Coverage",
-                                                                f"{len(covered_ids)} / {n_total}",
+                                                                f"{len(covered_ids)} / {n_tree_tips}",
                                                             )
 
                                         # Download .dphy for Delphy web viewer
