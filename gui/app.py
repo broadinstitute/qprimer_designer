@@ -2281,6 +2281,21 @@ def _country_to_alpha2(country_name: str) -> str:
     return ""
 
 
+def _msa_has_delphy_headers(msa_path: Path) -> bool:
+    """Check if MSA headers end with '|YYYY-MM-DD' (e.g. acc|date or acc|geo|date)."""
+    date_re = re.compile(r"^[^|]+\|(?:[^|]+\|)*\d{4}-\d{2}-\d{2}$")
+    n_checked = 0
+    n_valid = 0
+    with open(msa_path) as f:
+        for line in f:
+            if line.startswith(">"):
+                header = line[1:].strip()
+                n_checked += 1
+                if date_re.match(header):
+                    n_valid += 1
+    return n_checked > 0 and n_valid == n_checked
+
+
 def _reformat_msa_for_delphy(msa_path: Path, metadata_csv: Path, output_path: Path) -> dict:
     """Rewrite MSA headers to 'accession|YYYY-MM-DD' (with optional country code) using metadata CSV.
 
@@ -2791,132 +2806,148 @@ def _tab_results():
 
                 if not msa_path.exists():
                     st.warning(f"MSA file not found: `{msa_path.name}`. Run the pipeline first.")
-                elif not meta_path.exists():
-                    st.warning(
-                        f"Metadata file not found: `{meta_path.name}`. "
-                        "Re-fetch sequences to generate metadata for Delphy."
-                    )
                 else:
-                    # Check if tree already exists
-                    dphy_file = tree_dir / f"{tree_target}_delphy.dphy" if tree_dir else None
-                    trees_file = tree_dir / f"{tree_target}_delphy.trees" if tree_dir else None
-                    tree_exists = trees_file and trees_file.exists()
+                    has_meta = meta_path.exists()
+                    headers_ready = _msa_has_delphy_headers(msa_path)
 
-                    if not tree_exists:
-                        st.markdown(
-                            "Generate a phylogenetic tree using [Delphy](https://github.com/broadinstitute/delphy) "
-                            "to visualize primer coverage across the evolutionary tree."
+                    if not has_meta and not headers_ready:
+                        st.warning(
+                            f"Metadata file not found: `{meta_path.name}`. "
+                            "Re-fetch sequences to generate metadata for Delphy, "
+                            "or provide an MSA with headers in `accession|YYYY-MM-DD` format."
                         )
-                        if st.button("Generate Phylogenetic Tree", type="primary"):
-                            delphy_bin = _get_delphy_binary()
-                            if delphy_bin is None:
-                                st.error(
-                                    f"Delphy is not available for this platform "
-                                    f"({_platform.system()} {_platform.machine()})."
-                                )
-                            else:
-                                with st.spinner("Reformatting MSA headers for Delphy..."):
-                                    delphy_fasta = MSA_DIR / f"{tree_target}_delphy.afa"
-                                    stats = _reformat_msa_for_delphy(msa_path, meta_path, delphy_fasta)
+                    else:
+                        # Check if tree already exists
+                        dphy_file = tree_dir / f"{tree_target}_delphy.dphy" if tree_dir else None
+                        trees_file = tree_dir / f"{tree_target}_delphy.trees" if tree_dir else None
+                        tree_exists = trees_file and trees_file.exists()
 
-                                if stats.get("error"):
-                                    st.error(f"Header reformat error: {stats['error']}")
-                                elif stats["included"] == 0:
+                        if not tree_exists:
+                            st.markdown(
+                                "Generate a phylogenetic tree using [Delphy](https://github.com/broadinstitute/delphy) "
+                                "to visualize primer coverage across the evolutionary tree."
+                            )
+                            if st.button("Generate Phylogenetic Tree", type="primary"):
+                                delphy_bin = _get_delphy_binary()
+                                if delphy_bin is None:
                                     st.error(
-                                        "No sequences with valid collection dates (YYYY-MM-DD). "
-                                        "Delphy requires complete dates."
+                                        f"Delphy is not available for this platform "
+                                        f"({_platform.system()} {_platform.machine()})."
                                     )
                                 else:
-                                    st.info(
-                                        f"Reformatted: {stats['included']} sequences included, "
-                                        f"{stats['excluded_no_date']} excluded (missing dates)."
-                                    )
-                                    progress_area = st.empty()
-                                    with st.spinner("Running Delphy inference... This may take a while."):
-                                        result = _run_delphy(
-                                            delphy_bin, delphy_fasta, tree_dir,
-                                            stats["included"], progress_area,
-                                        )
+                                    delphy_fasta = MSA_DIR / f"{tree_target}_delphy.afa"
 
-                                    if result is None:
-                                        st.error("Delphy inference failed. Check logs.")
+                                    if headers_ready:
+                                        # MSA headers already in Delphy format — use directly
+                                        import shutil as _shutil
+                                        _shutil.copy2(msa_path, delphy_fasta)
+                                        with open(msa_path) as _f:
+                                            num_seqs = sum(1 for _l in _f if _l.startswith(">"))
+                                        stats = {"included": num_seqs, "excluded_no_date": 0}
+                                        st.info(f"MSA headers already in Delphy format ({num_seqs} sequences).")
                                     else:
-                                        st.success("Delphy inference complete!")
-                                        st.rerun()
+                                        with st.spinner("Reformatting MSA headers for Delphy..."):
+                                            stats = _reformat_msa_for_delphy(msa_path, meta_path, delphy_fasta)
 
-                    if tree_exists:
-                        # Parse and display tree
-                        try:
-                            tree = _parse_beast_trees(trees_file)
-                            if tree is None:
-                                st.warning("Could not parse tree from Delphy output.")
-                            else:
-                                # Two-column layout: controls (left) | tree (right)
-                                ctrl_col, tree_col = st.columns([1, 3])
-
-                                covered_ids = None
-                                with ctrl_col:
-                                    # Find eval.re files for this target
-                                    eval_re_files = sorted(run_dir.glob(
-                                        f"**/*{tree_target}*.eval.re"
-                                    )) if run_dir and run_dir.exists() else []
-
-                                    if eval_re_files and csvs:
-                                        import pandas as pd
-                                        csv_path = run_dir / csv_labels[0]
-                                        final_df = pd.read_csv(csv_path)
-                                        if len(final_df) > 0:
-                                            pair_options = [
-                                                f"{r['pname_f']} / {r['pname_r']}"
-                                                for _, r in final_df.iterrows()
-                                                if "pname_f" in r and "pname_r" in r
-                                            ]
-                                            if pair_options:
-                                                selected_pair = st.selectbox(
-                                                    "Primer pair",
-                                                    options=["(none)"] + pair_options,
-                                                    key="delphy_primer_pair",
-                                                )
-                                                if selected_pair != "(none)":
-                                                    parts = selected_pair.split(" / ")
-                                                    pf, pr = parts[0], parts[1]
-                                                    scores = _get_activity_scores_from_eval(
-                                                        eval_re_files[0], pf, pr,
-                                                    )
-                                                    if scores:
-                                                        cutoff = st.slider(
-                                                            "Activity score cutoff",
-                                                            min_value=0.0,
-                                                            max_value=1.1,
-                                                            value=0.5,
-                                                            step=0.05,
-                                                            key="delphy_activity_cutoff",
-                                                            help="Sequences with activity ≥ cutoff are considered covered.",
-                                                        )
-                                                        covered_ids = {
-                                                            acc for acc, s in scores.items()
-                                                            if s >= cutoff
-                                                        }
-                                                        n_total = len(scores)
-                                                        st.metric(
-                                                            "Coverage",
-                                                            f"{len(covered_ids)} / {n_total}",
-                                                        )
-
-                                    # Download .dphy for Delphy web viewer
-                                    if dphy_file and dphy_file.exists():
-                                        st.download_button(
-                                            "Download .dphy (for delphy.fathom.info)",
-                                            data=dphy_file.read_bytes(),
-                                            file_name=dphy_file.name,
-                                            mime="application/octet-stream",
+                                    if stats.get("error"):
+                                        st.error(f"Header reformat error: {stats['error']}")
+                                    elif stats["included"] == 0:
+                                        st.error(
+                                            "No sequences with valid collection dates (YYYY-MM-DD). "
+                                            "Delphy requires complete dates."
                                         )
+                                    else:
+                                        if not headers_ready:
+                                            st.info(
+                                                f"Reformatted: {stats['included']} sequences included, "
+                                                f"{stats['excluded_no_date']} excluded (missing dates)."
+                                            )
+                                        progress_area = st.empty()
+                                        with st.spinner("Running Delphy inference... This may take a while."):
+                                            result = _run_delphy(
+                                                delphy_bin, delphy_fasta, tree_dir,
+                                                stats["included"], progress_area,
+                                            )
 
-                                with tree_col:
-                                    fig = _plot_phylo_tree(tree, covered_ids)
-                                    st.plotly_chart(fig, use_container_width=True)
-                        except Exception as exc:
-                            st.error(f"Error displaying tree: {exc}")
+                                        if result is None:
+                                            st.error("Delphy inference failed. Check logs.")
+                                        else:
+                                            st.success("Delphy inference complete!")
+                                            st.rerun()
+
+                        if tree_exists:
+                            # Parse and display tree
+                            try:
+                                tree = _parse_beast_trees(trees_file)
+                                if tree is None:
+                                    st.warning("Could not parse tree from Delphy output.")
+                                else:
+                                    # Two-column layout: controls (left) | tree (right)
+                                    ctrl_col, tree_col = st.columns([1, 3])
+
+                                    covered_ids = None
+                                    with ctrl_col:
+                                        # Find eval.re files for this target
+                                        eval_re_files = sorted(run_dir.glob(
+                                            f"**/*{tree_target}*.eval.re"
+                                        )) if run_dir and run_dir.exists() else []
+
+                                        if eval_re_files and csvs:
+                                            import pandas as pd
+                                            csv_path = run_dir / csv_labels[0]
+                                            final_df = pd.read_csv(csv_path)
+                                            if len(final_df) > 0:
+                                                pair_options = [
+                                                    f"{r['pname_f']} / {r['pname_r']}"
+                                                    for _, r in final_df.iterrows()
+                                                    if "pname_f" in r and "pname_r" in r
+                                                ]
+                                                if pair_options:
+                                                    selected_pair = st.selectbox(
+                                                        "Primer pair",
+                                                        options=["(none)"] + pair_options,
+                                                        key="delphy_primer_pair",
+                                                    )
+                                                    if selected_pair != "(none)":
+                                                        parts = selected_pair.split(" / ")
+                                                        pf, pr = parts[0], parts[1]
+                                                        scores = _get_activity_scores_from_eval(
+                                                            eval_re_files[0], pf, pr,
+                                                        )
+                                                        if scores:
+                                                            cutoff = st.slider(
+                                                                "Activity score cutoff",
+                                                                min_value=0.0,
+                                                                max_value=1.1,
+                                                                value=0.5,
+                                                                step=0.05,
+                                                                key="delphy_activity_cutoff",
+                                                                help="Sequences with activity ≥ cutoff are considered covered.",
+                                                            )
+                                                            covered_ids = {
+                                                                acc for acc, s in scores.items()
+                                                                if s >= cutoff
+                                                            }
+                                                            n_total = len(scores)
+                                                            st.metric(
+                                                                "Coverage",
+                                                                f"{len(covered_ids)} / {n_total}",
+                                                            )
+
+                                        # Download .dphy for Delphy web viewer
+                                        if dphy_file and dphy_file.exists():
+                                            st.download_button(
+                                                "Download .dphy (for delphy.fathom.info)",
+                                                data=dphy_file.read_bytes(),
+                                                file_name=dphy_file.name,
+                                                mime="application/octet-stream",
+                                            )
+
+                                    with tree_col:
+                                        fig = _plot_phylo_tree(tree, covered_ids)
+                                        st.plotly_chart(fig, use_container_width=True)
+                            except Exception as exc:
+                                st.error(f"Error displaying tree: {exc}")
 
 
     # --- Evaluate reports (evaluate/monitor workflows only) ---
