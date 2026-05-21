@@ -1371,7 +1371,7 @@ def _generate_probes_from_msa(aligned_seqs, regions, probe_params):
 
 def _find_flanking_primer_positions(selected_probes, identity, kept_cols,
                                      primer_len, min_amp_len, max_amp_len,
-                                     buffer, min_primer_score=0.80,
+                                     buffer, min_primer_score=0.70,
                                      min_gc=0.30, max_gc=0.65,
                                      top_per_probe=50):
     """Find valid primer positions flanking each selected probe.
@@ -1587,7 +1587,7 @@ def _run_probe_first(args, params, primer_params, cov_min, act_min, min_pairs, s
 
     # Step 3b: Score probes by per-sequence conservation and select top N
     max_mm = probe_params["max_mismatches"]
-    top_n_probes = int(params.get("PROBE_TOP_N", 20))
+    top_n_probes = int(params.get("PROBE_TOP_N", 50))
     print(f"  Scoring probes by sequence coverage (≤{max_mm} mismatches)...")
     _score_probes_by_coverage(probes, aligned_seqs, max_mm)
 
