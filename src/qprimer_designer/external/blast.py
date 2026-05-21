@@ -58,8 +58,8 @@ def parse_blast_results(raw_output: str, fields: list[str] | None = None) -> lis
 def run_blastn_remote(
     sequences: dict[str, str],
     negative_taxids: list[int] | None = None,
-    evalue: float = 1000,
-    word_size: int = 7,
+    evalue: float = 10,
+    word_size: int = 11,
     max_target_seqs: int = 50,
     timeout: int = 600,
 ) -> list[dict]:

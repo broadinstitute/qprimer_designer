@@ -2821,6 +2821,16 @@ def _tab_results():
                             ),
                         )
 
+                        max_target_seqs = st.number_input(
+                            "Max target sequences per query",
+                            min_value=1,
+                            max_value=5000,
+                            value=50,
+                            step=10,
+                            key="blast_max_target_seqs",
+                            help="Maximum number of aligned sequences to keep per primer query (-max_target_seqs).",
+                        )
+
                         selected_rows = edited_df[edited_df["Select"]]
 
                         if len(selected_rows) == 0:
@@ -2856,11 +2866,12 @@ def _tab_results():
                             from concurrent.futures import ThreadPoolExecutor, as_completed
                             from qprimer_designer.external.blast import run_blastn_remote
 
-                            def _blast_one_pair(pair_label, sequences, negative_taxids):
+                            def _blast_one_pair(pair_label, sequences, negative_taxids, max_target_seqs):
                                 try:
                                     hits = run_blastn_remote(
                                         sequences=sequences,
                                         negative_taxids=negative_taxids,
+                                        max_target_seqs=max_target_seqs,
                                     )
                                     return pair_label, hits
                                 except subprocess.TimeoutExpired:
@@ -2885,7 +2896,7 @@ def _tab_results():
                                             row["pname_r"]: row["pseq_r"],
                                         }
                                         fut = executor.submit(
-                                            _blast_one_pair, pair_label, sequences, negative_taxids,
+                                            _blast_one_pair, pair_label, sequences, negative_taxids, max_target_seqs,
                                         )
                                         futures[fut] = pair_label
 
@@ -2939,6 +2950,24 @@ def _tab_results():
                                             )
 
                                         st.dataframe(hits_df, use_container_width=True)
+
+                            # Download all BLAST results as CSV
+                            all_dfs = []
+                            for pair_label, hits in blast_results.items():
+                                if isinstance(hits, list) and len(hits) > 0:
+                                    df = _blast_pd.DataFrame(hits)
+                                    df.insert(0, "primer_pair", pair_label)
+                                    all_dfs.append(df)
+                            if all_dfs:
+                                combined_df = _blast_pd.concat(all_dfs, ignore_index=True)
+                                csv_data = combined_df.to_csv(index=False)
+                                st.download_button(
+                                    "Download All BLAST Results (CSV)",
+                                    data=csv_data,
+                                    file_name="blast_results.csv",
+                                    mime="text/csv",
+                                    key="blast_download_btn",
+                                )
 
                 except Exception as exc:
                     st.error(f"Error reading {selected_csv_label}: {exc}")
