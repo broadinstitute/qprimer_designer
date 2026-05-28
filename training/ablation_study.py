@@ -39,8 +39,10 @@ SEQUENCE_COLUMNS = ["pseq_f", "tseq_f", "pseq_r", "tseq_r"]
 def evaluate(cls_model, reg_model, feat, seq, y_bin, y_raw, batch_size=512):
     loader = DataLoader(TensorDataset(seq, feat), batch_size=batch_size, shuffle=False)
     cls_preds, reg_preds = [], []
+    dev = next(cls_model.parameters()).device
     with torch.no_grad():
         for seq_b, feat_b in loader:
+            seq_b, feat_b = seq_b.to(dev), feat_b.to(dev)
             cls_preds.append(cls_model(feat_b, seq_b).squeeze().cpu().numpy())
             reg_preds.append(reg_model(feat_b, seq_b).squeeze().cpu().numpy())
     cls_preds = np.concatenate(cls_preds)
@@ -64,7 +66,7 @@ def print_table(title, results, base_auroc, base_r2):
 def main():
     rename = {**FEAT_RENAME, **SEQ_RENAME}
     test_df = pd.read_csv("training/0716_dataset_test.csv").rename(columns=rename)
-    scaler, classifier, regressor, device = load_models(device="cpu")
+    scaler, classifier, regressor, device = load_models(device="cuda")
     classifier.eval()
     regressor.eval()
 
@@ -73,8 +75,8 @@ def main():
     scores = test_df["score"].values
     y_bin = (scores > 0).astype(int)
 
-    feat_tensor = torch.tensor(features, dtype=torch.float32)
-    seq_tensor = sequences.float()
+    feat_tensor = torch.tensor(features, dtype=torch.float32).to(device)
+    seq_tensor = sequences.float().to(device)
 
     base_auroc, base_r2 = evaluate(classifier, regressor, feat_tensor, seq_tensor, y_bin, scores)
 
