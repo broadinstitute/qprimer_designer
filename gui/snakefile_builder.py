@@ -56,10 +56,6 @@ def build_params_txt(params: dict) -> str:
     """
     sections = [
         (
-            "## Parameters in picking representative sequences",
-            ["DESIGN_WINDOW"],
-        ),
-        (
             "## Parameters in generating primers",
             [
                 "TM_MIN",

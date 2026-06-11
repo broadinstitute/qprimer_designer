@@ -38,6 +38,10 @@ def register(subparsers):
     parser.add_argument("--params", required=True, help="Parameters file")
     parser.add_argument("--reftype", required=True, choices=["on", "off"])
     parser.add_argument("--threads", type=int, default=2)
+    parser.add_argument("--probe-mapping-on", dest="probe_mapping_on", default=None,
+                        help="On-target probe mapping CSV (for probe validation in rescue report)")
+    parser.add_argument("--probe-seqs", dest="probe_seqs", default=None,
+                        help="Probe FASTA file (for probe validation in rescue report)")
     parser.set_defaults(func=run)
 
 
@@ -81,7 +85,7 @@ def _run_rescue_pipeline(primer_fa, subset_ref, features, params_file,
     )
 
     n_seqs = sum(1 for line in open(subset_ref) if line.startswith(">"))
-    k_value = min(n_seqs * 5, 50000)
+    k_value = 50000
     sam_file = workdir / "rescue.sam"
 
     subprocess.run([
@@ -165,7 +169,7 @@ def _run_rescue_pipeline(primer_fa, subset_ref, features, params_file,
 
 
 def _export_rescue_report(rescue_eval_path, ref_path, primer_fa, report_dir,
-                          probe_mapping=None, probe_seqs=None):
+                          probe_mapping_on=None, probe_seqs=None):
     """Generate xlsx reports from rescue evaluation results."""
     from Bio import SeqIO
     names = []
@@ -187,8 +191,8 @@ def _export_rescue_report(rescue_eval_path, ref_path, primer_fa, report_dir,
         "--names", *names,
         "--ref", str(ref_path),
     ]
-    if probe_mapping and Path(probe_mapping).exists():
-        cmd.extend(["--probe-mapping-on", str(probe_mapping)])
+    if probe_mapping_on and Path(probe_mapping_on).exists():
+        cmd.extend(["--probe-mapping-on", str(probe_mapping_on)])
     if probe_seqs and Path(probe_seqs).exists():
         cmd.extend(["--probe-seqs", str(probe_seqs)])
 
@@ -231,10 +235,10 @@ def _update_summary_sensitivity(summary_df, detail_df):
             continue
         summary_df.iloc[i, 1] = f"{n_positive} / {total}"
         if len(regressors) > 0:
-            summary_df.iloc[i, 2] = round(regressors.mean(), 3)
-            summary_df.iloc[i, 3] = round(regressors.median(), 3)
-            summary_df.iloc[i, 4] = round(regressors.min(), 3)
-            summary_df.iloc[i, 5] = round(regressors.max(), 3)
+            summary_df.iloc[i, 2] = str(round(regressors.mean(), 3))
+            summary_df.iloc[i, 3] = str(round(regressors.median(), 3))
+            summary_df.iloc[i, 4] = str(round(regressors.min(), 3))
+            summary_df.iloc[i, 5] = str(round(regressors.max(), 3))
 
 
 def _apply_detail_formatting(xlsx_path):
@@ -283,7 +287,7 @@ def _merge_final_xlsx(original_dir, rescue_dir):
             continue
 
         improved_by_id = rescue_improved.set_index("seq_id")
-        keep_original = {"seq_id", "target", "probe", "mm_p", "indel_p"}
+        keep_original = {"seq_id", "target"}
         update_cols = [c for c in orig_detail.columns
                        if c in improved_by_id.columns and c not in keep_original]
         n_replaced = 0
@@ -370,12 +374,29 @@ def run(args):
 
     print(f"  Rescue eval saved to {rescue_eval}")
 
+    # Generate rescue probe mapping using wobble-aware matching
+    rescue_probe_csv = None
+    probe_seqs_path = getattr(args, 'probe_seqs', None)
+    if probe_seqs_path and Path(probe_seqs_path).exists():
+        rescue_probe_csv = rescue_dir / "rescue.probe.csv"
+        rescue_full = Path(f"{rescue_eval}.full")
+        subprocess.run([
+            "qprimer", "evaluate-probe",
+            "--probe-fa", str(probe_seqs_path),
+            "--eval-full", str(rescue_full),
+            "--ref", str(subset_ref),
+            "--out", str(rescue_probe_csv),
+        ], check=True)
+        print(f"  Rescue probe mapping saved to {rescue_probe_csv}")
+
     rescue_report_dir = Path(args.report_dir) / "rescue"
     _export_rescue_report(
         rescue_eval_path=str(rescue_eval),
         ref_path=str(subset_ref),
         primer_fa=args.fasta,
         report_dir=str(rescue_report_dir),
+        probe_mapping_on=str(rescue_probe_csv) if rescue_probe_csv else None,
+        probe_seqs=probe_seqs_path,
     )
     print(f"  Rescue xlsx reports saved to {rescue_report_dir}")
 

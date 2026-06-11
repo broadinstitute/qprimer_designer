@@ -30,6 +30,10 @@ from qprimer_designer.utils import (
     get_primer_params,
     get_probe_params,
     sanitize_iupac,
+    WOBBLE_W_PRIMER,
+    WOBBLE_W_PROBE,
+    wobble_mismatch_count_cols,
+    wobble_mismatch_count_gapped,
 )
 
 
@@ -69,6 +73,8 @@ full pipeline would take too long.
                        help="Output features CSV for probe candidates (probe mode)")
     parser.add_argument("--probe-csv", dest="probe_csv", default=None,
                        help="Output probe mapping CSV (probe mode, replaces bowtie2 alignment)")
+    parser.add_argument("--probe-pair-csv", dest="probe_pair_csv", default=None,
+                       help="Output probe pair assignment CSV (probe mode, records which probe goes with which primer pair)")
     parser.add_argument("--threads", type=int, default=1, help="Number of threads")
     parser.set_defaults(func=run)
 
@@ -80,15 +86,8 @@ TOP_PAIRS = 1000  # top primer pairs to evaluate (after Tm/GC/dG filtering)
 N_POSITIONS = 100  # amplicon positions to score (multi-region mode)
 N_VARIANTS = 10   # primer variants per position per direction
 
-# Wobble tolerance: weight(primer_base, template_base)
-# WC = 1.0, G·T wobble / G·A stable = 0.95.
-# Weight prevents unnecessary wobble substitutions at positions with negligible
-# variation (<~5%), while still flipping positions with meaningful diversity.
-_WOBBLE_W = {
-    ('A', 'T'): 1.0, ('T', 'A'): 1.0, ('G', 'C'): 1.0, ('C', 'G'): 1.0,
-    ('G', 'T'): 0.80, ('T', 'G'): 0.80,
-    ('G', 'A'): 0.80, ('A', 'G'): 0.80,
-}
+# Primer scoring uses the more lenient wobble weights (ML validates further)
+_WOBBLE_W = WOBBLE_W_PRIMER
 _COMPLEMENT = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
 
 
@@ -198,6 +197,124 @@ def generate_primer_variants(aligned_seqs, start_col, primer_len, strand, n_vari
             if len(variants) >= n_variants:
                 break
     # 5. Reverse progressive (wobble → consensus one by one)
+    if len(variants) < n_variants:
+        cur = list(wobble_bases)
+        for pos, _ in reversed(variable):
+            cur = list(cur)
+            cur[pos] = consensus_bases[pos]
+            _add(cur)
+            if len(variants) >= n_variants:
+                break
+
+    result = []
+    for v in variants[:n_variants]:
+        if 'N' in v:
+            continue
+        if strand == 'rev':
+            result.append(''.join(reversed(v)))
+        else:
+            result.append(''.join(v))
+    return result
+
+
+def _best_probe_base(template_freqs):
+    """Pick probe base with highest effective frequency against template.
+
+    Uses WOBBLE_W_PROBE (stricter: G-T/A-G = 0.50) since probes have no ML layer.
+    """
+    best_base, best_score = 'N', -1.0
+    for pb in 'ATGC':
+        score = sum(WOBBLE_W_PROBE.get((pb, tb), 0) * f
+                    for tb, f in template_freqs.items())
+        if score > best_score:
+            best_score = score
+            best_base = pb
+    return best_base, best_score
+
+
+def generate_probe_variants(aligned_seqs, msa_cols, strand, n_variants=5,
+                             _freq_cache=None):
+    """Generate consensus + wobble-optimized probe variants at a position.
+
+    Same diversification logic as generate_primer_variants but uses
+    WOBBLE_W_PROBE (stricter wobble weights).
+
+    Args:
+        aligned_seqs: list of MSA row strings
+        msa_cols: list of MSA column indices (may be non-contiguous after gap trimming)
+        strand: 'fwd' or 'rev'
+        n_variants: max number of variants to generate
+        _freq_cache: optional dict mapping col -> sense_freqs
+
+    Returns list of probe sequences (5'->3'), up to n_variants.
+    """
+    probe_len = len(msa_cols)
+    consensus_bases = []
+    wobble_bases = []
+    gains = []
+
+    for i, col in enumerate(msa_cols):
+        if _freq_cache is not None and col in _freq_cache:
+            sense_freqs = _freq_cache[col]
+        else:
+            sense_freqs = _column_sense_freqs(aligned_seqs, col)
+        if not sense_freqs:
+            consensus_bases.append('N')
+            wobble_bases.append('N')
+            gains.append((i, 0.0))
+            continue
+
+        if strand == 'fwd':
+            cons_base = max(sense_freqs, key=sense_freqs.get)
+            template_freqs = {_COMPLEMENT[b]: f for b, f in sense_freqs.items()}
+        else:
+            sens_cons = max(sense_freqs, key=sense_freqs.get)
+            cons_base = _COMPLEMENT[sens_cons]
+            template_freqs = sense_freqs
+
+        consensus_bases.append(cons_base)
+
+        wob_base, wob_score = _best_probe_base(template_freqs)
+        wobble_bases.append(wob_base)
+
+        cons_score = sum(WOBBLE_W_PROBE.get((cons_base, tb), 0) * f
+                         for tb, f in template_freqs.items())
+        gains.append((i, wob_score - cons_score))
+
+    # Variable positions sorted by gain descending
+    variable = [(i, g) for i, g in gains if wobble_bases[i] != consensus_bases[i]]
+    variable.sort(key=lambda x: -x[1])
+
+    seen = set()
+    variants = []
+
+    def _add(bases):
+        key = tuple(bases)
+        if key not in seen:
+            seen.add(key)
+            variants.append(list(bases))
+
+    # 1. All consensus
+    _add(consensus_bases)
+    # 2. All wobble
+    _add(wobble_bases)
+    # 3. Single substitutions
+    for pos, _ in variable:
+        single = list(consensus_bases)
+        single[pos] = wobble_bases[pos]
+        _add(single)
+        if len(variants) >= n_variants:
+            break
+    # 4. Progressive accumulation
+    if len(variants) < n_variants:
+        cur = list(consensus_bases)
+        for pos, _ in variable:
+            cur = list(cur)
+            cur[pos] = wobble_bases[pos]
+            _add(cur)
+            if len(variants) >= n_variants:
+                break
+    # 5. Reverse progressive
     if len(variants) < n_variants:
         cur = list(wobble_bases)
         for pos, _ in reversed(variable):
@@ -765,7 +882,7 @@ def _align_batch(fasta_path, index_prefix, n_targets, threads, tmpdir, batch_idx
     sam_path = Path(tmpdir) / f"batch_{batch_idx}.sam"
     mapped_path = Path(tmpdir) / f"batch_{batch_idx}.mapped"
 
-    k = min(n_targets * 2, 50000)
+    k = 50000
     cmd = [
         "bowtie2",
         "-x", str(index_prefix),
@@ -969,7 +1086,7 @@ def run(args):
 
     # Route based on mode
     if args.msa and getattr(args, 'probe_mode', False):
-        return _run_probe_first(args, params, primer_params, cov_min, act_min, min_pairs, start_time)
+        return _run_primers_first(args, params, primer_params, cov_min, act_min, min_pairs, start_time)
     elif args.msa:
         return _run_multi_region(args, params, primer_params, cov_min, act_min, min_pairs, start_time)
     else:
@@ -1143,42 +1260,48 @@ def _merge_windows(conserved_starts, probe_len_max, cum_var):
     return regions
 
 
-def _score_probes_by_coverage(probes, aligned_seqs, max_mismatches):
-    """Score each probe by fraction of sequences matching with <= max_mismatches.
+def _score_probes_by_coverage(probes, aligned_seqs, max_mismatches,
+                              max_indels=0, seq_ids=None):
+    """Score each probe by fraction of sequences matching within thresholds.
 
-    For each probe, checks how many sequences in the MSA match the probe
-    consensus with at most max_mismatches substitutions in the probe window.
+    Uses wobble-aware mismatch counting: G-T and A-G pairs contribute 0.20
+    instead of 1.0, and gap positions are counted as indels.
 
     Adds 'coverage' field to each probe dict.
+    When seq_ids is provided, also adds 'covered_seq_ids' (set of matching IDs).
     """
     n_seqs = len(aligned_seqs)
-    _msa = np.array([list(s.upper()) for s in aligned_seqs], dtype='U1')
 
     for probe in probes:
-        start = probe['msa_start']
-        end = probe['msa_end']
         probe_seq = probe['seq']
-        # For rev strand probes, the consensus window is sense-strand
-        # The probe seq is RC of consensus, so compare against sense consensus
+        # Use the strand the probe was designed for (thermodynamics validated)
         if probe['strand'] == 'rev':
             sense_seq = reverse_complement_dna(probe_seq)
         else:
             sense_seq = probe_seq
 
-        # Count mismatches per sequence in this window
-        window = _msa[:, start:end]
-        probe_arr = np.array(list(sense_seq), dtype='U1')
-        mm_per_seq = np.sum(window != probe_arr[np.newaxis, :], axis=1)
-        # Don't count gaps as mismatches
-        gap_mask = (window == '-') | (window == 'N')
-        gap_per_seq = np.sum(gap_mask, axis=1)
-        mm_per_seq = mm_per_seq - gap_per_seq  # adjust for gaps
-        mm_per_seq = np.maximum(mm_per_seq, 0)
+        msa_cols = probe.get('msa_cols')
+        start = probe['msa_start']
+        end = probe['msa_end']
 
-        n_matching = int(np.sum(mm_per_seq <= max_mismatches))
+        n_matching = 0
+        covered = set()
+        for idx, seq_row in enumerate(aligned_seqs):
+            row_upper = seq_row.upper()
+            if msa_cols is not None:
+                mm, indels = wobble_mismatch_count_cols(
+                    sense_seq, row_upper, msa_cols)
+            else:
+                mm, indels = wobble_mismatch_count_gapped(
+                    sense_seq, row_upper, start, end)
+            if mm <= max_mismatches and indels <= max_indels:
+                n_matching += 1
+                if seq_ids is not None:
+                    covered.add(seq_ids[idx])
+
         probe['coverage'] = n_matching / n_seqs
-
-    del _msa
+        if seq_ids is not None:
+            probe['covered_seq_ids'] = covered
 
 
 def _select_top_probes(probes, top_n=5, min_distance=30):
@@ -1203,19 +1326,18 @@ def _select_top_probes(probes, top_n=5, min_distance=30):
 
 
 def _write_probe_mapping_csv(probes, aligned_seqs, seq_ids, out_path,
-                              max_mismatches):
-    """Write probe mapping CSV directly from MSA data, replacing bowtie2 alignment.
+                              max_mismatches, max_indels=0):
+    """Write probe mapping CSV directly from MSA data.
 
-    For each selected probe, computes per-sequence mismatches from the MSA
-    and writes rows in the same format as parse_probe_mapping.
+    Uses wobble-aware mismatch counting (G-T/A-G = 0.20 penalty) and
+    correctly records gap positions as indels.
     Columns: probe_name, probe_seq, target_id, start_pos, orientation, mismatches, indels
     """
-    _msa = np.array([list(s.upper()) for s in aligned_seqs], dtype='U1')
-
     mappings = []
     for probe in probes:
         start = probe['msa_start']
         end = probe['msa_end']
+        msa_cols = probe.get('msa_cols')
         probe_seq = probe['seq']
         strand = probe.get('strand', 'fwd')
         orientation = '+' if strand == 'fwd' else '-'
@@ -1225,24 +1347,19 @@ def _write_probe_mapping_csv(probes, aligned_seqs, seq_ids, out_path,
         else:
             sense_seq = probe_seq
 
-        window = _msa[:, start:end]
-        probe_arr = np.array(list(sense_seq), dtype='U1')
-
         for i, seq_id in enumerate(seq_ids):
-            seq_window = window[i]
-            # Count gaps and mismatches
-            gap_mask = (seq_window == '-') | (seq_window == 'N')
-            n_gaps = int(gap_mask.sum())
-            mm = int(np.sum(seq_window != probe_arr)) - n_gaps
-            mm = max(mm, 0)
+            seq_row = aligned_seqs[i].upper()
+            if msa_cols is not None:
+                mm, indels = wobble_mismatch_count_cols(
+                    sense_seq, seq_row, msa_cols)
+            else:
+                mm, indels = wobble_mismatch_count_gapped(
+                    sense_seq, seq_row, start, end)
 
-            if mm > max_mismatches:
+            if mm > max_mismatches or indels > max_indels:
                 continue
 
-            # Compute ungapped position for this sequence
-            seq_chars = np.array(list(aligned_seqs[i].upper()), dtype='U1')
-            non_gap = (seq_chars != '-')
-            ungapped_pos = int(non_gap[:start].sum())
+            ungapped_pos = sum(1 for c in seq_row[:start] if c != '-')
 
             mappings.append({
                 'probe_name': probe['name'],
@@ -1250,8 +1367,8 @@ def _write_probe_mapping_csv(probes, aligned_seqs, seq_ids, out_path,
                 'target_id': seq_id,
                 'start_pos': ungapped_pos,
                 'orientation': orientation,
-                'mismatches': mm,
-                'indels': 0,
+                'mismatches': round(mm, 2),
+                'indels': indels,
             })
 
     df = pd.DataFrame(mappings)
@@ -1281,60 +1398,76 @@ def _generate_probes_from_msa(aligned_seqs, regions, probe_params):
     avoid_5g = probe_params["avoid_5prime_g"]
     min_dg = probe_params["min_dg"]
 
-    # Build consensus across full MSA
+    # Trim gap-frequent columns from MSA for probe consensus
     n_seqs = len(aligned_seqs)
     seq_len = len(aligned_seqs[0])
     _msa = np.array([list(s.upper()) for s in aligned_seqs], dtype='U1')
-    _base_A = (_msa == 'A').sum(axis=0)
-    _base_T = (_msa == 'T').sum(axis=0)
-    _base_G = (_msa == 'G').sum(axis=0)
-    _base_C = (_msa == 'C').sum(axis=0)
+    _gap_freq = (_msa == '-').sum(axis=0) / n_seqs
 
-    consensus = []
-    for col in range(seq_len):
-        counts = {'A': int(_base_A[col]), 'T': int(_base_T[col]),
-                  'G': int(_base_G[col]), 'C': int(_base_C[col])}
-        best = max(counts, key=counts.get)
-        consensus.append(best if counts[best] > 0 else 'N')
-    consensus_str = ''.join(consensus)
-    del _msa, _base_A, _base_T, _base_G, _base_C
+    gap_threshold = 0.5
+    kept_probe_cols = np.where(_gap_freq <= gap_threshold)[0]
+    n_trimmed = seq_len - len(kept_probe_cols)
+    if n_trimmed > 0:
+        print(f"  Trimmed {n_trimmed}/{seq_len} gap-frequent columns "
+              f"(>{gap_threshold:.0%} gaps) for probe consensus")
+    del _msa
+
+    # Precompute base frequency cache for kept columns (used by generate_probe_variants)
+    freq_cache = {}
+    for msa_col in kept_probe_cols:
+        freq_cache[int(msa_col)] = _column_sense_freqs(aligned_seqs, int(msa_col))
+
+    n_probe_variants = int(probe_params.get("n_variants", 5))
 
     candidates = []
     for reg_idx, (reg_start, reg_end, _) in enumerate(regions):
-        region_seq = consensus_str[reg_start:reg_end]
+        # Convert MSA region boundaries to trimmed coordinates
+        trim_start = np.searchsorted(kept_probe_cols, reg_start, side='left')
+        trim_end = np.searchsorted(kept_probe_cols, reg_end, side='left')
+        trim_region_len = trim_end - trim_start
 
         for probe_len in range(len_min, len_max + 1):
-            for offset in range(len(region_seq) - probe_len + 1):
+            for offset in range(trim_region_len - probe_len + 1):
+                # MSA column indices for this probe window
+                msa_cols = [int(kept_probe_cols[trim_start + offset + j])
+                            for j in range(probe_len)]
+
+                # Check for N in consensus at these positions
+                if any(not freq_cache.get(c) for c in msa_cols):
+                    continue
+
+                msa_start = msa_cols[0]
+                msa_end = msa_cols[-1] + 1
+
                 for strand in ('fwd', 'rev'):
-                    seq = region_seq[offset:offset + probe_len]
-                    if 'N' in seq:
-                        continue
-                    if strand == 'rev':
-                        seq = reverse_complement_dna(seq)
+                    # Generate wobble-diversified variants
+                    variant_seqs = generate_probe_variants(
+                        aligned_seqs, msa_cols, strand,
+                        n_variants=n_probe_variants, _freq_cache=freq_cache)
 
-                    # Fast filters
-                    if avoid_5g and seq[0] == 'G':
-                        continue
-                    if has_homopolymer(seq, homopolymer_max):
-                        continue
-                    tm = get_tm(seq)
-                    if tm < min_tm or tm > max_tm:
-                        continue
-                    gc = gc_fraction(seq)
-                    if gc > max_gc:
-                        continue
+                    for seq in variant_seqs:
+                        # Fast filters
+                        if avoid_5g and seq[0] == 'G':
+                            continue
+                        if has_homopolymer(seq, homopolymer_max):
+                            continue
+                        tm = get_tm(seq)
+                        if tm < min_tm or tm > max_tm:
+                            continue
+                        gc = gc_fraction(seq)
+                        if gc > max_gc:
+                            continue
 
-                    msa_start = reg_start + offset
-                    msa_end = msa_start + probe_len
-                    candidates.append({
-                        'seq': seq,
-                        'region_idx': reg_idx,
-                        'msa_start': msa_start,
-                        'msa_end': msa_end,
-                        'tm': round(tm, 2),
-                        'gc': round(gc * 100, 1),
-                        'strand': strand,
-                    })
+                        candidates.append({
+                            'seq': seq,
+                            'region_idx': reg_idx,
+                            'msa_start': msa_start,
+                            'msa_end': msa_end,
+                            'msa_cols': msa_cols,
+                            'tm': round(tm, 2),
+                            'gc': round(gc * 100, 1),
+                            'strand': strand,
+                        })
 
     if not candidates:
         return [], {}
@@ -1428,8 +1561,8 @@ def _find_flanking_primer_positions(selected_probes, identity, kept_cols,
         if not fwd_candidates:
             continue
 
-        # Sort by score, take top
-        fwd_candidates.sort(key=lambda x: -x[1])
+        # Sort by score descending, then by proximity to probe (closest first)
+        fwd_candidates.sort(key=lambda x: (-x[1], -x[0]))
         fwd_candidates = fwd_candidates[:top_per_probe]
 
         for fwd, fwd_score in fwd_candidates:
@@ -1587,9 +1720,11 @@ def _run_probe_first(args, params, primer_params, cov_min, act_min, min_pairs, s
 
     # Step 3b: Score probes by per-sequence conservation and select top N
     max_mm = probe_params["max_mismatches"]
+    max_indel = probe_params["max_indels"]
     top_n_probes = int(params.get("PROBE_TOP_N", 50))
-    print(f"  Scoring probes by sequence coverage (≤{max_mm} mismatches)...")
-    _score_probes_by_coverage(probes, aligned_seqs, max_mm)
+    print(f"  Scoring probes by sequence coverage (≤{max_mm} mismatches, ≤{max_indel} indels)...")
+    _score_probes_by_coverage(probes, aligned_seqs, max_mm, max_indel,
+                             seq_ids=all_seq_ids)
 
     selected_probes = _select_top_probes(probes, top_n=top_n_probes, min_distance=30)
     print(f"  Selected {len(selected_probes)} probes at distinct positions:")
@@ -1609,7 +1744,7 @@ def _run_probe_first(args, params, primer_params, cov_min, act_min, min_pairs, s
     if getattr(args, 'probe_csv', None):
         _write_probe_mapping_csv(
             selected_probes, aligned_seqs, all_seq_ids,
-            args.probe_csv, max_mm,
+            args.probe_csv, max_mm, max_indel,
         )
 
     # Step 4: Compute primer conservation and find flanking positions
@@ -1855,6 +1990,8 @@ def _run_probe_first(args, params, primer_params, cov_min, act_min, min_pairs, s
             'probes': probes,
             'features': probe_features,
             'assignments': all_probe_assignments,
+            'pair_to_probe_idx': pair_to_probe_idx,
+            'probes_by_probe_idx': probes_by_probe_idx,
         }
         _write_output(args, all_results, all_eval_re, name_to_seq,
                       cov_min, act_min, len(batches), tmpdir, min_dg=min_dg,
@@ -1867,6 +2004,422 @@ def _run_probe_first(args, params, primer_params, cov_min, act_min, min_pairs, s
 
     runtime = time.time() - start_time
     print(f"\nProbe-first quick mode completed in {runtime:.1f}s")
+
+
+def _run_primers_first(args, params, primer_params, cov_min, act_min, min_pairs, start_time):
+    """Primers-first quick mode: design primers globally, then find probes in amplicon regions."""
+    from Bio import AlignIO
+
+    min_amp_len = primer_params["min_amp_len"]
+    max_amp_len = primer_params["max_amp_len"]
+    min_dg = primer_params["min_dg"]
+    primer_len = primer_params["min_pri_len"]
+    min_gc = primer_params.get("min_gc", 30) / 100.0 if primer_params.get("min_gc") else 0.30
+    max_gc_frac = primer_params["max_gc"] / 100.0
+
+    top_pairs = int(params.get("QUICK_TOP_PAIRS", TOP_PAIRS))
+    n_positions = int(params.get("QUICK_N_POSITIONS", N_POSITIONS))
+    n_variants = int(params.get("QUICK_N_VARIANTS", N_VARIANTS))
+
+    probe_params = get_probe_params(params)
+    max_mm = probe_params["max_mismatches"]
+    max_indel = probe_params["max_indels"]
+
+    print(f"Quick mode (primers-first + probe): {args.name}")
+    print(f"  Thresholds: coverage >= {cov_min}, activity >= {act_min}")
+    print(f"  Positions: {n_positions}, variants/direction: {n_variants}")
+    print(f"  Probe: len {probe_params['len_min']}-{probe_params['len_max']}, "
+          f"Tm {probe_params['min_tm']}-{probe_params['max_tm']}, "
+          f"max_mm {max_mm}, max_indels {max_indel}")
+
+    # Step 1: Load MSA and score amplicon positions (identical to _run_multi_region)
+    print("Step 1: Scoring amplicon positions across MSA...")
+    aln = AlignIO.read(args.msa, "fasta-pearson")
+    raw_seqs = [str(r.seq) for r in aln]
+    all_seq_ids = [r.id for r in aln]
+    n_raw_cols = len(raw_seqs[0])
+
+    gap_thresh = 0.50
+    n_seqs_raw = len(raw_seqs)
+    _msa_arr = np.array([list(s) for s in raw_seqs], dtype='U1')
+    _gap_counts = np.sum((_msa_arr == '-') | (_msa_arr == 'N') | (_msa_arr == 'n'), axis=0)
+    keep_mask = (_gap_counts / n_seqs_raw) <= gap_thresh
+    kept_indices = np.where(keep_mask)[0]
+    _kept_arr = _msa_arr[:, kept_indices]
+    aligned_seqs = [''.join(row) for row in _kept_arr]
+    del _msa_arr, _kept_arr
+    n_kept = int(keep_mask.sum())
+    print(f"  MSA: {len(aligned_seqs)} seqs, {n_raw_cols} columns -> "
+          f"{n_kept} after removing {n_raw_cols - n_kept} gap-dominant columns")
+
+    scored, consensus_aligned, kept_cols = score_amplicon_positions(
+        aligned_seqs, primer_len, min_amp_len, max_amp_len,
+        min_gc=min_gc, max_gc=max_gc_frac,
+        top_n=n_positions,
+    )
+    if not scored:
+        print("ERROR: No valid amplicon positions found in MSA.")
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).touch()
+        return
+
+    print(f"  Top amplicon positions: {len(scored)}")
+
+    # Step 2: Generate primer variants
+    print("Step 2: Generating wobble-optimized primer variants...")
+    primers, features = extract_primers_at_positions(
+        aligned_seqs, scored, primer_len,
+        primer_params["min_tm"], primer_params["max_tm"],
+        primer_params["max_gc"], min_dg,
+        n_variants=n_variants,
+        max_pri_len=primer_params["max_pri_len"],
+    )
+
+    if not primers:
+        print("ERROR: No primers passed Tm/GC/dG filters.")
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).touch()
+        return
+
+    n_unique_pos = len(set(p['pos_idx'] for p in primers))
+    print(f"  Passed filters: {len(primers)} pairs ({n_unique_pos} positions)")
+
+    primers.sort(key=lambda p: -p['score'])
+    if len(primers) > top_pairs:
+        primers = primers[:top_pairs]
+    print(f"  Selected top {len(primers)} pairs")
+
+    # Step 3: Group into batches
+    print("Step 3: Grouping into batches...")
+    batches = group_into_batches(primers, primer_len)
+    for i, (batch, min_fwd, max_rev) in enumerate(batches):
+        print(f"  Batch {i+1}: {len(batch)} pairs, MSA {min_fwd}-{max_rev}")
+
+    # Step 4: Load ML models
+    print("Step 4: Loading ML models...")
+    scaler, classifier, regressor, device = load_models()
+    torch.set_num_threads(args.threads)
+
+    if args.tmpdir:
+        tmpdir = str(Path(args.tmpdir) / "_intermediate")
+    else:
+        tmpdir = str(Path(args.out).parent)
+    os.makedirs(tmpdir, exist_ok=True)
+
+    # Step 5: Per-batch evaluation loop (same as _run_multi_region)
+    all_results = []
+    all_eval_re = []
+    all_eval_full = []
+    all_eval_cl = []
+    name_to_seq = {}
+    pname_to_msa_pos = {}  # pname_f -> (fwd_start_msa, rev_start_msa, fwd_len, rev_len)
+
+    try:
+        for batch_idx, (batch_primers, min_fwd, max_rev) in enumerate(batches):
+            batch_start = time.time()
+            print(f"\nBatch {batch_idx+1}/{len(batches)}: {len(batch_primers)} pairs, MSA {min_fwd}-{max_rev}")
+
+            margin = 20
+            win_start = max(0, min_fwd - margin)
+            win_end = max_rev + margin
+            all_window = extract_window_sequences(aligned_seqs, all_seq_ids, win_start, win_end)
+            if not all_window:
+                print("  No sequences in region. Skipping.")
+                continue
+
+            win_target_fa = Path(tmpdir) / f"batch_{batch_idx}_targets.fa"
+            with open(win_target_fa, "w") as f:
+                for sid, seq in all_window:
+                    f.write(f">{sid}\n{seq}\n")
+            n_targets = len(all_window)
+
+            index_prefix = str(Path(tmpdir) / f"batch_{batch_idx}_bt2idx")
+            print("  Building bowtie2 index...", end=" ", flush=True)
+            build_index(str(win_target_fa), index_prefix, threads=args.threads)
+            print("done.")
+
+            fwd_seqs = [p['fwd_seq'] for p in batch_primers]
+            rev_seqs = [p['rev_seq'] for p in batch_primers]
+            fasta_path, feat_path, fwd_n2s, rev_n2s = _write_batch_fasta_and_features(
+                fwd_seqs, rev_seqs, features, args.name, batch_idx, tmpdir
+            )
+            name_to_seq.update(fwd_n2s)
+            name_to_seq.update(rev_n2s)
+
+            # Track pname -> MSA position mapping for probe search
+            for i, p in enumerate(batch_primers):
+                pname_f = f"{args.name}_q{batch_idx}_{i+1}_f"
+                pname_r = f"{args.name}_q{batch_idx}_{i+1}_r"
+                pname_to_msa_pos[pname_f] = (
+                    p['fwd_start_msa'], p['rev_start_msa'],
+                    len(p['fwd_seq']), len(p['rev_seq']),
+                )
+
+            print("  Aligning...", end=" ", flush=True)
+            mapped_path = _align_batch(
+                fasta_path, index_prefix, n_targets, args.threads, tmpdir, batch_idx
+            )
+            print("done.")
+
+            if mapped_path.stat().st_size == 0:
+                print("  No alignments found. Skipping.")
+                continue
+
+            filtered_path = _apply_coverage_filter(mapped_path, n_targets, tmpdir, batch_idx, cov_frac=0.90)
+            if filtered_path.stat().st_size == 0:
+                print("  No primers pass coverage filter. Skipping.")
+                continue
+
+            print("  Preparing ML input...", end=" ", flush=True)
+            input_path = Path(tmpdir) / f"batch_{batch_idx}.input"
+            prep_args = argparse.Namespace(
+                mapped=str(filtered_path),
+                ml_input=str(input_path),
+                reference=str(win_target_fa),
+                param_file=args.param_file,
+                reftype="on",
+                pri_features=str(feat_path),
+                prev="",
+            )
+            try:
+                run_prepare_input(prep_args)
+            except SystemExit:
+                pass
+            print("done.")
+
+            if not input_path.exists() or input_path.stat().st_size == 0:
+                print("  No valid pairs formed. Skipping.")
+                continue
+
+            print("  Evaluating...", end=" ", flush=True)
+            res, eval_re, eval_full, eval_cl = _run_evaluate(
+                input_path, str(win_target_fa), scaler, classifier, regressor, device, args.threads,
+                n_targets_global=len(aligned_seqs),
+            )
+            print("done.")
+
+            if res.empty:
+                print("  No results. Skipping.")
+                continue
+
+            all_results.append(res)
+            all_eval_re.append(eval_re)
+            if not eval_full.empty:
+                all_eval_full.append(eval_full)
+            if not eval_cl.empty:
+                all_eval_cl.append(eval_cl)
+            batch_time = time.time() - batch_start
+
+            passing = res[(res["coverage"] >= cov_min) & (res["activity"] >= act_min)]
+            total_passing = sum(
+                len(r[(r["coverage"] >= cov_min) & (r["activity"] >= act_min)])
+                for r in all_results
+            )
+            top = res.iloc[0]
+            print(f"  Top pair: coverage={top['coverage']:.3f}, activity={top['activity']:.3f}, score={top['score']:.3f}")
+            print(f"  Pairs meeting thresholds: {len(passing)} (total: {total_passing}/{min_pairs})")
+            print(f"  Batch time: {batch_time:.1f}s")
+
+            if total_passing >= min_pairs:
+                print(f"\n  SUCCESS! Found {total_passing} pairs meeting thresholds (target: {min_pairs}).")
+                break
+
+        # Step 6: Generate probes across the full MSA, then assign to primer pairs
+        if all_results:
+            combined = pd.concat(all_results, ignore_index=True)
+            combined = combined.sort_values("activity", ascending=False).drop_duplicates(
+                subset=["pname_f", "pname_r"]
+            )
+            combined = combined[combined["coverage"] > 0]
+        else:
+            combined = pd.DataFrame()
+
+        if combined.empty:
+            print("\nWARNING: No primer pairs found. Skipping probe search.")
+            _write_output(args, all_results, all_eval_re, name_to_seq,
+                          cov_min, act_min, len(batches), tmpdir, min_dg=min_dg,
+                          features=features, all_eval_full=all_eval_full,
+                          all_eval_cl=all_eval_cl)
+        else:
+            print(f"\nStep 6: Searching for probes across MSA...")
+
+            # Search probes across the full MSA (single region covering everything)
+            msa_len = len(aligned_seqs[0])
+            full_region = [(0, msa_len, 0)]
+            probes, probe_features = _generate_probes_from_msa(
+                aligned_seqs, full_region, probe_params)
+            print(f"  Generated {len(probes)} probe candidates (Tm/GC/homopolymer/dG filtered)")
+
+            if not probes:
+                print("  WARNING: No probes passed thermodynamic filters.")
+                if args.probe_fa:
+                    Path(args.probe_fa).parent.mkdir(parents=True, exist_ok=True)
+                    Path(args.probe_fa).touch()
+                if args.probe_feat:
+                    Path(args.probe_feat).parent.mkdir(parents=True, exist_ok=True)
+                    Path(args.probe_feat).touch()
+                _write_output(args, all_results, all_eval_re, name_to_seq,
+                              cov_min, act_min, len(batches), tmpdir, min_dg=min_dg,
+                              features=features, all_eval_full=all_eval_full,
+                              all_eval_cl=all_eval_cl)
+            else:
+                # Score probes by wobble-aware coverage (once for all probes)
+                print(f"  Scoring probes by wobble-aware coverage (max_mm={max_mm}, max_indels={max_indel})...")
+                _score_probes_by_coverage(probes, aligned_seqs, max_mm, max_indel,
+                                         seq_ids=all_seq_ids)
+
+                # Select top probes at distinct positions
+                top_n_probes = int(params.get("PROBE_TOP_N", 50))
+                selected_probes = _select_top_probes(probes, top_n=top_n_probes, min_distance=30)
+                print(f"  Selected {len(selected_probes)} probes at distinct positions:")
+                for i, p in enumerate(selected_probes[:10]):
+                    print(f"    Probe {i+1}: {p['name']} ({p['seq'][:20]}...) "
+                          f"MSA {p['msa_start']}-{p['msa_end']}, "
+                          f"coverage={p['coverage']:.1%}, Tm={p['tm']}")
+
+                selected_names = {p['name'] for p in selected_probes}
+                probe_features = {k: v for k, v in probe_features.items()
+                                  if k in selected_names}
+
+                # Assign probes to primer pairs by amplicon containment
+                probes_by_probe_idx = {i: [p] for i, p in enumerate(selected_probes)}
+                pair_to_probe_idx = {}
+
+                for _, row in combined.iterrows():
+                    pname_f = row['pname_f']
+                    if pname_f not in pname_to_msa_pos:
+                        continue
+                    fwd_start, rev_start, fwd_len, rev_len = pname_to_msa_pos[pname_f]
+                    amp_start = fwd_start + fwd_len
+                    amp_end = rev_start
+
+                    pair_key = (pname_f, row['pname_r'])
+                    probe_idxs = set()
+                    for pi, p in enumerate(selected_probes):
+                        if p['msa_start'] >= amp_start and p['msa_end'] <= amp_end:
+                            probe_idxs.add(pi)
+                    if probe_idxs:
+                        pair_to_probe_idx[pair_key] = probe_idxs
+
+                n_with_probes = sum(1 for _ in pair_to_probe_idx)
+                print(f"  {n_with_probes}/{len(combined)} pairs have probes in amplicon")
+
+                # Check probe-primer dimers
+                print(f"  Checking probe-primer dimers...")
+                all_probe_assignments = _check_probe_primer_dimers(
+                    combined, selected_probes, name_to_seq, min_dg=min_dg)
+                n_dimer_pass = sum(1 for pair_key in pair_to_probe_idx
+                                   if pair_key in all_probe_assignments)
+                print(f"  {n_dimer_pass}/{n_with_probes} pairs pass probe-primer dimer check")
+
+                # Write probe mapping CSV
+                if getattr(args, 'probe_csv', None):
+                    _write_probe_mapping_csv(
+                        selected_probes, aligned_seqs, all_seq_ids,
+                        args.probe_csv, max_mm, max_indel,
+                    )
+
+                # Compute intersected coverage: primer targets ∩ probe targets
+                # Primer targets come from ML eval.full; probe targets from MSA scoring
+                n_total = len(all_seq_ids)
+                if all_eval_full:
+                    eval_full_df = pd.concat(all_eval_full, ignore_index=True)
+                    if 'classifier' in eval_full_df.columns:
+                        eval_full_pos = eval_full_df[eval_full_df['classifier'] >= 0.5]
+                    else:
+                        eval_full_pos = eval_full_df
+                else:
+                    eval_full_pos = pd.DataFrame()
+
+                # Greedy probe assignment: walk pairs by score, assign best unclaimed probe
+                claimed_probes = set()
+                pair_assigned_probe = {}  # pair_key -> probe dict
+
+                for _, row in combined.iterrows():
+                    pair_key = (row['pname_f'], row['pname_r'])
+                    # Must be in amplicon AND pass dimer check
+                    position_probes = pair_to_probe_idx.get(pair_key, set())
+                    dimer_probes = {p['name'] for p in all_probe_assignments.get(pair_key, [])}
+                    valid_probes = []
+                    for pi in position_probes:
+                        p = selected_probes[pi]
+                        if p['name'] in dimer_probes and p['name'] not in claimed_probes:
+                            valid_probes.append(p)
+                    if valid_probes:
+                        # Pick probe with highest coverage
+                        best = max(valid_probes, key=lambda p: p['coverage'])
+                        pair_assigned_probe[pair_key] = best
+                        claimed_probes.add(best['name'])
+
+                # Compute per-pair coverage
+                cov_target_map = {}
+                cov_primer_only_map = {}
+                assigned_probe_name_map = {}
+                assigned_probe_seq_map = {}
+
+                for idx, row in combined.iterrows():
+                    pair_key = (row['pname_f'], row['pname_r'])
+
+                    # Get primer targets from eval.full
+                    primer_targets = set()
+                    if not eval_full_pos.empty:
+                        pair_rows = eval_full_pos[
+                            (eval_full_pos['pname_f'] == row['pname_f']) &
+                            (eval_full_pos['pname_r'] == row['pname_r'])
+                        ]
+                        for _, pr in pair_rows.iterrows():
+                            targets = ast.literal_eval(str(pr['targets']))
+                            primer_targets.update(targets)
+
+                    cov_primer_only_map[idx] = f"{len(primer_targets)} / {n_total}"
+
+                    probe = pair_assigned_probe.get(pair_key)
+                    if probe:
+                        probe_targets = probe.get('covered_seq_ids', set())
+                        both = primer_targets & probe_targets
+                        cov_target_map[idx] = f"{len(both)} / {n_total}"
+                        assigned_probe_name_map[idx] = probe['name']
+                        assigned_probe_seq_map[idx] = probe['seq']
+                    else:
+                        cov_target_map[idx] = f"{len(primer_targets)} / {n_total}"
+                        assigned_probe_name_map[idx] = ''
+                        assigned_probe_seq_map[idx] = ''
+
+                combined['cov_target'] = combined.index.map(cov_target_map)
+                combined['cov_primer_only'] = combined.index.map(cov_primer_only_map)
+                combined['probe_name'] = combined.index.map(assigned_probe_name_map)
+                combined['probe_seq'] = combined.index.map(assigned_probe_seq_map)
+
+                n_assigned = sum(1 for v in assigned_probe_name_map.values() if v)
+                print(f"  Greedy probe assignment: {n_assigned}/{len(combined)} pairs got a probe")
+                for idx, row in combined.iterrows():
+                    if assigned_probe_name_map.get(idx):
+                        print(f"    {row['pname_f']},{row['pname_r']} → "
+                              f"{assigned_probe_name_map[idx]} "
+                              f"(cov_target={cov_target_map[idx]}, "
+                              f"cov_primer_only={cov_primer_only_map[idx]})")
+
+                # Build probe_data for _write_output
+                probe_data = {
+                    'probes': selected_probes,
+                    'features': probe_features,
+                    'assignments': all_probe_assignments,
+                    'pair_to_probe_idx': pair_to_probe_idx,
+                    'probes_by_probe_idx': probes_by_probe_idx,
+                }
+
+                _write_output(args, all_results, all_eval_re, name_to_seq,
+                              cov_min, act_min, len(batches), tmpdir, min_dg=min_dg,
+                              features=features, probe_data=probe_data,
+                              all_eval_full=all_eval_full, all_eval_cl=all_eval_cl,
+                              pair_to_probe_idx=pair_to_probe_idx,
+                              combined_override=combined)
+
+    finally:
+        print(f"  Temp files kept at: {tmpdir}")
+
+    runtime = time.time() - start_time
+    print(f"\nPrimers-first quick mode completed in {runtime:.1f}s")
 
 
 def _run_multi_region(args, params, primer_params, cov_min, act_min, min_pairs, start_time):
@@ -2339,17 +2892,55 @@ def _write_probe_outputs(args, combined, probe_data):
     assignments = probe_data.get('assignments', {})
     all_probes = probe_data.get('probes', [])
     probe_features = probe_data.get('features', {})
+    pair_to_probe_idx = probe_data.get('pair_to_probe_idx', {})
+    probes_by_probe_idx = probe_data.get('probes_by_probe_idx', {})
 
-    # Collect probes assigned to at least one passing pair
+    # Collect probes assigned to at least one passing pair.
+    # Prefer dimer-checked assignments; fall back to position-based (pair_to_probe_idx).
     used_probe_names = set()
     for _, row in combined.iterrows():
         pair_key = (row['pname_f'], row['pname_r'])
         for probe in assignments.get(pair_key, []):
             used_probe_names.add(probe['name'])
 
-    # If no assignments, include all probes (downstream filter will re-check)
+    # If dimer assignments are empty, use position-validated assignments from probe-first design
+    if not used_probe_names and pair_to_probe_idx:
+        for pair_key, probe_idxs in pair_to_probe_idx.items():
+            for pi in probe_idxs:
+                for probe in probes_by_probe_idx.get(pi, []):
+                    used_probe_names.add(probe['name'])
+
+    # Last resort: include all probes so downstream filter can check
     if not used_probe_names:
         used_probe_names = {p['name'] for p in all_probes}
+
+    # Write probe pair assignment CSV: records which probe is valid for which primer pair.
+    # filter_primers uses this to avoid cross-region probe assignment in quick design mode.
+    if getattr(args, 'probe_pair_csv', None):
+        pair_probe_rows = []
+        for _, row in combined.iterrows():
+            pair_key = (row['pname_f'], row['pname_r'])
+            # Get position-validated probes for this pair
+            probe_idxs = pair_to_probe_idx.get(pair_key, set())
+            valid_probe_names = set()
+            for pi in probe_idxs:
+                for probe in probes_by_probe_idx.get(pi, []):
+                    # If dimer assignments exist, further restrict to dimer-passing probes
+                    if assignments:
+                        if any(p['name'] == probe['name'] for p in assignments.get(pair_key, [])):
+                            valid_probe_names.add(probe['name'])
+                    else:
+                        valid_probe_names.add(probe['name'])
+            for pname in sorted(valid_probe_names):
+                pair_probe_rows.append({
+                    'pname_f': row['pname_f'],
+                    'pname_r': row['pname_r'],
+                    'probe_name': pname,
+                })
+        Path(args.probe_pair_csv).parent.mkdir(parents=True, exist_ok=True)
+        cols = ['pname_f', 'pname_r', 'probe_name']
+        pd.DataFrame(pair_probe_rows, columns=cols).to_csv(args.probe_pair_csv, index=False)
+        print(f"  Saved probe pair assignments: {args.probe_pair_csv} ({len(pair_probe_rows)} rows)")
 
     # Write probe FASTA
     if args.probe_fa:
@@ -2358,7 +2949,8 @@ def _write_probe_outputs(args, combined, probe_data):
         with open(args.probe_fa, "w") as f:
             for probe in all_probes:
                 if probe['name'] in used_probe_names and probe['name'] not in written:
-                    f.write(f">{probe['name']}\n{probe['seq']}\n")
+                    strand = probe.get('strand', 'fwd')
+                    f.write(f">{probe['name']} strand={strand}\n{probe['seq']}\n")
                     written.add(probe['name'])
         print(f"  Saved probe FASTA: {args.probe_fa} ({len(written)} probes)")
 
@@ -2386,15 +2978,19 @@ def _write_probe_outputs(args, combined, probe_data):
 def _write_output(args, all_results, all_eval_re, name_to_seq,
                    cov_min, act_min, n_batches, tmpdir, min_dg=-7.0,
                    features=None, probe_data=None, all_eval_full=None,
-                   all_eval_cl=None, pair_to_probe_idx=None):
+                   all_eval_cl=None, pair_to_probe_idx=None,
+                   combined_override=None):
     """Write combined output from all batches/windows."""
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
 
     if all_results:
-        combined = pd.concat(all_results, ignore_index=True)
-        combined = combined.sort_values("activity", ascending=False).drop_duplicates(
-            subset=["pname_f", "pname_r"]
-        )
+        if combined_override is not None:
+            combined = combined_override
+        else:
+            combined = pd.concat(all_results, ignore_index=True)
+            combined = combined.sort_values("activity", ascending=False).drop_duplicates(
+                subset=["pname_f", "pname_r"]
+            )
 
         combined = combined[combined["coverage"] > 0]
         if combined.empty:
@@ -2418,7 +3014,8 @@ def _write_output(args, all_results, all_eval_re, name_to_seq,
             if pair_to_probe_idx:
                 combined = combined.sort_values("score", ascending=False)
 
-            cols = ["pname_f", "pname_r", "fwd_seq", "rev_seq", "coverage", "activity", "score"]
+            cols = ["pname_f", "pname_r", "fwd_seq", "rev_seq", "coverage", "activity", "score",
+                    "cov_target", "cov_primer_only", "probe_name", "probe_seq"]
             combined = combined[[c for c in cols if c in combined.columns]]
             # Pipeline mode: eval file must have only pname_f,pname_r,coverage,activity,score
             if getattr(args, 'init_fa', None):
@@ -2480,7 +3077,7 @@ def _write_output(args, all_results, all_eval_re, name_to_seq,
             eval_re_combined = eval_re_combined.groupby(
                 ["pname_f", "pname_r"]
             ).agg(agg_dict).reset_index()
-            re_path = str(Path(tmpdir) / f"{args.name}.eval.re")
+            re_path = f"{args.out}.re"
             eval_re_combined.to_csv(re_path, index=False)
             print(f"  Saved per-target activity: {re_path}")
 
@@ -2523,5 +3120,9 @@ def _write_output(args, all_results, all_eval_re, name_to_seq,
         if getattr(args, 'probe_feat', None):
             Path(args.probe_feat).parent.mkdir(parents=True, exist_ok=True)
             Path(args.probe_feat).touch()
+        if getattr(args, 'probe_pair_csv', None):
+            Path(args.probe_pair_csv).parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(columns=['pname_f', 'pname_r', 'probe_name']).to_csv(
+                args.probe_pair_csv, index=False)
         print("\nWARNING: No results produced. Recommend running full mode.")
 

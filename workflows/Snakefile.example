@@ -104,7 +104,6 @@ ruleorder: generate_primers > prepare_features
 ruleorder: filter_primer_list > prepare_pset_fasta
 ruleorder: generate_probes > prepare_pset_fasta
 ruleorder: resolve_target_seq > prepare_pset_fasta
-ruleorder: pick_representative_seqs > prepare_pset_fasta
 ruleorder: filter_primer_list > extract_probe_from_pset > prepare_pset_fasta
 ruleorder: quick_design_on_target > parse_probe_mapping
 
@@ -234,9 +233,6 @@ else:
     QUICK_TARGETS = []
     STANDARD_TARGETS = list(TARGETS)
 
-# Representative targets: standard targets with >5 sequences (need MSA + selection)
-REPR_TARGETS = set(t for t in STANDARD_TARGETS if count_seqs(t) > 5)
-
 QUICK_PATTERN = "|".join(QUICK_TARGETS) if QUICK_TARGETS else "NEVER_MATCH_QD"
 STANDARD_PATTERN = "|".join(STANDARD_TARGETS) if STANDARD_TARGETS else "NEVER_MATCH_SD"
 QUICK_SET = set(QUICK_TARGETS)
@@ -361,7 +357,7 @@ else:
 
 
 ############################################
-# MSA + representative selection
+# MSA
 ############################################
 
 
@@ -378,35 +374,11 @@ rule make_MSA:
         "mafft --retree 1 --6merpair --thread {threads} '{input}' > '{output}' 2>/dev/null"
 
 
-rule pick_representative_seqs:
-    wildcard_constraints:
-        virus=TARGETS_PATTERN
-    input:
-        "target_seqs/msa/{virus}.aln"
-    output:
-        fa=f"{RUN_DIR}/{{virus}}_repr.fa",
-        probe_regions=f"{RUN_DIR}/{{virus}}_repr_probe_regions.tsv"
-    shell:
-        "qprimer pick-representatives "
-        "--in '{input}' --out '{output.fa}' "
-        "--params '{PARAMS}' --name '{wildcards.virus}' "
-        "--probe-regions '{output.probe_regions}'"
-
-def selected_source_fa(wc):
-    if wc.virus in REPR_TARGETS:
-        return f"{RUN_DIR}/{wc.virus}_repr.fa"
-    return f"target_seqs/original/{wc.virus}.fa"
-
-def selected_probe_regions(wc):
-    if wc.virus in REPR_TARGETS:
-        return f"{RUN_DIR}/{wc.virus}_repr_probe_regions.tsv"
-    return []
-
 rule resolve_target_seq:
     wildcard_constraints:
         virus=STANDARD_PATTERN
     input:
-        src=selected_source_fa
+        src="target_seqs/original/{virus}.fa"
     output:
         f"{RUN_DIR}/{{virus}}_selected.fa"
     run:
@@ -436,19 +408,14 @@ rule generate_probes:
     wildcard_constraints:
         virus=STANDARD_PATTERN
     input:
-        seqs=f"{RUN_DIR}/{{virus}}_selected.fa",
-        regions=selected_probe_regions
+        seqs=f"{RUN_DIR}/{{virus}}_selected.fa"
     output:
         fasta=f"{RUN_DIR}/{{virus}}_probe.fa",
         features=f"{RUN_DIR}/{{virus}}_probe.feat"
-    run:
-        regions_arg = f"--conserved-regions '{input.regions}'" if input.regions else ""
-        shell(
-            "qprimer generate-probe "
-            "--in '{input.seqs}' --out '{output.fasta}' "
-            f"--params '{{PARAMS}}' --name '{{wildcards.virus}}' "
-            f"{regions_arg}"
-        )
+    shell:
+        "qprimer generate-probe "
+        "--in '{input.seqs}' --out '{output.fasta}' "
+        "--params '{PARAMS}' --name '{wildcards.virus}'"
 
 
 ############################################
@@ -633,11 +600,11 @@ rule build_index:
     input:
         "target_seqs/original/{target}.fa"
     output:
-        f"{RUN_DIR}/_intermediate/{{target}}.1.bt2"
+        "bt2_index/{target}.1.bt2"
     threads:
         lambda wc: min(4, MAX_CORES) if count_seqs(wc.target) > 1000 else 1
     shell:
-        "bowtie2-build --threads {threads} '{input}' '" + RUN_DIR + "/_intermediate/{wildcards.target}'"
+        "bowtie2-build --threads {threads} '{input}' 'bt2_index/{wildcards.target}'"
 
 
 rule align:
@@ -651,13 +618,13 @@ rule align:
                     if wc.virus == wc.target
                     else f"{RUN_DIR}/{wc.virus}_filt.fa")
         ),
-        index=f"{RUN_DIR}/_intermediate/{{target}}.1.bt2"
+        index="bt2_index/{target}.1.bt2"
     output:
         temp(f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.sam")
     threads:
         min(2, MAX_CORES)
     params:
-        reference=lambda wc: f"{RUN_DIR}/_intermediate/{wc.target}",
+        reference=lambda wc: f"bt2_index/{wc.target}",
         multiMap=lambda wc: min(count_seqs(wc.target) * 2, 50000),
         mapOption="--mp 2,2 --np 2 --rdg 4,4 --rfg 4,4 -L 6 -N 1 --score-min L,-0.6,-0.6"
     shell:
@@ -678,13 +645,13 @@ rule align_probes:
                     if wc.virus == wc.target
                     else f"{RUN_DIR}/{wc.virus}_filt_probes.fa")
         ),
-        index=f"{RUN_DIR}/_intermediate/{{target}}.1.bt2"
+        index="bt2_index/{target}.1.bt2"
     output:
         temp(f"{RUN_DIR}/_{{target}}/{{virus}}.{{target}}.probe.sam")
     threads:
         min(2, MAX_CORES)
     params:
-        reference=lambda wc: f"{RUN_DIR}/_intermediate/{wc.target}",
+        reference=lambda wc: f"bt2_index/{wc.target}",
         multiMap=lambda wc: min(count_seqs(wc.target) * 2, 50000),
         # Permissive alignment (6mm/20mer); mismatch filtering done post-alignment
         mapOption="--mp 3,3 --np 2 --rdg 6,4 --rfg 6,4 -L 6 -N 1 --score-min L,-0.6,-0.6"

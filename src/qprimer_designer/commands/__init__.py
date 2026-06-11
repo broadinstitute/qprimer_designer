@@ -3,7 +3,6 @@
 from . import (
     generate,
     prepare_features,
-    pick_representatives,
     prepare_input,
     evaluate,
     filter_primers,
@@ -15,7 +14,6 @@ from . import (
 __all__ = [
     "generate",
     "prepare_features",
-    "pick_representatives",
     "prepare_input",
     "evaluate",
     "filter_primers",

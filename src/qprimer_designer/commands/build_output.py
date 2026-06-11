@@ -378,36 +378,97 @@ def run(args):
 
 
     # Greedy probe assignment: walk pairs in rank order, assign each the
-    # best unclaimed probe, drop pairs with no unclaimed probes left.
+    # best unclaimed probe (by coverage). Keep ALL pairs — those without
+    # a probe get empty valid_probes.
     if '_all_valid_probes' in final.columns:
+        # Compute per-probe coverage (number of unique targets hit) for ranking
+        probe_coverage = {}
+        if args.probe_mapping_on and os.path.exists(args.probe_mapping_on):
+            _probe_df = pd.read_csv(args.probe_mapping_on)
+            if not _probe_df.empty:
+                probe_coverage = _probe_df.groupby('probe_name')['target_id'].nunique().to_dict()
+
         claimed_probes = set()
         assigned_probe = {}
-        keep_idxs = []
         for pair_key in final.index:
             probes = final.at[pair_key, '_all_valid_probes']
             if not probes:
                 continue
-            for p in probes:
+            # Sort by coverage descending so we pick the highest-coverage unclaimed probe
+            probes_sorted = sorted(probes, key=lambda p: -probe_coverage.get(p, 0))
+            for p in probes_sorted:
                 if p not in claimed_probes:
                     assigned_probe[pair_key] = p
                     claimed_probes.add(p)
-                    keep_idxs.append(pair_key)
                     break
-        n_before = len(final)
-        final = final.loc[keep_idxs].copy()
+        n_with_probe = len(assigned_probe)
         final['valid_probes'] = final.index.map(lambda p: assigned_probe.get(p, ''))
         final['valid_probe_sequences'] = final['valid_probes'].map(
             lambda p: probe_seqs_dict.get(p, '') if p else ''
         )
         final = final.drop(columns=['_all_valid_probes'])
-        print(f"Greedy probe assignment: {n_before} → {len(final)} pairs")
+        print(f"Greedy probe assignment: {n_with_probe}/{len(final)} pairs got a probe")
 
     # Convert coverage columns from numbers to "N / total" strings
+    # When probe mode is active, recompute coverage as targets with BOTH
+    # primer coverage (classifier=1) AND probe match.
     if args.ref:
         n_ref = sum(1 for _ in SeqIO.parse(args.ref, "fasta"))
-        final['cov_target'] = final['cov_target'].apply(
-            lambda x: f"{round(x * n_ref)} / {n_ref}"
-        )
+
+        if args.probe_mapping_on and 'valid_probes' in final.columns:
+            eval_full_path = f"{args.eval_on}.full"
+            probe_on_df = pd.read_csv(args.probe_mapping_on)
+            probe_max_mm = float(params.get("PROBE_MAX_MISMATCHES", 3))
+            probe_max_indel = int(params.get("PROBE_MAX_INDELS", 0))
+
+            if os.path.exists(eval_full_path) and os.path.getsize(eval_full_path) > 0:
+                full_df = pd.read_csv(eval_full_path)
+                if 'classifier' in full_df.columns:
+                    full_df = full_df[full_df['classifier'] >= 0.5]
+
+                final['cov_target'] = final['cov_target'].astype(object)
+                final['cov_primer_only'] = final['cov_target'].copy()
+                for pair_key in final.index:
+                    pname_f, pname_r = pair_key
+                    probe_name = final.at[pair_key, 'valid_probes']
+
+                    # Get targets where primer works
+                    pair_rows = full_df[
+                        (full_df['pname_f'] == pname_f) & (full_df['pname_r'] == pname_r)
+                    ]
+                    primer_targets = set()
+                    for _, row in pair_rows.iterrows():
+                        targets = ast.literal_eval(str(row['targets']))
+                        primer_targets.update(targets)
+
+                    # Primer-only coverage
+                    final.at[pair_key, 'cov_primer_only'] = f"{len(primer_targets)} / {n_ref}"
+
+                    if not probe_name:
+                        final.at[pair_key, 'cov_target'] = f"{len(primer_targets)} / {n_ref}"
+                        continue
+
+                    # Get targets where probe matches within thresholds
+                    probe_hits = probe_on_df[
+                        (probe_on_df['probe_name'] == probe_name) &
+                        (probe_on_df['mismatches'] <= probe_max_mm) &
+                        (probe_on_df['indels'] <= probe_max_indel)
+                    ]
+                    probe_targets = set(probe_hits['target_id'])
+
+                    # Coverage = intersection of primer and probe targets
+                    both = primer_targets & probe_targets
+                    final.at[pair_key, 'cov_target'] = f"{len(both)} / {n_ref}"
+
+                print(f"Probe-validated coverage computed for {len(final)} pairs")
+            else:
+                final['cov_target'] = final['cov_target'].apply(
+                    lambda x: f"{round(x * n_ref)} / {n_ref}"
+                )
+        else:
+            final['cov_target'] = final['cov_target'].apply(
+                lambda x: f"{round(x * n_ref)} / {n_ref}"
+            )
 
     # Off-target coverage: value is already an absolute count (not fraction)
     ref_dir = os.path.dirname(args.ref) if args.ref else ""
