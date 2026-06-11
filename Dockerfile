@@ -29,4 +29,12 @@ RUN qprimer --help && \
 
 WORKDIR /data
 
-CMD ["/bin/bash"]
+# Streamlit configuration for Cloud Run
+ENV STREAMLIT_SERVER_PORT=8080
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+ENV STREAMLIT_SERVER_HEADLESS=true
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+EXPOSE 8080
+
+CMD ["sh", "-c", "streamlit run --server.port=${PORT:-8080} --server.address=0.0.0.0 /app/gui/app.py"]
