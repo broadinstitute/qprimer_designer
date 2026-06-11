@@ -48,7 +48,8 @@ DEFAULT_VIRUSES = [
     ("Mumps_virus", 2560602, ""),
     ("Rubella_virus", 11041, ""),
     # Hemorrhagic fever
-    ("Ebola_virus", 186538, ""),
+    ("Orthoebolavirus", 3044781, ""),
+    ("Ebola_virus_(Zaire)", 186538, ""),
     ("Marburg_virus", 3052505, ""),
     ("Lassa_virus", 3052310, ""),
     ("CCHF_virus", 3052518, ""),

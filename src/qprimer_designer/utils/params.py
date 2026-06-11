@@ -88,6 +88,7 @@ def get_probe_params(params: dict) -> dict:
         "max_num": int(params.get("MAX_PRIMER_CANDIDATES", 10000)),
         "conservation_threshold": float(params.get("PROBE_CONSERVATION_THRESHOLD", 0.8)),
         "max_mismatches": int(params.get("PROBE_MAX_MISMATCHES", 2)),
+        "max_indels": int(params.get("PROBE_MAX_INDELS", 0)),
     }
 
 

@@ -175,22 +175,64 @@ def load_probe_mapped(mapped_path, pid):
     ].reset_index(drop=True)
 
 
-def annotate_probe(df, mapped_path, pid, max_mismatches=2, max_indels=0):
+def load_probe_csv(probe_csv_path, pid):
+    """Load probe rows from a probe mapping CSV (from parse-probe-mapping or quick-design MSA).
+
+    Expected columns: probe_name, probe_seq, target_id, start_pos, orientation, mismatches, indels
+
+    Returns a DataFrame with columns:
+        target_id, start_pos, pseq, tseq, match, mismatches, indels
+    Note: tseq and match are not available in probe CSV format; set to empty strings.
+    """
+    if not probe_csv_path or not Path(probe_csv_path).exists():
+        return pd.DataFrame()
+
+    probe_name = f"{pid}_pro"
+    raw = pd.read_csv(probe_csv_path)
+    raw = raw[raw['probe_name'] == probe_name].copy()
+    if raw.empty:
+        return pd.DataFrame()
+
+    raw = raw.rename(columns={'probe_seq': 'pseq'})
+    # Use tseq/match columns from probe CSV if available (evaluate-probe provides them)
+    if 'tseq' not in raw.columns:
+        raw['tseq'] = ''
+    if 'match' not in raw.columns:
+        raw['match'] = ''
+    raw['tseq'] = raw['tseq'].fillna('')
+    raw['match'] = raw['match'].fillna('')
+
+    return raw[['target_id', 'start_pos', 'pseq', 'tseq', 'match', 'mismatches', 'indels']].reset_index(drop=True)
+
+
+def annotate_probe(df, probe_src, pid, max_mismatches=2, max_indels=0):
     """
     Add probe, mm_p, indel_p, and probe alignment columns to detail dataframe.
 
-    Reads probe rows directly from the .mapped file.
+    probe_src may be:
+      - a .mapped file (tab-separated, primer alignment format) → load_probe_mapped
+      - a probe CSV file (comma-separated, from parse-probe-mapping or quick-design) → load_probe_csv
+
     probe = 1 if probe aligns within amplicon AND mismatches <= max_mismatches AND indels <= max_indels.
     mm_p = mismatch count (substitutions only, recorded whenever probe is within amplicon).
     indel_p = indel count (recorded whenever probe is within amplicon).
-    align_p = formatted probe-target alignment string.
+    align_p = formatted probe-target alignment string (empty when probe CSV has no tseq/match).
     """
     df["probe"] = 0
     df["mm_p"] = np.nan
     df["indel_p"] = np.nan
     df["align_p"] = ""
 
-    probe_df = load_probe_mapped(mapped_path, pid)
+    # Detect format: probe CSV files are comma-separated with a 'probe_name' header column.
+    probe_df = pd.DataFrame()
+    if probe_src and Path(probe_src).exists():
+        with open(probe_src) as _f:
+            first_line = _f.readline()
+        if first_line.startswith('probe_name'):
+            probe_df = load_probe_csv(probe_src, pid)
+        else:
+            probe_df = load_probe_mapped(probe_src, pid)
+
     if probe_df.empty:
         return df
 
@@ -202,23 +244,30 @@ def annotate_probe(df, mapped_path, pid, max_mismatches=2, max_indels=0):
         amp_start = row["starts"]
         amp_end = amp_start + row["prod_len"]
 
-        # Find probe alignments for this target sequence
+        # Find probe alignments for this target sequence — pick best hit
         hits = probe_df[probe_df["target_id"] == seq_id]
+        best_hit = None
+        best_mm = float('inf')
         for _, hit in hits.iterrows():
             probe_start = hit["start_pos"]
             probe_end = probe_start + len(hit["pseq"].replace("-", ""))
-            # Probe is within amplicon if it's fully contained
             if probe_start >= amp_start and probe_end <= amp_end:
                 mm = hit["mismatches"]
-                indel = hit["indels"]
-                df.at[i, "mm_p"] = mm
-                df.at[i, "indel_p"] = indel
-                if mm <= max_mismatches and indel <= max_indels:
-                    df.at[i, "probe"] = 1
-                # Build alignment string
-                pseq = hit["pseq"]
-                tseq = hit["tseq"]
-                match = hit["match"]
+                if mm < best_mm:
+                    best_mm = mm
+                    best_hit = hit
+        if best_hit is not None:
+            mm = best_hit["mismatches"]
+            indel = best_hit["indels"]
+            df.at[i, "mm_p"] = mm
+            df.at[i, "indel_p"] = indel
+            if mm <= max_mismatches and indel <= max_indels:
+                df.at[i, "probe"] = 1
+            pseq = best_hit["pseq"]
+            tseq = best_hit.get("tseq", "")
+            match = best_hit.get("match", "")
+            if pseq and tseq and match:
+                probe_start = best_hit["start_pos"]
                 p_len = len(pseq.replace("-", ""))
                 p_end = probe_start + p_len - 1
                 df.at[i, "align_p"] = (
@@ -226,7 +275,6 @@ def annotate_probe(df, mapped_path, pid, max_mismatches=2, max_indels=0):
                     f"      {match}      \n"
                     f"{str(probe_start).ljust(6)}{tseq}{str(p_end).rjust(6)}"
                 )
-                break
 
     df["probe"] = df["probe"].astype(int)
     df = df.set_index("seq_id")

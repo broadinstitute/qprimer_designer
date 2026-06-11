@@ -18,8 +18,6 @@ Examples:
   qprimer prepare-features --fa my_primers.fa --out primers.feat
   qprimer evaluate --in input.csv --out output.csv --ref reference.fa --reftype on
   qprimer export-report --on eval.on --off eval.off1 eval.off2 --out reports/ --names primer1 primer2
-  qprimer pick-representatives --in msa.fa --out reps.fa --params params.txt --name virus
-
 For more information on a specific command:
   qprimer <command> --help
 """,
@@ -42,8 +40,8 @@ For more information on a specific command:
         generate,
         generate_probe,
         parse_probe_mapping,
+        evaluate_probe,
         prepare_features,
-        pick_representatives,
         prepare_input,
         evaluate,
         rescue_evaluate,
@@ -57,8 +55,8 @@ For more information on a specific command:
     generate.register(subparsers)
     generate_probe.register(subparsers)
     parse_probe_mapping.register(subparsers)
+    evaluate_probe.register(subparsers)
     prepare_features.register(subparsers)
-    pick_representatives.register(subparsers)
     prepare_input.register(subparsers)
     evaluate.register(subparsers)
     rescue_evaluate.register(subparsers)

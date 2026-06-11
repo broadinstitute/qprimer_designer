@@ -63,7 +63,7 @@ class TestCLI:
         """All expected subcommands should be parseable."""
         subcommands = [
             "generate", "generate-probe", "parse-probe-mapping",
-            "prepare-features", "pick-representatives", "prepare-input",
+            "prepare-features", "prepare-input",
             "evaluate", "filter", "build-output", "select-multiplex",
             "export-report",
         ]

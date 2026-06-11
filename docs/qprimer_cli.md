@@ -6,7 +6,6 @@ Low-level subcommands used internally by the Snakemake workflow. These are not i
 |---------|-------------|
 | `qprimer generate` | Generate primer candidates from target sequences |
 | `qprimer prepare-features` | Compute features (Tm, GC%, dG) for existing primers |
-| `qprimer pick-representatives` | Select representative sequences from MSA |
 | `qprimer prepare-input` | Prepare input data for ML evaluation |
 | `qprimer evaluate` | Run ML model to score primer candidates |
 | `qprimer filter` | Filter primers based on evaluation scores |

@@ -157,6 +157,8 @@ their sequences to a FASTA file.
     parser.add_argument("--probe-mapping", help="Probe mapping CSV (for probe mode)")
     parser.add_argument("--probe-seqs", help="Probe FASTA (for probe mode)")
     parser.add_argument("--probe-out", help="Output CSV for probe assignments")
+    parser.add_argument("--probe-pair-csv", dest="probe_pair_csv", default=None,
+                        help="Probe pair assignment CSV from quick design (pname_f,pname_r,probe_name)")
     parser.set_defaults(func=run)
 
 
@@ -220,10 +222,26 @@ def run(args):
         max_probes = int(params.get("MAX_PROBES_PER_PAIR", 5))
         max_mismatches = int(params.get("PROBE_MAX_MISMATCHES", 2))
 
-        # Load .full file for ALL pairs (probe compatibility checked first)
-        # Quick design writes .eval.full but positions use windowed coordinates
-        # that don't match probe mapping positions — skip position validation
-        # (probe-primer compatibility was already checked during quick design)
+        # Load probe pair assignments from quick design (if available).
+        # These record which probes are position-validated for each primer pair,
+        # preventing cross-region probe assignment when primers and probes are in
+        # different genomic regions (quick design uses segment-relative primer
+        # positions but full-genome absolute probe positions).
+        probe_pair_assignments = {}  # (pname_f, pname_r) -> [probe_name, ...]
+        probe_pair_csv = getattr(args, 'probe_pair_csv', None)
+        if probe_pair_csv and os.path.exists(probe_pair_csv) and os.path.getsize(probe_pair_csv) > 0:
+            try:
+                ppa_df = pd.read_csv(probe_pair_csv)
+                for _, ppa_row in ppa_df.iterrows():
+                    key = (ppa_row['pname_f'], ppa_row['pname_r'])
+                    probe_pair_assignments.setdefault(key, []).append(ppa_row['probe_name'])
+                print(f"Loaded probe pair assignments: {len(probe_pair_assignments)} pairs with probes")
+            except Exception as e:
+                print(f"Warning: Could not load probe pair assignments: {e}")
+
+        # Load .full file for position-based probe validation in standard (non-quick) mode.
+        # Quick design uses windowed coordinates in eval.full that don't match the
+        # full-genome absolute positions in probe.csv — use probe_pair_assignments instead.
         eval_full_path = f"{args.scores}.full"
         is_quick_design = os.path.exists(f"{args.scores}.quick")
         has_full_file = (
@@ -273,9 +291,16 @@ def run(args):
                     buffer,
                     max_mismatches,
                 )
+            elif probe_pair_assignments:
+                # Quick design mode with position-validated assignments:
+                # use the assignment file written by quick_design to restrict
+                # each pair to only its position-compatible probes.
+                assigned = probe_pair_assignments.get(pair_key, [])
+                candidates = [p for p in assigned if p in probe_seqs_dict]
             else:
-                # Quick design mode: all mapped probes are candidates
-                # (position validation was done during quick design)
+                # Quick design mode without assignment file: fall back to all
+                # mapped probes (may cause cross-region assignments — upgrade
+                # to quick-design with --probe-pair-csv to fix this).
                 candidates = list(probe_seqs_dict.keys())
 
             if not candidates:

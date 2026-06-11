@@ -72,6 +72,7 @@ def _build_snakefile(
     cross: list[str],
     host: list[str],
     panel: list[str],
+    inner_run_id: str = "",
 ) -> str:
     """Read Snakefile.template and substitute header variable assignments."""
     template = TEMPLATE_PATH.read_text()
@@ -86,7 +87,7 @@ def _build_snakefile(
         r"^PANEL\s*=\s*\[.*?\]": f"PANEL = {_list_literal(panel)}",
         r'^TARGET_DIR\s*=\s*".*?"': 'TARGET_DIR = "target_seqs/original"',
         r'^PARAMS\s*=\s*".*?"': 'PARAMS = "params.txt"',
-        r'^RUN_ID\s*=\s*".*?"': 'RUN_ID = ""',
+        r'^RUN_ID\s*=\s*".*?"': f'RUN_ID = "{inner_run_id}"',
     }
 
     result = template
@@ -102,9 +103,10 @@ def _generate_snakefile(
     cross: list[str],
     host: list[str],
     panel: list[str],
+    inner_run_id: str = "",
 ) -> None:
     """Generate Snakefile in the run directory from the template."""
-    snakefile_content = _build_snakefile(targets, cross, host, panel)
+    snakefile_content = _build_snakefile(targets, cross, host, panel, inner_run_id)
     (run_dir / "Snakefile").write_text(snakefile_content)
 
 
@@ -156,7 +158,8 @@ def cmd_design(args):
     run_id = args.runid or datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = _setup_run_dir(run_id, params_file, all_targets)
 
-    _generate_snakefile(run_dir, targets, cross, host, panel)
+    inner_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _generate_snakefile(run_dir, targets, cross, host, panel, inner_run_id)
 
     config_args = []
     if args.probe:
@@ -190,7 +193,8 @@ def cmd_evaluate(args):
     run_id = args.runid or datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = _setup_run_dir(run_id, params_file, all_targets)
 
-    _generate_snakefile(run_dir, targets, cross, host, panel=[])
+    inner_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _generate_snakefile(run_dir, targets, cross, host, panel=[], inner_run_id=inner_run_id)
 
     config_args = ["evaluate=1"]
     if args.pset:
@@ -1039,7 +1043,8 @@ def _monitor_evaluate(
         params_path.write_text(params_text)
 
     # Generate Snakefile
-    _generate_snakefile(eval_dir, [target_name], [], [], [])
+    inner_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _generate_snakefile(eval_dir, [target_name], [], [], [], inner_run_id)
 
     # Run snakemake
     config_args = ["evaluate=1", f"pset={pset_fa.name}"]
