@@ -12,6 +12,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  GAR_REGION: us-central1
+  GAR_REGISTRY: us-central1-docker.pkg.dev/sabeti-adapt/qprimer-designer/qprimer-designer
 
 jobs:
   build-amd64:
@@ -20,13 +22,15 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write  # Workload Identity Federation
+      security-events: write  # Trivy SARIF upload
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Container Registry
+      - name: Log in to GHCR
         if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
@@ -34,11 +38,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Authenticate to Google Cloud
+        if: github.event_name == 'push'
+        id: gcp-auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Log in to Artifact Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GAR_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.gcp-auth.outputs.access_token }}
+
       - name: Generate tag suffix
         id: tag
         run: |
-          # Sanitize ref_name: replace / with - for valid Docker tags
           echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+          echo "sha_short=$(echo '${{ github.sha }}' | head -c 12)" >> $GITHUB_OUTPUT
 
       - name: Build and push (amd64)
         id: build
@@ -47,13 +67,32 @@ jobs:
           context: .
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-amd64
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-amd64
+            ${{ github.event_name == 'push' && format('{0}:{1}-amd64', env.GAR_REGISTRY, steps.tag.outputs.suffix) || '' }}
+            ${{ github.event_name == 'push' && format('{0}:{1}', env.GAR_REGISTRY, steps.tag.outputs.sha_short) || '' }}
           provenance: false
           sbom: false
           cache-from: |
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-amd64
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-amd64
           cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0}/{1}:buildcache-amd64,mode=max', env.REGISTRY, env.IMAGE_NAME) || '' }}
+
+      - name: Run Trivy vulnerability scanner
+        if: always() && steps.build.outcome == 'success'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-amd64
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results
+        if: always() && steps.build.outcome == 'success'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
 
   build-arm64:
     if: github.event_name != 'delete'
@@ -103,6 +142,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - uses: docker/login-action@v3
         with:
@@ -110,10 +150,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Log in to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GAR_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.gcp-auth.outputs.access_token }}
+
       - name: Generate tag suffix
         id: tag
         run: |
-          # Sanitize ref_name: replace / with - for valid Docker tags
           echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
 
       - name: Extract metadata
@@ -126,12 +179,11 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Create and push manifest
+      - name: Create and push GHCR manifest
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           SUFFIX: ${{ steps.tag.outputs.suffix }}
         run: |
-          # Iterate over multi-line tags properly
           echo "$TAGS" | while IFS= read -r tag; do
             [ -z "$tag" ] && continue
             echo "Creating manifest for: $tag"
@@ -143,6 +195,87 @@ jobs:
               "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-amd64" \
               "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-arm64"
           done
+
+      - name: Tag latest in Artifact Registry
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          gcloud artifacts docker tags add \
+            "${{ env.GAR_REGISTRY }}:${{ steps.tag.outputs.suffix }}-amd64" \
+            "${{ env.GAR_REGISTRY }}:latest"
+
+      - name: Tag version in Artifact Registry
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          gcloud artifacts docker tags add \
+            "${{ env.GAR_REGISTRY }}:${{ steps.tag.outputs.suffix }}-amd64" \
+            "${{ env.GAR_REGISTRY }}:${{ github.ref_name }}"
+
+  deploy:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [create-manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Deploy to production
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: qprimer-designer
+          region: us-central1
+          image: ${{ env.GAR_REGISTRY }}:${{ github.ref_name }}
+
+  staging-deploy:
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    needs: [build-amd64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Generate revision tag
+        id: rev
+        run: |
+          # Cloud Run revision tags: lowercase, alphanumeric + hyphens, max 63 chars
+          TAG=$(echo '${{ github.ref_name }}' | tr '/' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | head -c 22)
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Generate image tag
+        id: img
+        run: |
+          echo "sha_short=$(echo '${{ github.sha }}' | head -c 12)" >> $GITHUB_OUTPUT
+
+      - name: Deploy to staging
+        run: |
+          gcloud run deploy qprimer-designer-staging \
+            --image="${{ env.GAR_REGISTRY }}:${{ steps.img.outputs.sha_short }}" \
+            --region=us-central1 \
+            --tag="${{ steps.rev.outputs.tag }}" \
+            --no-traffic \
+            --allow-unauthenticated \
+            --memory=4Gi \
+            --cpu=4 \
+            --concurrency=80 \
+            --session-affinity \
+            --timeout=3600
+
+      - name: Show staging URL
+        run: |
+          echo "### Staging deployment" >> $GITHUB_STEP_SUMMARY
+          echo "Branch: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "URL: https://${{ steps.rev.outputs.tag }}---qprimer-designer-staging-$(gcloud run services describe qprimer-designer-staging --region=us-central1 --format='value(status.url)' | sed 's|https://||' | cut -d. -f1 | sed 's|qprimer-designer-staging-||').us-central1.run.app" >> $GITHUB_STEP_SUMMARY
 
   cleanup-untagged:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
