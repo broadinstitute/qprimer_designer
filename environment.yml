@@ -27,3 +27,5 @@ dependencies:
   - pip:
     - streamlit>=1.30
     - gget>=0.30.2
+    - evofr>=0.1.0
+    - numpyro>=0.15

@@ -547,6 +547,15 @@ def cmd_fetch(args):
                     print(f"  Error: invalid target name '{target_name}'")
                     continue
                 shutil.move(str(fasta_files[0]), str(dest))
+                # Also save metadata CSV if gget produced one
+                meta_files = (
+                    list(gget_out.glob("*_metadata.csv"))
+                    + list(gget_out.glob("*metadata*.csv"))
+                )
+                if meta_files:
+                    meta_dest = out_dir / f"{safe_name}_metadata.csv"
+                    shutil.move(str(meta_files[0]), str(meta_dest))
+                    print(f"  → {meta_dest.name} (metadata)")
                 # Filter by subtype if specified
                 subtype = str(row.get("subtype_filter", "")).strip()
                 if subtype:
@@ -1413,6 +1422,126 @@ def cmd_monitor(args):
     print("\nMonitor complete.")
 
 
+def cmd_forecast(args):
+    """Forecast future variant frequencies and optionally evaluate primer robustness."""
+    params_file = Path(args.params)
+    if not params_file.exists():
+        print(f"Error: params file '{params_file}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    params = parse_params(params_file)
+    targets = parse_list_param(params, "TARGETS")
+    if not targets:
+        print("Error: TARGETS must be set in params.txt", file=sys.stderr)
+        sys.exit(1)
+
+    # Forecast parameters (CLI args override params.txt values)
+    horizon = args.horizon or int(params.get("FORECAST_HORIZON_DAYS", 30))
+    min_sequences = int(params.get("FORECAST_MIN_SEQUENCES", 10))
+    top_n = int(params.get("FORECAST_TOP_N_CLADES", 5))
+    location = (str(params.get("FORECAST_LOCATION", "")).strip() or None)
+
+    seq_dir = Path("target_seqs") / "original"
+    out_dir = Path(args.outdir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    from qprimer_designer.commands import forecast_variants as _fv
+
+    for target in targets:
+        print(f"\n{'='*60}")
+        print(f"Target: {target}")
+        print("="*60)
+
+        # Locate FASTA
+        sequences_fa = None
+        for ext in (".fa", ".fasta", ".fna"):
+            p = seq_dir / f"{target}{ext}"
+            if p.exists():
+                sequences_fa = p
+                break
+        if sequences_fa is None:
+            print(f"Warning: no FASTA found for '{target}' in {seq_dir}. Skipping.",
+                  file=sys.stderr)
+            continue
+
+        # Locate metadata (auto-detected from fetch output or CLI override)
+        metadata_file = args.metadata
+        if not metadata_file:
+            for ext in ("_metadata.csv", "_metadata.tsv"):
+                candidate = seq_dir / f"{target}{ext}"
+                if candidate.exists():
+                    metadata_file = str(candidate)
+                    break
+        if not metadata_file:
+            print(
+                f"Warning: no metadata found for '{target}'. "
+                "Run 'adapt fetch' first (metadata is saved automatically) "
+                "or provide --metadata.",
+                file=sys.stderr,
+            )
+            continue
+
+        target_out = out_dir / target
+        target_out.mkdir(parents=True, exist_ok=True)
+        future_fa = target_out / "future_variants.fa"
+        forecast_tsv = target_out / "forecast.tsv"
+
+        # Build a namespace compatible with forecast_variants.run()
+        class _ForecastArgs:
+            sequences = str(sequences_fa)
+            metadata = metadata_file
+            out_sequences = str(future_fa)
+            out_forecast = str(forecast_tsv)
+            param_file = str(params_file)
+
+        _fa = _ForecastArgs()
+        _fa.horizon = horizon
+        _fa.min_sequences = min_sequences
+        _fa.top_n = top_n
+        _fa.top_n_per_clade = 20
+        _fa.location = location
+
+        _fv.run(_fa)
+
+        if not future_fa.exists() or future_fa.stat().st_size == 0:
+            print(f"Warning: no future-variant sequences produced for '{target}'.",
+                  file=sys.stderr)
+            continue
+
+        # Optionally evaluate a primer set against the future variants
+        if args.pset:
+            pset_fa = Path(args.pset)
+            if not pset_fa.exists():
+                print(f"Warning: primer set file not found: {pset_fa}", file=sys.stderr)
+                continue
+
+            print(f"\n[{target}] Evaluating primer set against predicted future variants...")
+            eval_out = target_out / "evaluate"
+            xlsx_dir = _monitor_evaluate(
+                target_name=target,
+                target_fasta=future_fa,
+                pset_fa=pset_fa,
+                params_file=params_file,
+                date_dir=eval_out,
+                cores=args.cores,
+            )
+            if xlsx_dir:
+                for xlsx in sorted(xlsx_dir.rglob("*.xlsx")):
+                    dest = target_out / f"future_{xlsx.name}"
+                    shutil.move(str(xlsx), str(dest))
+                    print(f"  Report: {dest}")
+            else:
+                print(f"  Evaluate step failed for '{target}'.", file=sys.stderr)
+
+    print("\nForecast complete.")
+    print(f"Results saved to: {out_dir.resolve()}")
+    if not args.pset:
+        print(
+            "\nTo evaluate a primer set against predicted future variants, re-run with:\n"
+            "  adapt forecast --params params.txt --pset your_primers.fa"
+        )
+
+
 def main():
     """Main entry point for the adapt CLI."""
     parser = argparse.ArgumentParser(
@@ -1550,6 +1679,69 @@ Examples:
     p_monitor.add_argument("--unschedule", action="store_true",
                            help="Remove monthly cron job")
     p_monitor.set_defaults(func=cmd_monitor)
+
+    # --- forecast subcommand ---
+    p_forecast = subparsers.add_parser(
+        "forecast",
+        help="Forecast future variant frequencies and test primer robustness",
+        description=(
+            "Use multinomial logistic regression (MLR) to forecast which viral "
+            "lineages will be most prevalent in the future, select representative "
+            "sequences from those lineages, and optionally evaluate an existing "
+            "primer set against them to measure future robustness."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Forecast only (produces future_variants.fa + forecast.tsv per target)
+  adapt forecast --params params.txt
+
+  # Forecast + evaluate primer robustness
+  adapt forecast --params params.txt --pset my_primers.fa
+
+  # Custom horizon and output directory
+  adapt forecast --params params.txt --horizon 60 --outdir forecast_60d/
+
+Requires metadata alongside sequences in target_seqs/original/.
+Metadata is saved automatically when using 'adapt fetch'.
+For manually uploaded sequences, provide --metadata pointing to a
+CSV/TSV with columns: accession, date/collection_date, clade/pango_lineage.
+
+Forecast parameters can also be set in params.txt:
+  FORECAST_HORIZON_DAYS = 30
+  FORECAST_MIN_SEQUENCES = 10
+  FORECAST_TOP_N_CLADES = 5
+  FORECAST_LOCATION =         (optional, e.g. USA)
+""",
+    )
+    p_forecast.add_argument(
+        "--params", default="params.txt",
+        help="Parameters file (default: params.txt)",
+    )
+    p_forecast.add_argument(
+        "--horizon", type=int, default=None,
+        help="Days ahead to forecast (default: FORECAST_HORIZON_DAYS from params.txt, or 30)",
+    )
+    p_forecast.add_argument(
+        "--pset",
+        help="Primer set FASTA to evaluate against predicted future variants (optional)",
+    )
+    p_forecast.add_argument(
+        "--metadata",
+        help=(
+            "Metadata file (CSV/TSV) for sequences. Auto-detected from "
+            "target_seqs/original/{target}_metadata.csv when not provided."
+        ),
+    )
+    p_forecast.add_argument(
+        "--outdir", default="forecast",
+        help="Output directory for forecast results (default: forecast/)",
+    )
+    p_forecast.add_argument(
+        "--cores", type=int, default=os.cpu_count() or 1,
+        help="Cores for evaluate step (default: all)",
+    )
+    p_forecast.set_defaults(func=cmd_forecast)
 
     args = parser.parse_args()
 

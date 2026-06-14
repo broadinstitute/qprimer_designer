@@ -50,6 +50,7 @@ For more information on a specific command:
         select_multiplex,
         export_report,
         quick_design,
+        forecast_variants,
     )
 
     generate.register(subparsers)
@@ -65,6 +66,7 @@ For more information on a specific command:
     select_multiplex.register(subparsers)
     export_report.register(subparsers)
     quick_design.register(subparsers)
+    forecast_variants.register(subparsers)
 
     args = parser.parse_args()
 

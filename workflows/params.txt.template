@@ -56,3 +56,13 @@ EMAIL_SENDER =
 EMAIL_PASSWORD =
 # Comma-separated recipient addresses
 EMAIL_RECIPIENTS =
+
+## Forecasting configuration (for adapt forecast)
+# Days ahead to predict variant frequencies
+FORECAST_HORIZON_DAYS = 30
+# Minimum sequences per lineage to include in the MLR model
+FORECAST_MIN_SEQUENCES = 10
+# Number of top predicted lineages to use as "future variant" test sequences
+FORECAST_TOP_N_CLADES = 5
+# Optional: restrict forecasting to a specific location (substring match, e.g. USA)
+FORECAST_LOCATION =

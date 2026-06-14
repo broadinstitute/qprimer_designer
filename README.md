@@ -49,6 +49,7 @@ adapt design --help
 adapt evaluate --help
 adapt fetch --help
 adapt monitor --help
+adapt forecast --help
 ```
 
 ## Usage
@@ -82,6 +83,7 @@ Key sections in `params.txt`:
 - **Probe mode** — Mismatch tolerance, amplicon buffer, probes per pair
 - **Amplicon** — Min/max amplicon and off-target lengths
 - **Email** — Gmail sender, app password, and recipients (for `adapt monitor`)
+- **Forecasting** — Horizon, minimum sequences, top N clades (for `adapt forecast`; all optional)
 
 ### Design Primers
 
@@ -224,6 +226,123 @@ monitor/
 The full fetched FASTA is removed after extracting the new-only subset and saving the accession list, to conserve disk space. Previous accession lists are used to diff against future fetches.
 
 The pipeline also uses internal `qprimer` subcommands via Snakemake. See [docs/qprimer_cli.md](docs/qprimer_cli.md) for details.
+
+### Forecast Primer Robustness Against Future Variants
+
+Test whether primers designed today will remain effective against emerging variants. The forecast command fits a multinomial logistic regression (MLR) model — the same model underlying [Nextstrain's variant frequency forecasts](https://nextstrain.org/sars-cov-2/forecasts) — to estimate which lineages are growing fastest, then selects representative sequences from those lineages so you can evaluate your primer set against them.
+
+#### What you need before running this
+
+The MLR model requires two things **per sequence**: a **collection date** and a **lineage/clade label**. It uses these to build a time series of lineage frequencies and extrapolate forward. Without dates and lineage assignments, forecasting is not possible.
+
+**Scenario 1 — You used `adapt fetch` to download sequences (easiest path)**
+
+Metadata is saved automatically alongside the FASTA as `target_seqs/original/{target}_metadata.csv`. Skip to [Running the forecast](#running-the-forecast) below.
+
+**Scenario 2 — You have NCBI sequences with accession IDs in the headers**
+
+FASTA headers from NCBI look like `>MW123456.1 SARS-CoV-2 isolate...`. Use the NCBI Datasets CLI (included in the conda environment) to fetch metadata:
+
+```bash
+# Extract accession IDs from FASTA headers
+grep "^>" your_sequences.fa | awk '{print $1}' | sed 's/>//' > accessions.txt
+
+# Fetch metadata (collection date, lineage, location) from NCBI
+datasets summary virus genome accession --inputfile accessions.txt --as-json-lines \
+  | dataformat tsv virus-genome \
+    --fields accession,collection-date,virus-pangolin-classification,geo-region \
+  > your_sequences_metadata.tsv
+```
+
+**Scenario 3 — You have sequences but no lineage labels**
+
+If you have collection dates but no clade assignments, run [Nextclade](https://docs.nextstrain.org/projects/nextclade/en/stable/user/nextclade-cli/index.html) to assign them. Nextclade supports SARS-CoV-2, influenza A/B, RSV, mpox, and others:
+
+```bash
+# Download the reference dataset for your virus
+nextclade dataset get --name sars-cov-2 --output-dir nextclade_data/sars-cov-2
+
+# Assign clades — output TSV has seqName, clade, Nextclade_pango columns
+nextclade run \
+  --input-dataset nextclade_data/sars-cov-2 \
+  --output-tsv nextclade_output.tsv \
+  your_sequences.fa
+```
+
+Then combine Nextclade output with date information into a single metadata file before running the forecast.
+
+**Scenario 4 — Sequences with no identifiers or dates at all**
+
+If your FASTA has generic headers like `>seq1`, `>seq2` and no associated collection dates, forecasting is not possible — there is no time series to model. Use `adapt evaluate --pset your_primers.fa` instead to score your primers against all sequences as a flat set.
+
+#### Running the forecast
+
+Once you have a metadata file, place your sequences in `target_seqs/original/` and set `TARGETS` in `params.txt`, then:
+
+```bash
+# Forecast only — produces future_variants.fa + forecast.tsv per target
+adapt forecast --params params.txt
+
+# Forecast and evaluate a primer set against the predicted future variants
+adapt forecast --params params.txt --pset my_primers.fa
+
+# Custom forecast horizon (default: 30 days)
+adapt forecast --params params.txt --horizon 60
+
+# Point to metadata manually if it is not auto-detected
+adapt forecast --params params.txt --metadata path/to/metadata.csv
+```
+
+#### How it works
+
+1. **Clade counts** — Aggregates sequences by lineage and date to build a frequency time series.
+2. **MLR model** — Estimates each lineage's growth advantage and forecasts frequencies at `+horizon` days.
+3. **Select sequences** — Samples up to 20 representative sequences per top-N predicted clade from your existing FASTA.
+4. **Evaluate (optional)** — Runs the ML evaluation pipeline against those future-variant sequences using `--pset`, producing Excel reports.
+
+#### Output
+
+```
+forecast/
+└── {target}/
+    ├── future_variants.fa      # Sequences from predicted dominant lineages
+    ├── forecast.tsv            # Per-lineage frequency forecast table
+    └── evaluate/               # Only present when --pset is provided
+        └── future_{primer}.xlsx
+```
+
+The `forecast.tsv` table shows current vs. predicted frequency and the implied growth advantage:
+
+```
+clade       current_freq  predicted_freq  growth_advantage
+XBB.1.5     0.1200        0.2400          2.00
+EG.5        0.0900        0.1800          2.00
+BA.2.86     0.0600        0.1100          1.83
+```
+
+#### Metadata file format
+
+The accepted column names are flexible. Any of the alternatives in each row are recognized:
+
+| Field | Accepted column names | Example value |
+|-------|-----------------------|---------------|
+| Sequence ID | `accession`, `sequence_id`, `id` | `MW123456.1` |
+| Collection date | `date`, `collection_date`, `isolate_collection_date` | `2024-11-15` |
+| Lineage | `clade`, `pango_lineage`, `lineage`, `variant` | `XBB.1.5` |
+| Location (optional) | `country`, `geographic_region`, `location` | `USA` |
+
+Dates must be in `YYYY-MM-DD` format. Rows with unparseable dates are silently dropped.
+
+#### Forecasting parameters in `params.txt`
+
+All are optional — leave them out entirely if you are not using `adapt forecast`. Defaults are shown:
+
+```
+FORECAST_HORIZON_DAYS = 30     # Days ahead to project
+FORECAST_MIN_SEQUENCES = 10    # Min sequences per lineage to include in model
+FORECAST_TOP_N_CLADES = 5      # Number of top predicted lineages to test against
+FORECAST_LOCATION =            # Restrict to a location substring, e.g. USA (optional)
+```
 
 ## GPU Support
 
