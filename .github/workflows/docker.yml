@@ -9,6 +9,11 @@ on:
   merge_group:
   delete:  # Trigger cleanup when branches are deleted
 
+# Collapse superseded runs on the same ref so a new push cancels the old build.
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -175,6 +180,9 @@ jobs:
         id: gcp-auth
         uses: google-github-actions/auth@v2
         with:
+          # access_token output is required by the docker/login-action below;
+          # the auth action only emits it when token_format is set explicitly.
+          token_format: 'access_token'
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
