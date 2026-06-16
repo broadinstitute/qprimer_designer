@@ -2,6 +2,12 @@
 
 This guide walks you through downloading the code from GitHub and launching the graphical interface on **Mac** or **Windows**.
 
+> **No-install option:** a hosted version of this GUI runs on Google Cloud Run (project
+> `sabeti-adapt`). It is **public (no login)** and **shared**, and results are **not
+> retained** between sessions/redeploys — download anything you want to keep. Ask the team
+> for the current URL (see [`../terraform/README.md`](../terraform/README.md)). Use the
+> local install below if you need persistence, privacy, or offline use.
+
 ---
 
 ## Prerequisites

@@ -1,0 +1,10 @@
+# Local terraform state and provider plugins — do not commit.
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfstate
+*.tfstate.*
+
+# Local variable overrides (may contain environment-specific values).
+terraform.tfvars

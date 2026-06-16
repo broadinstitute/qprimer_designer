@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars and override only what you need.
+# terraform.tfvars is gitignored.
+#
+# All variables have suitable defaults in variables.tf for the standard
+# sabeti-adapt deployment — the file can be empty. Override as needed:
+#
+# project_id              = "sabeti-adapt"
+# region                  = "us-central1"
+# image                   = "us-central1-docker.pkg.dev/sabeti-adapt/qprimer-designer/qprimer-designer:latest"
+# cloud_run_min_instances = 0
+# cloud_run_max_instances = 5
+# cloud_run_cpu           = "4"
+# cloud_run_memory        = "4Gi"
+# cloud_run_concurrency   = 8
+# cloud_run_timeout_seconds = 600

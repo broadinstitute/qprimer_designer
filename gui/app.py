@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from datetime import date, datetime
 from pathlib import Path
 
@@ -85,8 +86,17 @@ def _build_fetch_command(
 # Resolve project root (parent of gui/)
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FASTA_DIR = PROJECT_ROOT / "target_seqs" / "original"
-RUNS_DIR = PROJECT_ROOT / "runs"
+
+# Persisted/output data root. Defaults to PROJECT_ROOT (local dev, and the
+# image's writable /app on Cloud Run). Set QPRIMER_DATA_DIR to a mounted volume
+# to persist results across instances/revisions (see terraform/README.md).
+# Reference inputs (target_seqs) stay under PROJECT_ROOT -- they're baked into
+# the image, not user data.
+DATA_DIR = Path(os.environ.get("QPRIMER_DATA_DIR") or PROJECT_ROOT)
+
+TARGET_SEQS_DIR = PROJECT_ROOT / "target_seqs"
+FASTA_DIR = TARGET_SEQS_DIR / "original"
+RUNS_DIR = DATA_DIR / "runs"
 SCHEMATIC_PATH = PROJECT_ROOT / "schematic.png"
 
 # Ensure the upload directory exists
@@ -97,6 +107,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from gui.snakefile_builder import build_params_txt, build_snakefile
+from gui.run_isolation import prepare_run_dir
 from qprimer_designer.utils.params import parse_params
 from qprimer_designer.adapt_cli import (
     _extract_spreadsheet_id,
@@ -117,7 +128,7 @@ from qprimer_designer.adapt_cli import (
     _uninstall_cron,
 )
 
-MONITOR_DIR = PROJECT_ROOT / "monitor"
+MONITOR_DIR = DATA_DIR / "monitor"
 MONITOR_SCHEDULE_PATH = MONITOR_DIR / "schedule.json"
 VIRUS_MAP_DATA_DIR = Path(__file__).parent / "virus_map_data"
 
@@ -1734,8 +1745,19 @@ def _preflight_checks() -> list[str]:
     return errors
 
 
+def _default_run_id() -> str:
+    """Timestamp + short random suffix so concurrent users don't collide."""
+    return datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
+
+
 def _write_pipeline_files():
-    """Write Snakefile and params.txt to project root."""
+    """Build the Snakefile + params.txt for this run in an isolated scratch dir.
+
+    Returns the scratch directory to use as the Snakemake cwd. Each run gets its
+    own dir so concurrent runs never share a Snakefile / params.txt / .snakemake
+    lock; shared inputs (target_seqs) and outputs (runs/) are symlinked in.
+    See gui/run_isolation.py.
+    """
     mode = st.session_state.get("mode", "Singleplex")
     probe = st.session_state.get("probe_enabled",
                                   st.session_state.get("_probe_enabled_saved", False))
@@ -1751,7 +1773,7 @@ def _write_pipeline_files():
 
     run_id = st.session_state.get("design_run_id", "").strip()
     if not run_id:
-        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_id = _default_run_id()
     st.session_state.run_id = run_id
 
     snakefile_content = build_snakefile(
@@ -1761,11 +1783,19 @@ def _write_pipeline_files():
         panel=panel,
         run_id=run_id,
     )
-    (PROJECT_ROOT / "Snakefile").write_text(snakefile_content)
 
     _init_params()
     params_content = build_params_txt(st.session_state.params)
-    (PROJECT_ROOT / "params.txt").write_text(params_content)
+
+    scratch = prepare_run_dir(
+        run_id=run_id,
+        snakefile_content=snakefile_content,
+        params_content=params_content,
+        target_seqs_dir=TARGET_SEQS_DIR,
+        runs_dir=RUNS_DIR,
+    )
+    st.session_state.pipeline_scratch_dir = str(scratch)
+    return scratch
 
 
 # Pipeline rule steps grouped for progress display
@@ -1901,7 +1931,7 @@ def _tab_run():
     st.header("Run Design" if workflow == "design" else "Run Evaluate")
 
     # Run ID
-    default_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    default_run_id = _default_run_id()
     if "design_run_id" not in st.session_state:
         st.session_state["design_run_id"] = default_run_id
     st.text_input("Run ID", key="design_run_id",
@@ -1966,13 +1996,13 @@ def _tab_run():
     if st.session_state.get("pipeline_should_start"):
         st.session_state.pipeline_should_start = False
 
-        _write_pipeline_files()
+        scratch_dir = _write_pipeline_files()
 
-        # Unlock snakemake directory in case of leftover locks
+        # Unlock the (fresh) scratch dir in case of a leftover lock from a crash.
         snakemake_bin = _find_tool("snakemake") or "snakemake"
         subprocess.run(
             [snakemake_bin, "-s", "Snakefile", "--unlock", "--cores", "1"],
-            capture_output=True, cwd=str(PROJECT_ROOT),
+            capture_output=True, cwd=str(scratch_dir),
         )
 
         env = os.environ.copy()
@@ -2068,7 +2098,7 @@ def _tab_run():
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            cwd=str(PROJECT_ROOT),
+            cwd=str(scratch_dir),
             env=env,
             text=True,
         )
@@ -3118,16 +3148,20 @@ def _tab_results():
     # --- Cleanup ---
     st.subheader("Cleanup")
     if st.button("Delete all pipeline outputs", type="secondary"):
-        result = subprocess.run(
-            ["snakemake", "-s", "Snakefile", "--delete-all-output", "--cores", "1"],
-            capture_output=True,
-            text=True,
-            cwd=str(PROJECT_ROOT),
-        )
-        if result.returncode == 0:
-            st.success("Pipeline outputs deleted.")
-        else:
-            st.error(f"Cleanup failed:\n{result.stderr}")
+        # Runs now execute in isolated scratch dirs, so there's no single shared
+        # Snakefile to drive `--delete-all-output`; delete the run outputs directly.
+        try:
+            removed = 0
+            if RUNS_DIR.exists():
+                for child in RUNS_DIR.iterdir():
+                    if child.is_dir():
+                        shutil.rmtree(child, ignore_errors=True)
+                    else:
+                        child.unlink(missing_ok=True)
+                    removed += 1
+            st.success(f"Deleted {removed} pipeline output(s) from {RUNS_DIR}.")
+        except Exception as exc:
+            st.error(f"Cleanup failed: {exc}")
 
 
 # ---------------------------------------------------------------------------

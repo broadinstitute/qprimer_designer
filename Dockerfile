@@ -4,9 +4,20 @@ LABEL org.opencontainers.image.source="https://github.com/broadinstitute/qprimer
 LABEL org.opencontainers.image.description="ML-guided qPCR primer design with off-target minimization"
 LABEL org.opencontainers.image.licenses="MIT"
 
-# Layer 1: Conda environment (cached unless environment.yml changes)
+# Layer 1: Conda environment (cached unless environment.yml or TORCH_VARIANT changes)
+#
+# TORCH_VARIANT selects the PyTorch build:
+#   gpu (default) -> CUDA-enabled build; used for the multi-arch GHCR image that
+#                    powers training and the Terra/batch CLI (which can use GPUs).
+#   cpu           -> CPU-only build (adds the `cpuonly` package); used for the slim
+#                    amd64 GAR image that runs the Streamlit web app on Cloud Run
+#                    (no GPU there). `cpuonly` is applied in the SAME solve so the
+#                    CUDA libraries are never written to a layer -- removing them in
+#                    a later layer would not shrink the image.
+ARG TORCH_VARIANT=gpu
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml /tmp/environment.yml
-RUN micromamba install -y -n base -f /tmp/environment.yml && \
+RUN EXTRA=""; [ "$TORCH_VARIANT" = "cpu" ] && EXTRA="cpuonly"; \
+    micromamba install -y -n base -f /tmp/environment.yml $EXTRA && \
     micromamba clean --all --yes
 
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
