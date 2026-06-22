@@ -63,3 +63,9 @@ variable "cloud_run_concurrency" {
   type        = number
   default     = 8
 }
+
+variable "custom_domain" {
+  description = "Custom domain to map to the production Cloud Run service. Leave empty to skip domain mapping."
+  type        = string
+  default     = "qprimer-designer.sabeti.broadinstitute.org"
+}

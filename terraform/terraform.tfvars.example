@@ -13,3 +13,4 @@
 # cloud_run_memory        = "4Gi"
 # cloud_run_concurrency   = 8
 # cloud_run_timeout_seconds = 600
+# custom_domain             = "qprimer-designer.sabeti.broadinstitute.org"  # set to "" to skip

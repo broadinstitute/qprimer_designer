@@ -97,8 +97,13 @@ The Streamlit GUI (`gui/app.py`) is served publicly on Google Cloud Run in proje
 `sabeti-adapt`. Infrastructure is Terraform (`terraform/`, see `terraform/README.md`):
 an Artifact Registry repo, a runtime service account, and `qprimer-designer` (prod) +
 `qprimer-designer-staging` services. CI deploys the CPU/GAR image — every branch push
-creates a per-branch staging revision (`https://<branch>---...run.app`); pushing a `v*`
-tag deploys production.
+creates a per-branch staging revision; pushing a `v*` tag deploys production.
+
+URLs:
+- **Production**: `https://qprimer-designer.sabeti.broadinstitute.org`
+- **Staging base**: `https://qprimer-designer-staging-soitfyremq-uc.a.run.app`
+- **Per-branch preview**: `https://<branch>---qprimer-designer-staging-soitfyremq-uc.a.run.app`
+  (e.g. branch `my-feature` → `https://my-feature---qprimer-designer-staging-soitfyremq-uc.a.run.app`)
 
 Each pipeline run executes in an isolated scratch working directory
 (`gui/run_isolation.py`) so concurrent users don't share a Snakefile / `.snakemake`

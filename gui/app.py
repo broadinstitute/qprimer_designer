@@ -1774,6 +1774,11 @@ def _write_pipeline_files():
     run_id = st.session_state.get("design_run_id", "").strip()
     if not run_id:
         run_id = _default_run_id()
+    # Sanitize to safe path component: allow only word chars, hyphens, dots;
+    # prevents path traversal (e.g. "../monitor") via user-supplied run IDs.
+    run_id = re.sub(r"[^A-Za-z0-9_.-]", "_", run_id).strip(".")
+    if not run_id:
+        run_id = _default_run_id()
     st.session_state.run_id = run_id
 
     snakefile_content = build_snakefile(
@@ -2161,6 +2166,14 @@ def _tab_run():
         rc = proc.returncode
         st.session_state.pipeline_running = False
         st.session_state.pipeline_return_code = rc
+
+        # Clean up the scratch dir now that the subprocess is done — it held
+        # only the generated Snakefile/params.txt and .snakemake lock, all of
+        # which are ephemeral. Outputs landed in the shared RUNS_DIR via symlink.
+        scratch_path = st.session_state.pop("pipeline_scratch_dir", None)
+        if scratch_path:
+            import shutil as _shutil
+            _shutil.rmtree(scratch_path, ignore_errors=True)
         st.session_state.pipeline_log = log
         st.session_state.pipeline_completed_rules = completed_rules
         st.session_state.pipeline_rule_done_targets = rule_done_targets

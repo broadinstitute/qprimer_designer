@@ -25,3 +25,11 @@ output "artifact_registry_repo" {
 output "runtime_service_account" {
   value = google_service_account.runtime.email
 }
+
+output "custom_domain_dns_records" {
+  description = "DNS records to add to the broadinstitute.org Cloud DNS zone. Available after terraform apply once the domain mapping is created."
+  value = var.custom_domain != "" ? try(
+    google_cloud_run_domain_mapping.custom_domain[0].status[0].resource_records,
+    []
+  ) : []
+}

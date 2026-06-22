@@ -76,7 +76,9 @@ jobs:
       # the image is only pushed then (Trivy pulls it by ref). Report-only.
       - name: Run Trivy vulnerability scanner (GHCR GPU image)
         if: github.event_name == 'push' && steps.build.outcome == 'success'
-        uses: aquasecurity/trivy-action@master
+        # Pinned to commit SHA, NOT a floating tag, because aquasecurity/trivy-action
+        # has pushed breaking changes under tags before (supply-chain hygiene).
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-amd64
           format: sarif
@@ -242,7 +244,7 @@ jobs:
       # Scan the public-facing GAR CPU image (Cloud Run). Report-only.
       - name: Run Trivy vulnerability scanner (GAR CPU image)
         if: always() && steps.build.outcome == 'success'
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0 — see note above
         with:
           image-ref: ${{ env.GAR_REGISTRY }}:${{ steps.tag.outputs.sha_short }}
           format: sarif

@@ -45,6 +45,14 @@ A **hosted version** runs on Google Cloud Run (project `sabeti-adapt`). It is **
 retained** across redeploys/restarts, so download anything you want to keep. See
 [`terraform/README.md`](terraform/README.md) for deployment details.
 
+| Environment | URL |
+|-------------|-----|
+| **Production** | https://qprimer-designer.sabeti.broadinstitute.org |
+| **Staging (base)** | https://qprimer-designer-staging-soitfyremq-uc.a.run.app |
+| **Per-branch preview** | `https://<branch>---qprimer-designer-staging-soitfyremq-uc.a.run.app` |
+
+Every push to a branch deploys a preview revision to the staging service (with `--no-traffic`), accessible at the per-branch URL above. Pushing a `v*` tag deploys production.
+
 The GUI uses a multi-page workflow with sidebar navigation:
 
 - **Home** — Entry point with getting started guide

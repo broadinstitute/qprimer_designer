@@ -68,3 +68,30 @@ resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
+
+###############################################################################
+# Custom domain mapping (Cloud Run v1 domain-mapping API, works with v2       #
+# services). GCP auto-provisions and renews the TLS cert once the DNS records  #
+# below are in place.                                                          #
+#                                                                              #
+# Prerequisite: the GCP identity running terraform must be a verified owner    #
+# of sabeti.broadinstitute.org in Google Search Console. One-time step per     #
+# domain, not per service.                                                      #
+###############################################################################
+
+resource "google_cloud_run_domain_mapping" "custom_domain" {
+  count    = var.custom_domain != "" ? 1 : 0
+  name     = var.custom_domain
+  location = var.region
+  project  = var.project_id
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.app.name
+  }
+
+  depends_on = [google_cloud_run_v2_service.app]
+}
