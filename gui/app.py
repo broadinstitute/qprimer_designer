@@ -776,9 +776,9 @@ def _tab_results():
 
                 st.dataframe(df, use_container_width=True)
 
-                # --- NCBI Primer-BLAST lookup ---
+                # --- NCBI BLAST lookup ---
                 if "pseq_f" in df.columns and "pseq_r" in df.columns:
-                    st.markdown("**Check off-target binding via NCBI Primer-BLAST**")
+                    st.markdown("**Check off-target binding via NCBI BLAST**")
 
                     # Build row labels from primer name columns if available
                     if "pname_f" in df.columns and "pname_r" in df.columns:
@@ -802,16 +802,20 @@ def _tab_results():
                         fwd = df.at[row_idx, "pseq_f"]
                         rev = df.at[row_idx, "pseq_r"]
 
+                        # Build a FASTA query with both primers
+                        query_fasta = f">forward\n{fwd}\n>reverse\n{rev}"
                         params = urlencode({
-                            "PRIMER_LEFT_INPUT": fwd,
-                            "PRIMER_RIGHT_INPUT": rev,
-                            "SEARCH_DB": "core_nt",
-                            "ORGANISM": "",
+                            "PAGE_TYPE": "BlastSearch",
+                            "PROGRAM": "blastn",
+                            "DATABASE": "nt",
+                            "QUERY": query_fasta,
+                            "WORD_SIZE": "7",
+                            "MEGABLAST": "on",
                         })
-                        blast_url = f"https://www.ncbi.nlm.nih.gov/tools/primer-blast/?{params}"
+                        blast_url = f"https://blast.ncbi.nlm.nih.gov/Blast.cgi?{params}"
 
                         st.link_button(
-                            "Open in NCBI Primer-BLAST",
+                            "Open in NCBI BLAST",
                             url=blast_url,
                         )
 
