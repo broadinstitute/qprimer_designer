@@ -68,17 +68,48 @@ model_path = files('qprimer_designer.data').joinpath('combined_classifier.pth')
 
 ## Docker
 
-Pull from GitHub Container Registry:
-```bash
-docker pull ghcr.io/broadinstitute/qprimer_designer:latest
-docker run --rm ghcr.io/broadinstitute/qprimer_designer:latest qprimer --help
-```
+Two images are built from the single `Dockerfile` via the `TORCH_VARIANT` build arg:
 
-Build locally:
+- **GHCR — `ghcr.io/broadinstitute/qprimer_designer`**: multi-arch (amd64+arm64),
+  **GPU**-enabled (CUDA PyTorch). Use this for the CLI, training, and Terra/batch
+  workflows:
+  ```bash
+  docker pull ghcr.io/broadinstitute/qprimer_designer:latest
+  docker run --rm ghcr.io/broadinstitute/qprimer_designer:latest qprimer --help
+  ```
+- **GAR — `us-central1-docker.pkg.dev/sabeti-adapt/qprimer-designer/qprimer-designer`**:
+  amd64-only, **CPU**-only (slim, ~1.5–2 GB compressed). Runs the Streamlit web app on
+  Cloud Run; it has no CUDA (Cloud Run has no GPU). Not for GPU/CLI use.
+
+Build locally (GPU is the default):
 ```bash
-docker build -t qprimer-designer:local .
+docker build -t qprimer-designer:local .                          # GPU (GHCR-style)
+docker build --build-arg TORCH_VARIANT=cpu -t qprimer-cpu:local . # CPU (GAR/Cloud Run)
 docker run --rm qprimer-designer:local qprimer --help
 ```
+
+CI (`.github/workflows/docker.yml`) builds both: GPU→GHCR (multi-arch manifest) and
+CPU→GAR.
+
+## Web app deployment (Cloud Run)
+
+The Streamlit GUI (`gui/app.py`) is served publicly on Google Cloud Run in project
+`sabeti-adapt`. Infrastructure is Terraform (`terraform/`, see `terraform/README.md`):
+an Artifact Registry repo, a runtime service account, and `qprimer-designer` (prod) +
+`qprimer-designer-staging` services. CI deploys the CPU/GAR image — every branch push
+creates a per-branch staging revision; pushing a `v*` tag deploys production.
+
+URLs:
+- **Production**: `https://qprimer-designer.sabeti.broadinstitute.org`
+- **Staging base**: `https://qprimer-designer-staging-soitfyremq-uc.a.run.app`
+- **Per-branch preview**: `https://<branch>---qprimer-designer-staging-soitfyremq-uc.a.run.app`
+  (e.g. branch `my-feature` → `https://my-feature---qprimer-designer-staging-soitfyremq-uc.a.run.app`)
+
+Each pipeline run executes in an isolated scratch working directory
+(`gui/run_isolation.py`) so concurrent users don't share a Snakefile / `.snakemake`
+lock. Results are written to local disk, which is **ephemeral** on Cloud Run (lost on
+redeploy / scale events) in this iteration; `QPRIMER_DATA_DIR` is the seam for adding
+GCS persistence later.
 
 ## Snakemake Workflows
 
@@ -95,6 +126,10 @@ snakemake -s Snakefile.example --dry-run
 
 ## Environment Variables
 
+- `QPRIMER_DATA_DIR`: Root for GUI run outputs (`runs/`, `monitor/`). Defaults to the
+  project root (and the image's writable `/app`). Point at a mounted volume to persist
+  results, e.g. on Cloud Run (optional). Reference inputs (`target_seqs/`) always stay
+  under the project root.
 - `QPRIMER_FONT_PATH`: Custom font directory for training plots (optional)
 - `QPRIMER_TOOLPATH`: Custom tool installation path for training scripts (optional)
 - `RNASTRUCTURE_DATAPATH`: Path to RNAstructure data tables (optional)

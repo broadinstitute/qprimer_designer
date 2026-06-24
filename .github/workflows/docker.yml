@@ -9,9 +9,23 @@ on:
   merge_group:
   delete:  # Trigger cleanup when branches are deleted
 
+# Collapse superseded runs on the same ref so a new push cancels the old build.
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  GAR_REGION: us-central1
+  GAR_PROJECT: sabeti-adapt
+  GAR_REGISTRY: us-central1-docker.pkg.dev/sabeti-adapt/qprimer-designer/qprimer-designer
+
+# Two images are produced from one Dockerfile (see the TORCH_VARIANT build arg):
+#   GHCR  -> multi-arch (amd64+arm64), GPU-enabled. Used by training + the
+#            Terra/batch CLI. Built by build-amd64 + build-arm64 + create-manifest.
+#   GAR   -> amd64-only, CPU-only (slim). Runs the Streamlit web app on Cloud Run.
+#            Built by build-gar and deployed by staging-deploy / deploy.
 
 jobs:
   build-amd64:
@@ -20,13 +34,14 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write  # Trivy SARIF upload
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Container Registry
+      - name: Log in to GHCR
         if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
@@ -40,13 +55,15 @@ jobs:
           # Sanitize ref_name: replace / with - for valid Docker tags
           echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
 
-      - name: Build and push (amd64)
+      - name: Build and push GPU image (amd64) to GHCR
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' }}
+          build-args: |
+            TORCH_VARIANT=gpu
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-amd64
           provenance: false
           sbom: false
@@ -54,6 +71,27 @@ jobs:
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-amd64
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-amd64
           cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0}/{1}:buildcache-amd64,mode=max', env.REGISTRY, env.IMAGE_NAME) || '' }}
+
+      # Scan the GHCR GPU image (used by CLI/training/Terra). Only on push, since
+      # the image is only pushed then (Trivy pulls it by ref). Report-only.
+      - name: Run Trivy vulnerability scanner (GHCR GPU image)
+        if: github.event_name == 'push' && steps.build.outcome == 'success'
+        # Pinned to commit SHA, NOT a floating tag, because aquasecurity/trivy-action
+        # has pushed breaking changes under tags before (supply-chain hygiene).
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-amd64
+          format: sarif
+          output: trivy-ghcr.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Upload Trivy results (GHCR GPU image)
+        if: github.event_name == 'push' && steps.build.outcome == 'success'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-ghcr.sarif
+          category: trivy-ghcr-gpu-amd64
 
   build-arm64:
     if: github.event_name != 'delete'
@@ -81,13 +119,15 @@ jobs:
           # Sanitize ref_name: replace / with - for valid Docker tags
           echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
 
-      - name: Build and push (arm64)
+      - name: Build and push GPU image (arm64) to GHCR
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/arm64
           push: ${{ github.event_name == 'push' }}
+          build-args: |
+            TORCH_VARIANT=gpu
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.suffix }}-arm64
           provenance: false
           sbom: false
@@ -113,7 +153,6 @@ jobs:
       - name: Generate tag suffix
         id: tag
         run: |
-          # Sanitize ref_name: replace / with - for valid Docker tags
           echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
 
       - name: Extract metadata
@@ -126,7 +165,7 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Create and push manifest
+      - name: Create and push GHCR manifest
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           SUFFIX: ${{ steps.tag.outputs.suffix }}
@@ -143,6 +182,177 @@ jobs:
               "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-amd64" \
               "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SUFFIX}-arm64"
           done
+
+  build-gar:
+    # CPU-only, amd64-only image for Cloud Run. Pushed to Artifact Registry only.
+    # Push events only (WIF secrets are unavailable on fork PRs, and the only
+    # consumer is Cloud Run, which deploys on push). PRs still validate the GPU
+    # Dockerfile build via build-amd64.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write          # Workload Identity Federation
+      security-events: write   # Trivy SARIF upload
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v2
+        with:
+          # access_token output is required by the docker/login-action below;
+          # the auth action only emits it when token_format is set explicitly.
+          token_format: 'access_token'
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Log in to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GAR_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.gcp-auth.outputs.access_token }}
+
+      - name: Generate tags
+        id: tag
+        run: |
+          echo "suffix=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+          echo "sha_short=$(echo '${{ github.sha }}' | head -c 12)" >> $GITHUB_OUTPUT
+
+      - name: Build and push CPU image (amd64) to Artifact Registry
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            TORCH_VARIANT=cpu
+          tags: |
+            ${{ env.GAR_REGISTRY }}:${{ steps.tag.outputs.sha_short }}
+            ${{ env.GAR_REGISTRY }}:${{ steps.tag.outputs.suffix }}-amd64
+            ${{ (github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && format('{0}:latest', env.GAR_REGISTRY) || '' }}
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:{1}', env.GAR_REGISTRY, github.ref_name) || '' }}
+          provenance: false
+          sbom: false
+          # Cache stored in GAR (the only registry this job authenticates to).
+          cache-from: type=registry,ref=${{ env.GAR_REGISTRY }}:buildcache-gar-cpu
+          cache-to: type=registry,ref=${{ env.GAR_REGISTRY }}:buildcache-gar-cpu,mode=max
+
+      # Scan the public-facing GAR CPU image (Cloud Run). Report-only.
+      - name: Run Trivy vulnerability scanner (GAR CPU image)
+        if: always() && steps.build.outcome == 'success'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0 — see note above
+        with:
+          image-ref: ${{ env.GAR_REGISTRY }}:${{ steps.tag.outputs.sha_short }}
+          format: sarif
+          output: trivy-gar.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Upload Trivy results (GAR CPU image)
+        if: always() && steps.build.outcome == 'success'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-gar.sarif
+          category: trivy-gar-cpu-amd64
+
+  deploy:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build-gar]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Deploy to production
+        # Image only; resource config (cpu/memory/concurrency/affinity/cpu-idle)
+        # is owned by terraform/cloud_run.tf.
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: qprimer-designer
+          region: us-central1
+          image: ${{ env.GAR_REGISTRY }}:${{ github.ref_name }}
+
+  staging-deploy:
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    needs: [build-gar]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Generate revision tag
+        id: rev
+        run: |
+          # Cloud Run revision tags: lowercase, alphanumeric + hyphens, max 63 chars
+          TAG=$(echo '${{ github.ref_name }}' | tr '/' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | head -c 22)
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Generate image tag
+        id: img
+        run: |
+          echo "sha_short=$(echo '${{ github.sha }}' | head -c 12)" >> $GITHUB_OUTPUT
+
+      - name: Deploy to staging
+        run: |
+          SERVICE=qprimer-designer-staging
+          # --no-traffic is rejected on a service's first-ever revision (Cloud Run
+          # requires the first revision to take traffic). terraform creates the
+          # service shell first, so it normally exists; guard anyway for safety.
+          EXTRA_FLAGS=()
+          if gcloud run services describe "${SERVICE}" \
+              --region="${{ env.GAR_REGION }}" --project="${{ env.GAR_PROJECT }}" \
+              --format='value(name)' >/dev/null 2>&1; then
+            EXTRA_FLAGS+=("--no-traffic")
+          fi
+          # Resource sizing matches terraform/cloud_run.tf + staging.tf.
+          gcloud run deploy "${SERVICE}" \
+            --image="${{ env.GAR_REGISTRY }}:${{ steps.img.outputs.sha_short }}" \
+            --region="${{ env.GAR_REGION }}" \
+            --project="${{ env.GAR_PROJECT }}" \
+            --tag="${{ steps.rev.outputs.tag }}" \
+            --port=8080 \
+            --allow-unauthenticated \
+            --memory=4Gi \
+            --cpu=4 \
+            --concurrency=8 \
+            --min-instances=0 \
+            --max-instances=5 \
+            --no-cpu-throttling \
+            --cpu-boost \
+            --session-affinity \
+            --timeout=600 \
+            --quiet \
+            "${EXTRA_FLAGS[@]}"
+
+      - name: Show staging URL
+        run: |
+          BASE_URL=$(gcloud run services describe qprimer-designer-staging \
+            --region="${{ env.GAR_REGION }}" --project="${{ env.GAR_PROJECT }}" \
+            --format='value(status.url)')
+          HOST="${BASE_URL#https://}"
+          echo "### Staging deployment" >> $GITHUB_STEP_SUMMARY
+          echo "Branch: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Revision tag: \`${{ steps.rev.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "URL: https://${{ steps.rev.outputs.tag }}---${HOST}" >> $GITHUB_STEP_SUMMARY
 
   cleanup-untagged:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

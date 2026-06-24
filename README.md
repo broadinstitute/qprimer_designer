@@ -21,10 +21,15 @@ pip install .
 
 ### Using Docker
 
+The GHCR image is multi-arch (amd64+arm64) and GPU-enabled — use it for the CLI,
+training, and Terra/batch workflows:
+
 ```bash
 docker pull ghcr.io/broadinstitute/qprimer_designer:latest
 docker run --rm ghcr.io/broadinstitute/qprimer_designer qprimer --help
 ```
+
+(A separate slim, CPU-only image powers the hosted web app on Cloud Run — see below.)
 
 ## Web GUI
 
@@ -34,6 +39,19 @@ A Streamlit-based GUI is available as an alternative to the CLI. See the [GUI Ge
 pip install -e ".[gui]"
 streamlit run gui/app.py
 ```
+
+A **hosted version** runs on Google Cloud Run (project `sabeti-adapt`). It is **public
+(no login)** and **shared** — anyone with the URL can use it, and results are **not
+retained** across redeploys/restarts, so download anything you want to keep. See
+[`terraform/README.md`](terraform/README.md) for deployment details.
+
+| Environment | URL |
+|-------------|-----|
+| **Production** | https://qprimer-designer.sabeti.broadinstitute.org |
+| **Staging (base)** | https://qprimer-designer-staging-soitfyremq-uc.a.run.app |
+| **Per-branch preview** | `https://<branch>---qprimer-designer-staging-soitfyremq-uc.a.run.app` |
+
+Every push to a branch deploys a preview revision to the staging service (with `--no-traffic`), accessible at the per-branch URL above. Pushing a `v*` tag deploys production.
 
 The GUI uses a multi-page workflow with sidebar navigation:
 
@@ -226,6 +244,10 @@ The full fetched FASTA is removed after extracting the new-only subset and savin
 The pipeline also uses internal `qprimer` subcommands via Snakemake. See [docs/qprimer_cli.md](docs/qprimer_cli.md) for details.
 
 ## GPU Support
+
+Model inference auto-detects CUDA and falls back to CPU when no GPU is present. The
+GHCR image (CLI / training / Terra) is CUDA-enabled; the hosted web app runs the
+CPU-only GAR image (Cloud Run has no GPU).
 
 If GPU is available, add the resource flag:
 

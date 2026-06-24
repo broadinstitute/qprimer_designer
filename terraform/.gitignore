@@ -1,0 +1,11 @@
+# Local terraform state and provider plugins — do not commit.
+# .terraform.lock.hcl is intentionally NOT ignored: it pins provider versions
+# for reproducible installs across machines and CI.
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+*.tfstate
+*.tfstate.*
+
+# Local variable overrides (may contain environment-specific values).
+terraform.tfvars

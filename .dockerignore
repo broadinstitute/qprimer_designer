@@ -36,5 +36,8 @@ training/
 *.tar.gz
 *.zip
 
+# Terraform
+terraform/
+
 # Analysis artifacts
 CODEBASE_ANALYSIS.md
